@@ -128,6 +128,12 @@ details that only became clear while writing the Flipper profile.
   attribute-modified → RX data (value handle = characteristic handle + 1) or
   subscription (CCCD = handle + 2); MTU response; connection complete;
   disconnect.
+- **One write may arrive as several events.** ST documents the
+  attribute-modified event's Offset field as "offset of this piece, bit 15 set
+  if more follow". The transport joins the pieces (`bl_rx_asm_push`,
+  host-tested) instead of assuming one event per chunk. Whether this
+  controller actually splits a 244-byte write is not yet known; the `frag`
+  counter on the Connection screen will show it.
 - **A central that connects but does not subscribe is dropped after 20 s**
   (5 s at first; raised after the first hardware run, where it was too short
   to subscribe by hand from a phone scanner).

@@ -20,8 +20,10 @@ verified from what was not.
   their timeouts are driven by `bl_client` in the shared core.
 - **ESP32 bridge** (`esp32/lib/BruceLink`): portable bridge core + NimBLE
   central transport.
-- **Bruce glue** (`esp32/src/modules/brucelink`): `BruceBackendImpl`, headless
-  hook declarations, and `PATCH.md` (the Bruce changes).
+- **Bruce glue** (`esp32/src/modules/brucelink`): `BruceLinkModule` (menu
+  toggle + bridge task), `BruceBackendImpl`, headless hook declarations with
+  "not available" placeholder bodies, and `PATCH.md`.
+  `tools/install_into_bruce.py` puts all of it into a Bruce 1.17 checkout.
 - **Python reference** (`shared/brucelink_protocol.py`) for wire interop.
 - **HIL scripts** (`scripts/hil/`), docs, 3 ADRs, capability matrix.
 
@@ -35,6 +37,7 @@ verified from what was not.
 | Python ref + C↔Python interop + wrapper check | 13 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.1 %) |
+| Bruce 1.17 + BruceLink, `m5stack-sticks3` (dependency sources from GitHub) | SUCCESS, 4.83 MB merged image, not flashed |
 
 PR #1 review defects were reproduced on `31629db`, fixed, and regression-tested;
 see `docs/TEST_RESULTS.md`.
@@ -90,14 +93,20 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Timeouts are estimates** (handshake 5 s, request 10 s): the Flipper's
-  X25519 time and Bruce's Wi-Fi scan time are unmeasured. If Connect over BLE
+- **Wi-Fi Scan returns nothing on hardware** (2026-11-23). Device Info and
+  Capabilities work. Cause unknown; see `docs/TEST_RESULTS.md` and read the
+  counters on the Flipper's Connection screen after a failed scan.
+- **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
+  eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
+  time is unmeasured. If Connect over BLE
   loops between `authenticating...` and `BLE advertising`, measure first.
 - **No link encryption and a public key.** GATT is open and unpaired; frames
   are authenticated but readable on air (M4.6). Both builds use the demo key
   (M5.3), so the bridge refuses all active ops (`STATUS` shows `demo:1`).
-- `BruceBackendImpl.cpp` has **never been compiled** — expect API mismatches
-  against the real Bruce headers; fix against Bruce `1.17`.
+- The Bruce build with BruceLink **compiles and links but has never been
+  flashed**. Expect first-run problems in `BruceLinkModule` (task, NimBLE
+  ownership, memory) rather than in the protocol.
+- Capture and active ops are "not available" in this build (placeholder hooks).
 - Momentum's `Connected` event only fires after pairing completes, and there
   is no pairing: the Flipper detects the link from the TX subscription instead.
 - `bt_disconnect()` stops advertising for good; the transport restarts it.
@@ -120,8 +129,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
-   sniffer hooks (`PATCH.md`), so there is a StickS3 build to link with. The
+1. The link works on hardware (2026-11-23, owner-reported: `connected`, Device
+   Info correct). Finish `HARDWARE_TESTING.md` step 5: Capabilities, Wi-Fi
+   Scan, timings, recovery. Then key provisioning (M5.3), which every active
+   op waits on, and the headless sniffer hooks (`PATCH.md`, M5.2). The
    Flipper profile has passed the phone-scanner check (`HARDWARE_TESTING.md`
    step 3b, owner-reported; see `docs/TEST_RESULTS.md` for what was and was
    not confirmed).

@@ -160,16 +160,103 @@ static void t_gatt_foreign_events_ignored(void) {
     CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
 }
 
-static void t_gatt_offset_write_dropped(void) {
+/* First StickS3 run: replies that fit one chunk worked, a larger reply
+ * (Wi-Fi scan) never arrived, and nothing on the Flipper could say why.
+ * The parser used to drop any RX event with a non-zero Offset field; ST
+ * documents that field as "offset of this piece | 0x8000 if more follow",
+ * i.e. the controller may split one write across events. The field now
+ * travels with the data and bl_rx_asm_push joins the pieces. */
+static void t_gatt_offset_field_reported(void) {
     uint8_t b[64];
     bl_gatt_evt_t e;
     const uint8_t d[4] = {1, 2, 3, 4};
-    size_t n = mk_attr(b, RX_H + 1, 5, d, 4); /* partial write at offset */
-    CHECK(bl_gatt_evt_parse(b, n, RX_H, TX_H, &e)); /* consumed... */
-    CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE); /* ...but no data delivered */
-    n = mk_attr(b, RX_H + 1, 0x8000, d, 4); /* "more data" fragment flag */
+    size_t n = mk_attr(b, RX_H + 1, 5, d, 4);
     CHECK(bl_gatt_evt_parse(b, n, RX_H, TX_H, &e));
-    CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_RX_DATA);
+    CHECK_EQ_INT(e.offset, 5);
+    CHECK_EQ_INT(e.len, 4);
+    n = mk_attr(b, RX_H + 1, 0x8000, d, 4);
+    CHECK(bl_gatt_evt_parse(b, n, RX_H, TX_H, &e));
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_RX_DATA);
+    CHECK_EQ_INT(e.offset, 0x8000);
+    n = mk_attr(b, RX_H + 1, 0, d, 4);
+    CHECK(bl_gatt_evt_parse(b, n, RX_H, TX_H, &e));
+    CHECK_EQ_INT(e.offset, 0);
+}
+
+static void t_rx_asm_whole_write_passes_through(void) {
+    bl_rx_asm_t a;
+    bl_rx_asm_init(&a);
+    uint8_t d[244];
+    for(int i = 0; i < 244; i++) d[i] = (uint8_t)(i * 3);
+    const uint8_t* c = NULL;
+    uint16_t cl = 0;
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 244, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK(c == d); /* no copy */
+    CHECK_EQ_INT(cl, 244);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 1, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK_EQ_INT(cl, 1);
+}
+
+static void t_rx_asm_joins_split_write(void) {
+    bl_rx_asm_t a;
+    bl_rx_asm_init(&a);
+    uint8_t d[244];
+    for(int i = 0; i < 244; i++) d[i] = (uint8_t)(i ^ 0x3c);
+    const uint8_t* c = NULL;
+    uint16_t cl = 0;
+    /* 243 + 1: the largest chunk, one byte over what fits a single event
+     * if the controller's limit is 243 */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 243, &c, &cl), BL_RX_ASM_PENDING);
+    CHECK(c == NULL);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 243, d + 243, 1, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK_EQ_INT(cl, 244);
+    CHECK(c != NULL && memcmp(c, d, 244) == 0);
+    /* three pieces */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 100, &c, &cl), BL_RX_ASM_PENDING);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000 | 100, d + 100, 100, &c, &cl), BL_RX_ASM_PENDING);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 200, d + 200, 44, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK_EQ_INT(cl, 244);
+    CHECK(c != NULL && memcmp(c, d, 244) == 0);
+    /* the assembler is empty again: a whole write still passes through */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 10, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK(c == d);
+}
+
+static void t_rx_asm_rejects_what_does_not_fit_together(void) {
+    bl_rx_asm_t a;
+    bl_rx_asm_init(&a);
+    uint8_t d[250];
+    memset(d, 0x77, sizeof(d));
+    const uint8_t* c = NULL;
+    uint16_t cl = 0;
+    /* a continuation with nothing in progress (a partial write at an offset) */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 5, d, 4, &c, &cl), BL_RX_ASM_REJECT);
+    CHECK(c == NULL);
+    /* a gap: second piece is not where the first ended */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 100, &c, &cl), BL_RX_ASM_PENDING);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 120, d, 20, &c, &cl), BL_RX_ASM_REJECT);
+    /* ...and the write in progress is gone: its real next piece is refused too */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 100, d, 20, &c, &cl), BL_RX_ASM_REJECT);
+    /* too long in total */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 200, &c, &cl), BL_RX_ASM_PENDING);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 200, d, 45, &c, &cl), BL_RX_ASM_REJECT);
+    /* too long in one event */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 245, &c, &cl), BL_RX_ASM_REJECT);
+    /* a new write abandons an unfinished one */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 50, &c, &cl), BL_RX_ASM_PENDING);
+    d[0] = 0x11;
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 7, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK_EQ_INT(cl, 7);
+    CHECK(c != NULL && c[0] == 0x11);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 50, d, 7, &c, &cl), BL_RX_ASM_REJECT);
+    /* empty first piece, bad arguments */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0x8000, d, 0, &c, &cl), BL_RX_ASM_REJECT);
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, NULL, 3, &c, &cl), BL_RX_ASM_REJECT);
+    CHECK_EQ_INT(bl_rx_asm_push(NULL, 0, d, 3, &c, &cl), BL_RX_ASM_REJECT);
+    /* after all that, normal traffic still works */
+    CHECK_EQ_INT(bl_rx_asm_push(&a, 0, d, 244, &c, &cl), BL_RX_ASM_CHUNK);
+    CHECK_EQ_INT(cl, 244);
 }
 
 static void t_gatt_malformed_rejected(void) {
@@ -230,7 +317,10 @@ void run_gatt_evt_tests(void) {
     RUN(t_gatt_connection_complete);
     RUN(t_sub_guard);
     RUN(t_gatt_foreign_events_ignored);
-    RUN(t_gatt_offset_write_dropped);
+    RUN(t_gatt_offset_field_reported);
+    RUN(t_rx_asm_whole_write_passes_through);
+    RUN(t_rx_asm_joins_split_write);
+    RUN(t_rx_asm_rejects_what_does_not_fit_together);
     RUN(t_gatt_malformed_rejected);
     RUN(t_gatt_fuzz_small);
 }

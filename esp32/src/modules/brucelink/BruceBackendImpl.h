@@ -14,7 +14,7 @@
  */
 #pragma once
 
-#include "../../../lib/BruceLink/BruceLinkBridge.h"
+#include <BruceLinkBridge.h> // lib/BruceLink (installed by tools/install_into_bruce.py)
 
 namespace brucelink {
 

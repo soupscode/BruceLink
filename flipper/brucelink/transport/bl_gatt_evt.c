@@ -4,6 +4,8 @@
  */
 #include "bl_gatt_evt.h"
 
+#include <string.h>
+
 #define HCI_EVENT_PKT_TYPE 0x04u
 #define EVT_DISCONNECTION_COMPLETE 0x05u
 #define EVT_LE_META 0x3Eu
@@ -26,6 +28,7 @@ bool bl_gatt_evt_parse(
     out->kind = BL_GATT_EVT_NONE;
     out->data = NULL;
     out->len = 0;
+    out->offset = 0;
     out->mtu = 0;
     if(pckt == NULL || avail < 3) return false;
     if(pckt[0] != HCI_EVENT_PKT_TYPE) return false;
@@ -69,10 +72,9 @@ bool bl_gatt_evt_parse(
     const uint8_t* d = v + 8;
 
     if(attr == (uint16_t)(rx_char_handle + 1u)) {
-        /* Chunks never exceed one event. A non-zero offset (bit 15 flags a
-         * fragmented long write) is not something a BruceLink central
-         * sends: consume the event and drop the data. */
-        if(offset != 0) return true;
+        /* One write may span several events (see bl_rx_asm_push); the raw
+         * Offset field travels with the data. */
+        out->offset = offset;
         out->kind = BL_GATT_EVT_RX_DATA;
         out->data = d;
         out->len = dlen;
@@ -112,4 +114,53 @@ bool bl_sub_guard_expired(
     if((uint32_t)(now_ms - g->since_ms) < timeout_ms) return false;
     g->waiting = false; /* fire once; a link that stays up is timed again */
     return true;
+}
+
+void bl_rx_asm_init(bl_rx_asm_t* a) {
+    if(a != NULL) a->len = 0;
+}
+
+bl_rx_asm_result_t bl_rx_asm_push(
+    bl_rx_asm_t* a,
+    uint16_t offset_field,
+    const uint8_t* data,
+    uint16_t len,
+    const uint8_t** chunk,
+    uint16_t* chunk_len) {
+    if(a == NULL || chunk == NULL || chunk_len == NULL || (data == NULL && len != 0)) {
+        return BL_RX_ASM_REJECT;
+    }
+    *chunk = NULL;
+    *chunk_len = 0;
+    const uint16_t offset = (uint16_t)(offset_field & 0x7FFFu);
+    const bool more = (offset_field & 0x8000u) != 0;
+
+    if(offset == 0) {
+        a->len = 0; /* a new write; an unfinished one is abandoned */
+        if(!more) {
+            if(len > BL_GATT_RX_CHUNK_MAX) return BL_RX_ASM_REJECT;
+            *chunk = data; /* whole write in one event: no copy */
+            *chunk_len = len;
+            return BL_RX_ASM_CHUNK;
+        }
+    } else if(a->len == 0 || offset != a->len) {
+        a->len = 0; /* not the next piece of anything we hold */
+        return BL_RX_ASM_REJECT;
+    }
+    if((size_t)a->len + len > BL_GATT_RX_CHUNK_MAX) {
+        a->len = 0;
+        return BL_RX_ASM_REJECT;
+    }
+    if(len != 0) memcpy(a->buf + a->len, data, len);
+    a->len = (uint16_t)(a->len + len);
+    if(more) {
+        /* A first piece with no data would be indistinguishable from "no
+         * write in progress"; nothing sensible continues it. */
+        if(a->len == 0) return BL_RX_ASM_REJECT;
+        return BL_RX_ASM_PENDING;
+    }
+    *chunk = a->buf;
+    *chunk_len = a->len;
+    a->len = 0;
+    return BL_RX_ASM_CHUNK;
 }

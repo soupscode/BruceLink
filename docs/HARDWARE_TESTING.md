@@ -68,15 +68,24 @@ Checks the part of the BLE transport that needs only a Flipper and a phone.
 ## 4. StickS3 bridge (Bruce + patch)
 
 1. Back up (step 0).
-2. Apply `esp32/src/modules/brucelink/PATCH.md` to a Bruce `1.17` checkout;
-   build env `m5stack-sticks3`; flash.
-3. `scripts/hil/capture_logs.sh $STICKS3_PORT 115200` and toggle BruceLink in
-   the menu. Expect NimBLE init + scanning logs.
+2. Get a Bruce `1.17` checkout (`git checkout 2b6ba4d`, `git submodule update
+   --init`) and run `python3 tools/install_into_bruce.py <that checkout>` from
+   the BruceLink repo. Build env `m5stack-sticks3` (`pio run -e m5stack-sticks3`)
+   and flash (`-t upload`). See `esp32/src/modules/brucelink/PATCH.md` for what
+   the installer changes and what this build can and cannot do.
+3. On the StickS3: **Config → Advanced → Toggle BruceLink**. Expect
+   `BruceLink ON > looking for Flipper (DEMO KEY, not secure)`.
+   - `BLE in use`: turn off Bruce's BLE API (or whichever BLE feature is on).
+   - Toggle it off and on a few times; no crash, no reboot.
+4. With BruceLink on, check the rest of Bruce still works (menus, a Wi-Fi scan
+   from Bruce's own menu). Starting another Bruce BLE feature while BruceLink
+   is on is expected to misbehave: turn BruceLink off first.
 
 ## 5. BLE link (implements ADR 0001)
 
-The Flipper transport is implemented but has never run on a radio; do step 3b
-first. Both devices use the public demo key until M5.3, so this proves the
+Needs the StickS3 build from step 4 with BruceLink toggled on, and the Flipper
+app on **Transport: BLE** → **Connect**. Order does not matter: the StickS3
+keeps scanning, the Flipper keeps advertising. Both devices use the public demo key until M5.3, so this proves the
 link, not its security; the bridge refuses active ops in that state.
 - Verify advertising of the 128-bit service + name `BL`. If nothing shows up,
   look for `set_discoverable failed` in the Flipper log (`ufbt cli` → `log`).
@@ -86,6 +95,15 @@ link, not its security; the bridge refuses active ops in that state.
 - Flipper-side recovery: power the StickS3 off mid-handshake or mid-request.
   Expect `no reply (timed out)` after 10 s for a request, `link lost` when the
   link drops, and a fresh handshake when the StickS3 returns.
+- **Counters.** The Flipper's Connection screen (press Connect while linked;
+  it no longer restarts the link) and the `no reply (timed out)` message show
+  `link N mtu M rx chunks/frames`, `drop`, `bad`, `txf`, and, if any occurred,
+  `frag` (writes that arrived in pieces) and `odd` (pieces that could not be
+  joined, with the raw Offset field and length of the last one). Note them
+  when something fails. `mtu 0` means the MTU event never reached the Flipper
+  (it then sends 20-byte chunks).
+- The StickS3's Wi-Fi scan reply now carries its duration, or the reason it
+  failed; the same line goes to the USB serial log.
 - **Measure** (the timeouts are estimates): time from `BLE linked` to
   `connected` (two X25519 operations on the Flipper; budget 5 s), and how long
   Bruce takes to answer a Wi-Fi scan (budget 10 s).

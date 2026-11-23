@@ -51,6 +51,8 @@ typedef struct {
     bl_gatt_evt_kind_t kind;
     const uint8_t* data; /* RX_DATA: points into the packet */
     uint16_t len; /* RX_DATA: byte count */
+    uint16_t offset; /* RX_DATA: the event's raw Offset field; feed it, with
+                        data and len, to bl_rx_asm_push() */
     uint16_t mtu; /* MTU: negotiated ATT MTU */
 } bl_gatt_evt_t;
 
@@ -71,6 +73,39 @@ bool bl_gatt_evt_parse(
     uint16_t rx_char_handle,
     uint16_t tx_char_handle,
     bl_gatt_evt_t* out);
+
+/*
+ * RX write assembler. One write from the central is one BruceLink chunk, but
+ * the controller may report a write in more than one attribute-modified
+ * event. Per ST's definition of the event's Offset field: bits 14-0 are the
+ * offset of this piece within the write, and bit 15 set means more pieces
+ * follow. Feed every RX_DATA event here; a chunk comes out when its last
+ * piece arrives. A whole write in one event (offset field 0) is passed
+ * through without copying.
+ */
+#define BL_GATT_RX_CHUNK_MAX 244u /* == BL_BLE_CHUNK_MAX (checked by the transport) */
+
+typedef enum {
+    BL_RX_ASM_PENDING = 0, /* piece stored; more to come */
+    BL_RX_ASM_CHUNK, /* *chunk / *chunk_len hold a complete chunk */
+    BL_RX_ASM_REJECT, /* piece does not continue the write in progress,
+                         or the write is too long: everything discarded */
+} bl_rx_asm_result_t;
+
+typedef struct {
+    uint8_t buf[BL_GATT_RX_CHUNK_MAX];
+    uint16_t len; /* bytes of the write in progress; 0 = none */
+} bl_rx_asm_t;
+
+void bl_rx_asm_init(bl_rx_asm_t* a);
+/* *chunk is valid until the next push (it points at `data` or at a->buf). */
+bl_rx_asm_result_t bl_rx_asm_push(
+    bl_rx_asm_t* a,
+    uint16_t offset_field,
+    const uint8_t* data,
+    uint16_t len,
+    const uint8_t** chunk,
+    uint16_t* chunk_len);
 
 /*
  * Subscription guard. While a central is connected the Flipper does not
