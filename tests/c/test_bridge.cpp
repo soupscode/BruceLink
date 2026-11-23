@@ -903,6 +903,13 @@ static void t_wifi_start_guard() {
     CHECK(F > 47979u);
     CHECK(!wifiStartAllowed(false, 47979u, 31732u));
     CHECK(wifiStartAllowed(false, 61675u, 31732u));
+    /* Measured cost of the reduced, transient scan on the device (ee58380):
+     * internal RAM fell from 61,639 to 25,911 at its lowest (35,728 bytes,
+     * including the one-time default event loop); the DMA block from 31,732
+     * to 16,372. The threshold must cover that cost with margin left over
+     * for the BLE stack, which is still sending while the scan runs. */
+    const size_t kMeasuredScanPeak = 61639u - 25911u;
+    CHECK(F >= kMeasuredScanPeak + 12u * 1024u);
 
     char buf[160];
     bl_textbuf_t tb;

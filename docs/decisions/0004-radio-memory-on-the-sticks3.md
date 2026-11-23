@@ -1,7 +1,8 @@
 # ADR 0004 — Wi-Fi next to the BLE link on the StickS3
 
-Status: Accepted (2026-11-23) — implemented; the scan path below has **not yet
-run on hardware**. Numbers marked *measured* come from the owner's device.
+Status: Accepted (2026-11-23) — implemented; the scan path **returned networks
+over the air** on the owner's devices (one run). Numbers marked *measured* come
+from the owner's device.
 
 ## Context
 
@@ -49,12 +50,29 @@ together: its BLE features call `wifiDisconnect()` first.
 5. Every step logs internal RAM, the largest DMA block and the bridge task's
    stack headroom on USB serial, so the next change is made from data.
 
+## Measured result (ee58380)
+
+| Step | Internal free | Largest DMA block |
+|---|---|---|
+| Before the scan (Flipper linked) | 61,639 | 31,732 |
+| Reduced driver initialised | 30,651 | 22,516 |
+| Radio started | 28,911 | 20,468 |
+| Scan finished (lowest point) | 25,911 | 16,372 |
+| Driver released | ~55,000 | 31,732 |
+
+Peak cost 35,728 bytes, scan 4.8 s with BLE active. The 52 kB threshold leaves
+about 16 kB above that cost, and the host test now pins the threshold to the
+measured cost plus at least 12 kB. About 6.5 kB was not returned after release,
+which matches the default event loop created on first use; a second scan will
+show whether anything else leaks.
+
 ## Consequences
 
 - This is a departure from "call exactly what Bruce calls" for the scan, taken
   because Bruce's call cannot work in this situation. It builds no frames and
   adds no capability; it is the same scan with a smaller driver.
-- Each scan pays a driver start and stop (expected: a few hundred ms).
+- Each scan pays a driver start and stop: 8 ms measured; the scan itself takes
+  4.8 s because the radio is shared with BLE.
 - Capture and active operations (M5.2) need the same treatment: they must
   bring the driver up through this path, not through Bruce's own full start.
 - **Open:** after Bruce's own Wi-Fi has been used, the largest block stays

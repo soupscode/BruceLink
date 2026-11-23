@@ -413,6 +413,36 @@ Test B was meant to measure what Wi-Fi costs but was run without a reboot in
 between, so it shows the re-enable limit instead. The cost of a Wi-Fi start is
 still unmeasured.
 
+Fourth run, StickS3 on `ee58380` (reduced, transient Wi-Fi start, ADR 0004),
+Flipper on `main` (`dbcdac8`). Owner: **"Success from flipper"**: the network
+list was shown on the Flipper. Serial log:
+
+```
+[BruceLink] module: start requested                  | internal 133431 dma-blk 59380 | stack-left 11628 |  52877 ms
+[BruceLink] module: BLE up, scanning for the Flipper | internal  75779 dma-blk 31732 | stack-left 10952 |  52924 ms
+[BruceLink] module: Flipper linked                   | internal  61807 dma-blk 31732 | stack-left  8396 |  56979 ms
+[BruceLink] wifi scan: begin                         | internal  61639 dma-blk 31732 | stack-left  7948 |  63231 ms
+[BruceLink] wifi scan: driver init                   | internal  30651 dma-blk 22516 |                  |  63236 ms
+[BruceLink] wifi scan: radio started                 | internal  28911 dma-blk 20468 |                  |  63239 ms
+[BruceLink] wifi scan: scan finished                 | internal  25911 dma-blk 16372 |                  |  68053 ms
+[BruceLink] wifi scan: driver released               | internal  (garbled in the paste) dma-blk 31732 | 68059 ms
+[BruceLink] module: link down                        | internal  55091 dma-blk 31732 | stack-left  7948 |  77082 ms
+```
+
+| Measurement | Value |
+|---|---|
+| Reduced driver init (incl. the one-time default event loop) | 30,988 bytes internal; DMA block 31,732 → 22,516 |
+| Radio start | 1,740 bytes |
+| Scan | 3,000 bytes |
+| **Peak cost of a scan** | **35,728 bytes internal**; lowest free 25,911; lowest DMA block 16,372 |
+| Scan duration with BLE active | 4.8 s (estimate was ~2 s: the radio is shared) |
+| Request to reply | under 5 s, inside the Flipper's 10 s |
+| Internal RAM after release | ~55 kB vs 61.6 kB before: about 6.5 kB not returned. Consistent with the default event loop (task + queue) created on first use and kept; to be confirmed by a second scan |
+| Bridge task stack | 7,948 bytes of 12,288 never used |
+
+Not yet known: whether repeated scans leak (one scan only), and why the link
+went down 9 s after the scan finished (owner action or a real drop).
+
 Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
 bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at
 once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this

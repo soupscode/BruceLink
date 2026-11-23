@@ -47,7 +47,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan does not work on hardware yet**: the full Wi-Fi start does not fit next to BLE. The clean refusal is confirmed on hardware; a reduced, transient driver start (ADR 0004) is implemented and **not yet run**; capture / active op unavailable (placeholder hooks) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, one scan)** with the reduced, transient driver start (ADR 0004): peak 35.7 kB internal RAM, 4.8 s; repeated scans not yet checked; capture / active op unavailable (placeholder hooks) |
 | Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |
@@ -62,7 +62,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Generalized command adapter (CMD_REQ) | 🟡 in bridge core |
 | Remote safety gate (connection-level) | ✅ host-tested (incl. frame budget, unicast-only targets) |
 | Resumable PCAP transfer | 📐 |
-| BLE/Wi-Fi coexistence evaluation | 🔴 2026-11-23: with NimBLE up, `esp_wifi_init` fails with `ESP_ERR_NO_MEM` on the StickS3 (135 kB internal heap at the menu; radios do not use PSRAM in this build). ADR 0004: 62 kB free with the Flipper linked after savings; reduced transient Wi-Fi start implemented, not yet run on hardware |
+| BLE/Wi-Fi coexistence evaluation | 🔴 2026-11-23: with NimBLE up, `esp_wifi_init` fails with `ESP_ERR_NO_MEM` on the StickS3 (135 kB internal heap at the menu; radios do not use PSRAM in this build). 🟡 ADR 0004: 62 kB free with the Flipper linked; a reduced, transient Wi-Fi scan fits (peak 35.7 kB, lowest free 25.9 kB) and returned networks on hardware. Repeated use and the other Wi-Fi features still to do |
 
 ## Hardware
 
