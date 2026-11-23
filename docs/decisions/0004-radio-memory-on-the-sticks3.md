@@ -61,7 +61,19 @@ together: its BLE features call `wifiDisconnect()` first.
 | Driver released | ~55,000 | 31,732 |
 
 Peak cost 35,728 bytes, scan 4.8 s with BLE active. The link stayed up through
-the scan (it went down 9 s later when the owner left the Flipper app). The 52 kB threshold leaves
+the scan (it went down 9 s later when the owner left the Flipper app).
+
+Three further scans in a row: each began and ended at exactly 55,059 bytes
+free (no leak; the 6.5 kB kept after the first scan is the default event
+loop), with a peak cost of 29.7 kB and the lowest free point at 25,319 bytes.
+
+**Open: headroom.** Steady state with the Flipper linked is 55,059 bytes free
+against the 53,248-byte threshold: 1.8 kB. Scans would then be refused, safely,
+but refused. Ways to widen it, cheapest first: shrink the bridge task stack
+(12 kB, at most 4.3 kB ever used so far), create the event loop before the
+check and set the threshold from the repeated-scan cost, then look at what
+else BruceLink holds in internal RAM. Lowering the threshold below what has
+been observed to work is not one of them. The 52 kB threshold leaves
 about 16 kB above that cost, and the host test now pins the threshold to the
 measured cost plus at least 12 kB. About 6.5 kB was not returned after release,
 which matches the default event loop created on first use; a second scan will

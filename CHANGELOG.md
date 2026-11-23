@@ -30,8 +30,8 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
 - **Wi-Fi scan uses a reduced, transient driver start** (ADR 0004): if Wi-Fi
   is not already up, BruceLink initialises the driver with minimal buffers,
   scans, and releases it. **Returned networks on the Flipper over BLE**
-  (owner's devices, one run): peak 35.7 kB internal RAM, 4.8 s; the link
-  stayed up through it.
+  (owner's devices, four scans in a row, no leak): 4.8 s each, peak 35.7 kB
+  internal RAM on the first and 29.7 kB after; the link stayed up.
 - **Wi-Fi start guard on the StickS3.** Hardware showed Wi-Fi running out of
   internal RAM next to BLE and taking the bridge down with it. Wi-Fi is now
   started only when at least 52 kB internal RAM and a 16 kB block are free;

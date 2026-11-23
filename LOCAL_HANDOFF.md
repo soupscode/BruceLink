@@ -99,8 +99,9 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   reboot. Wi-Fi is now started only when it should fit (`wifiStartAllowed`;
   the clean refusal is confirmed on hardware), and the scan brings the driver
   up small and only for its own duration (ADR 0004, `BruceLinkWifi.cpp`).
-  That scan **returned networks on the Flipper** (2026-11-23, one run): peak
-  35.7 kB internal RAM, 4.8 s. Repeated scans not yet checked. This is the project's
+  That scan **returned networks on the Flipper** (2026-11-23): four scans,
+  4.8 s each, no leak, peak 35.7 kB on the first and 29.7 kB after. In
+  steady state only 1.8 kB separates free RAM from the guard's threshold. This is the project's
   main open technical risk (task M5.5): every Wi-Fi feature is meant to be
   driven over the BLE link. The StickS3 logs memory at each step on USB serial
   (`python -m serial.tools.miniterm <port> 115200`, lines `[BruceLink] ...`).

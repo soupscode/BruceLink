@@ -441,7 +441,28 @@ list was shown on the Flipper. Serial log:
 | Bridge task stack | 7,948 bytes of 12,288 never used |
 
 The link going down 9 s after the scan was the owner leaving the Flipper app,
-not a drop. Not yet known: whether repeated scans leak (one scan only).
+not a drop.
+
+Fifth run, same session (owner): the Flipper app was opened again, the
+StickS3 relinked by itself (`Flipper linked` at 284 s, BruceLink had kept
+scanning), and Wi-Fi Scan was run three times in a row:
+
+| Scan | Internal at begin | Lowest during scan | After release | Lowest DMA block | Duration |
+|---|---|---|---|---|---|
+| 2 | 55,059 | 25,879 | 55,059 | 16,372 | 4.8 s |
+| 3 | 55,059 | 25,879 | 55,059 | 17,396 | 4.8 s |
+| 4 | 55,059 | 25,319 | 55,059 | 16,372 | 4.8 s |
+
+- **No leak**: every scan returns exactly what it took. The 6.5 kB kept after
+  the first scan is a one-time allocation (the default event loop).
+- **Cost of a repeated scan: 29.7 kB peak** (first scan 35.7 kB).
+- Reconnecting after leaving and reopening the Flipper app works without
+  touching the StickS3.
+- **Guard headroom is thin**: in steady state 55,059 bytes are free against
+  the 53,248-byte (52 kB) threshold, so about 1.8 kB more internal RAM use
+  anywhere in Bruce would make scans refuse (cleanly). See ADR 0004.
+- What the Flipper displayed for these three scans was not separately
+  reported.
 
 Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
 bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at

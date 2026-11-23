@@ -47,7 +47,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, one scan)** with the reduced, transient driver start (ADR 0004): peak 35.7 kB internal RAM, 4.8 s; repeated scans not yet checked; capture / active op unavailable (placeholder hooks) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, four scans, no leak)** with the reduced, transient driver start (ADR 0004): 4.8 s each; guard headroom only 1.8 kB in steady state; capture / active op unavailable (placeholder hooks) |
 | Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |
