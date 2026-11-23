@@ -16,6 +16,7 @@
  */
 #include "BruceLinkBridge.h"
 #include "BruceLinkFormat.h"
+#include "BruceLinkPeerGuard.h"
 
 extern "C" {
 #include "bl_reasm.h"
@@ -505,6 +506,160 @@ static void t_pr1_wifi_line_bounded_and_sanitized() {
     CHECK(tb.len < sizeof(pay));
 }
 
+/* ------------------------------ PR #1 second Codex review (9f89c4d) */
+
+/* Codex P2: re-sending "enable active" before each op cleared the rate
+ * window (reproduced on 9f89c4d: 20 pairs -> 320 frames vs limit 64). */
+static void t_codex2_reenable_does_not_reset_budget() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    h.be.send_mode = 0;
+    int ok = 0;
+    for(int i = 0; i < 20; i++) { /* constant clock */
+        h.cmd(brucelink::kCtrlEnableActive, {1});
+        auto r = h.cmd(BL_CAP_DEAUTH, activeArgs());
+        if(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP) ok++;
+    }
+    CHECK_EQ_INT(ok, 4);
+    CHECK(h.be.total_sent <= 64);
+}
+
+/* Same bypass via a new session (found while fixing; reproduced on
+ * 9f89c4d: reconnect inside the window refilled the budget). */
+static void t_codex2_reconnect_does_not_reset_budget() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    h.cmd(brucelink::kCtrlEnableActive, {1});
+    for(int i = 0; i < 4; i++) h.cmd(BL_CAP_DEAUTH, activeArgs());
+    CHECK_EQ_INT(h.be.total_sent, 64);
+    h.bridge.onDisconnect();
+    h.be.now += 500; /* still inside the 1000 ms window */
+    CHECK(h.connect());
+    h.cmd(brucelink::kCtrlEnableActive, {1});
+    CHECK(isError(h.cmd(BL_CAP_DEAUTH, activeArgs()), BL_ERR_RATE_LIMITED));
+    CHECK_EQ_INT(h.be.total_sent, 64);
+    h.be.now += 500; /* window elapsed */
+    auto r = h.cmd(BL_CAP_DEAUTH, activeArgs());
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+}
+
+/* Codex P2: an impostor advertising the public UUID could hold the only
+ * connection. Supervision now asks the transport to drop it. */
+static void t_codex2_bad_proof_requests_disconnect() {
+    Harness h;
+    h.begin();
+    h.bridge.onConnect();
+    CHECK(!h.bridge.needsDisconnect()); /* fresh link, within deadline */
+    /* impostor sends a well-formed HELLO, then an AUTH with a forged proof */
+    bl_session_init(&h.central, BL_ROLE_CENTRAL, h.psk, central_rng, &h.crng);
+    uint8_t b[BL_MAX_MSG];
+    int n = bl_session_start(&h.central, b, sizeof(b));
+    h.toBridge(b, (size_t)n);
+    CHECK_EQ_INT(h.drain().size(), 1); /* bridge answered HELLO_ACK */
+    uint8_t forged[32];
+    memset(forged, 0x77, sizeof(forged));
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_AUTH, 0, 0, sizeof(forged), forged};
+    n = bl_frame_encode(&f, nullptr, 0, b, sizeof(b));
+    h.toBridge(b, (size_t)n);
+    CHECK(!h.bridge.established());
+    CHECK(h.bridge.needsDisconnect()); /* immediately, not after the deadline */
+    h.bridge.onDisconnect();
+    CHECK(!h.bridge.needsDisconnect()); /* link down: nothing to drop */
+}
+
+static void t_codex2_silent_peer_times_out() {
+    Harness h;
+    h.begin();
+    h.bridge.onConnect(); /* transport link up, peer never speaks */
+    h.be.now += brucelink::kAuthTimeoutMs - 1;
+    CHECK(!h.bridge.needsDisconnect());
+    h.be.now += 1;
+    CHECK(h.bridge.needsDisconnect());
+}
+
+static void t_codex2_stalled_handshake_times_out() {
+    Harness h;
+    h.begin();
+    uint8_t wrong[BL_KEY_LEN];
+    memset(wrong, 0x11, sizeof(wrong));
+    CHECK(!h.connect(wrong)); /* HELLO/HELLO_ACK exchanged, then it stalls */
+    CHECK(!h.bridge.needsDisconnect());
+    h.be.now += brucelink::kAuthTimeoutMs;
+    CHECK(h.bridge.needsDisconnect());
+}
+
+static void t_codex2_established_never_dropped() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    h.be.now += 3600u * 1000u; /* an hour later */
+    CHECK(!h.bridge.needsDisconnect());
+    auto r = h.request(BL_MSG_PING, (const uint8_t*)"z", 1);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_PONG);
+}
+
+static void t_codex2_unprovisioned_drops_immediately() {
+    BruceLinkBridge b; /* begin() never called: no key, no backend */
+    CHECK(!b.needsDisconnect());
+    b.onConnect();
+    CHECK(b.needsDisconnect());
+    b.onDisconnect();
+    CHECK(!b.needsDisconnect());
+}
+
+static void t_codex2_auth_deadline_wraps() {
+    Harness h;
+    h.begin();
+    h.be.now = 0xFFFFF000u; /* millis() about to roll over */
+    h.bridge.onConnect();
+    h.be.now = 0x00001000u; /* +8192 ms across the wrap */
+    CHECK(!h.bridge.needsDisconnect());
+    h.be.now = 0x00002000u; /* +12288 ms */
+    CHECK(h.bridge.needsDisconnect());
+}
+
+static void t_peer_cooldown() {
+    brucelink::PeerCooldown c;
+    const uint8_t a[7] = {1, 2, 3, 4, 5, 6, 0};
+    const uint8_t a_rand[7] = {1, 2, 3, 4, 5, 6, 1}; /* same bytes, other type */
+    const uint8_t b[7] = {9, 9, 9, 9, 9, 9, 0};
+    CHECK(!c.blocked(a, 7, 1000));
+    c.penalize(a, 7, 1000, 30000);
+    CHECK(c.blocked(a, 7, 1000));
+    CHECK(c.blocked(a, 7, 30999));
+    CHECK(!c.blocked(a, 7, 31000)); /* expires */
+    CHECK(!c.blocked(a_rand, 7, 2000)); /* address type is part of identity */
+    CHECK(!c.blocked(b, 7, 2000));
+    /* re-penalising never shortens an active block */
+    c.penalize(a, 7, 1000, 30000);
+    c.penalize(a, 7, 2000, 1000);
+    CHECK(c.blocked(a, 7, 20000));
+    /* capacity: more peers than slots evicts the soonest-expiring */
+    brucelink::PeerCooldown d;
+    for(uint8_t i = 0; i < brucelink::PeerCooldown::kSlots + 2; i++) {
+        uint8_t id[7] = {0xAA, i, 0, 0, 0, 0, 0};
+        d.penalize(id, 7, 1000u + i, 30000);
+    }
+    uint8_t newest[7] = {0xAA, (uint8_t)(brucelink::PeerCooldown::kSlots + 1), 0, 0, 0, 0, 0};
+    uint8_t oldest[7] = {0xAA, 0, 0, 0, 0, 0, 0};
+    CHECK(d.blocked(newest, 7, 2000));
+    CHECK(!d.blocked(oldest, 7, 2000));
+    /* wraparound */
+    brucelink::PeerCooldown w;
+    w.penalize(a, 7, 0xFFFFFF00u, 30000);
+    CHECK(w.blocked(a, 7, 0x00000100u));
+    CHECK(!w.blocked(a, 7, 0x00008000u));
+    /* degenerate inputs */
+    w.penalize(nullptr, 7, 0, 1000);
+    w.penalize(a, 0, 0, 1000);
+    CHECK(!w.blocked(nullptr, 7, 0));
+    uint8_t longid[20] = {0};
+    w.penalize(longid, sizeof(longid), 0, 1000); /* clamped to kIdMax */
+    CHECK(w.blocked(longid, sizeof(longid), 10));
+}
+
 int main() {
     printf("BruceLink bridge tests (host)\n[bridge]\n");
     RUN(t_pr1_reconnect_preserves_psk);
@@ -520,6 +675,16 @@ int main() {
     RUN(t_capture_bad_mode_rejected);
     RUN(t_mtu_update_used_for_fragmentation);
     RUN(t_pr1_wifi_line_bounded_and_sanitized);
+    printf("[supervision]\n");
+    RUN(t_codex2_reenable_does_not_reset_budget);
+    RUN(t_codex2_reconnect_does_not_reset_budget);
+    RUN(t_codex2_bad_proof_requests_disconnect);
+    RUN(t_codex2_silent_peer_times_out);
+    RUN(t_codex2_stalled_handshake_times_out);
+    RUN(t_codex2_established_never_dropped);
+    RUN(t_codex2_unprovisioned_drops_immediately);
+    RUN(t_codex2_auth_deadline_wraps);
+    RUN(t_peer_cooldown);
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

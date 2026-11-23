@@ -19,7 +19,8 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M3.5 | App-side request timeouts + cancel | ⬜ | Request times out in N ms; UI recovers |
 | M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
 | M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
-| M4.2 | **Flipper BLE peripheral profile** | ⬜ **next** | Advertise → connect → pair → handshake on HW |
+| M4.2 | **Flipper BLE peripheral profile** | ⬜ **next** | Advertise → connect → pair → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
+| M4.5 | Pin the paired Flipper's BLE address on the StickS3 | ⬜ | After first authenticated session, prefer/only accept that address; unpin from Bruce menu. Closes the address-rotating DoS residual (ADR 0001 §6) |
 | M4.3 | Reconnection / connection recovery | ⬜ | Re-handshake after drop; no stale keys |
 | M4.4 | BLE discovery screen | ⬜ | Lists nearby BruceLink bridges |
 | M5.1 | BruceBackendImpl compiled in Bruce tree | ⬜ | Builds in Bruce `1.17` m5stack-sticks3 |

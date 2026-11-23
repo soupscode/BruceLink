@@ -17,7 +17,9 @@
  *   - an emergency stop that latches the gate closed until reset, and is
  *     engaged automatically on link loss;
  *   - a transmission-rate / duration limiter so a wedged remote session
- *     cannot transmit unbounded;
+ *     cannot transmit unbounded. Its window records frames actually sent
+ *     and is expired ONLY by elapsed time: enabling/disabling active ops,
+ *     resetting the e-stop and starting a new session never clear it;
  *   - an OPTIONAL operator-configured target scope (allowlist). When
  *     empty, no scoping is applied; it is a convenience for confining a
  *     test, not an authorization credential.
@@ -80,7 +82,8 @@ int bl_safety_set_allowlist(
     size_t count);
 
 /* Emergency stop: latches closed and disables active ops. reset()
- * clears it (and leaves active ops disabled until re-enabled). */
+ * clears it (and leaves active ops disabled until re-enabled). reset()
+ * keeps the rate window. */
 void bl_safety_estop(bl_safety_t* g);
 void bl_safety_reset(bl_safety_t* g);
 

@@ -58,7 +58,7 @@ static uint16_t boundedTextLen(const char* buf, size_t reported, size_t cap) {
 
 BruceLinkBridge::BruceLinkBridge()
     : have_psk_(false), backend_(nullptr), tx_(nullptr), tx_ctx_(nullptr), mtu_(20),
-      link_up_(false) {
+      link_up_(false), link_up_ms_(0) {
     memset(psk_, 0, sizeof(psk_));
     memset(&session_, 0, sizeof(session_));
     bl_safety_init(&safety_);
@@ -109,6 +109,7 @@ void BruceLinkBridge::onConnect() {
     bl_reasm_init(&reasm_);
     bl_safety_reset(&safety_); /* new session: e-stop cleared, active ops off */
     link_up_ = true;
+    link_up_ms_ = backend_ != nullptr ? backend_->nowMs() : 0;
     if(!have_psk_ || backend_ == nullptr) {
         /* not provisioned: leave the session closed; handshakes are refused */
         memset(&session_, 0, sizeof(session_));
@@ -402,6 +403,15 @@ void BruceLinkBridge::sendRaw(const uint8_t* frame, size_t len) {
         tx_(tx_ctx_, chunk, clen);
         i++;
     }
+}
+
+bool BruceLinkBridge::needsDisconnect() {
+    if(!link_up_ || established()) return false;
+    /* terminal: proof failed, version mismatch, or never provisioned */
+    if(session_.state == BL_SS_FAILED || session_.state == BL_SS_CLOSED) return true;
+    if(backend_ == nullptr) return true;
+    /* unsigned subtraction is wrap-safe across millis() rollover */
+    return (uint32_t)(backend_->nowMs() - link_up_ms_) >= kAuthTimeoutMs;
 }
 
 void BruceLinkBridge::tick() {

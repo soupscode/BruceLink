@@ -27,9 +27,11 @@ HDRS := $(wildcard $(CORE_DIR)/*.h) $(wildcard *.h)
 
 # Bridge core only: NimBleCentralTransport needs NimBLE and is built by
 # esp32/test_compile instead.
-BRIDGE_SRC := $(BRIDGE_DIR)/BruceLinkBridge.cpp $(BRIDGE_DIR)/BruceLinkFormat.cpp
+BRIDGE_SRC := $(BRIDGE_DIR)/BruceLinkBridge.cpp $(BRIDGE_DIR)/BruceLinkFormat.cpp \
+              $(BRIDGE_DIR)/BruceLinkPeerGuard.cpp
 BRIDGE_OBJ := $(patsubst $(BRIDGE_DIR)/%.cpp,obj/bridge_%.o,$(BRIDGE_SRC))
-BRIDGE_HDRS := $(BRIDGE_DIR)/BruceLinkBridge.h $(BRIDGE_DIR)/BruceLinkFormat.h
+BRIDGE_HDRS := $(BRIDGE_DIR)/BruceLinkBridge.h $(BRIDGE_DIR)/BruceLinkFormat.h \
+               $(BRIDGE_DIR)/BruceLinkPeerGuard.h
 
 BIN := bl_tests
 BRIDGE_BIN := bl_bridge_tests

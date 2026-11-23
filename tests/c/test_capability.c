@@ -218,6 +218,39 @@ static void t_safety_budget_and_refund(void) {
     CHECK_EQ_INT(bl_safety_budget(&g, 6000), 20);
 }
 
+/* Regression (PR #1, Codex 2nd review): enabling active ops cleared the
+ * rate window, so "enable" before each op bypassed the limit; resetting
+ * the gate for a new session cleared it as well. Only time may expire it. */
+static void t_safety_window_survives_enable_and_reset(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    bl_safety_set_limits(&g, 1000, 20, 30000);
+    uint8_t t[6] = {0x02, 1, 2, 3, 4, 5};
+    bl_safety_enable_active(&g, true);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 20, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
+    /* re-enable while enabled, and disable/enable */
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
+    bl_safety_enable_active(&g, false);
+    bl_safety_enable_active(&g, true);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5000), BL_E_LOCKED);
+    /* e-stop + reset (what a new session does) keeps the history too */
+    bl_safety_estop(&g);
+    bl_safety_reset(&g);
+    bl_safety_enable_active(&g, true);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5500), 0);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5500), BL_E_LOCKED);
+    /* link loss + reset, same */
+    bl_safety_on_link_loss(&g);
+    bl_safety_reset(&g);
+    bl_safety_enable_active(&g, true);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5999), 0);
+    /* only elapsed time refills it */
+    CHECK_EQ_INT(bl_safety_budget(&g, 6000), 20);
+}
+
 /* ---------------------------------------------------------- capture */
 
 typedef struct {
@@ -391,6 +424,7 @@ void run_capability_tests(void) {
     RUN(t_safety_estop_and_link_loss);
     RUN(t_safety_rejects_non_specific_targets);
     RUN(t_safety_budget_and_refund);
+    RUN(t_safety_window_survives_enable_and_reset);
     RUN(t_capture_lifecycle);
     RUN(t_capture_raw_mode_gated);
     RUN(t_capture_backend_start_failure);

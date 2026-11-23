@@ -28,11 +28,10 @@ void bl_safety_set_limits(
 int bl_safety_enable_active(bl_safety_t* g, bool enable) {
     if(g == NULL) return BL_E_ARG;
     if(enable && g->estopped) return BL_E_DENIED;
+    /* Deliberately does NOT touch the rate window: it records frames
+     * actually transmitted and only elapsed time may expire it. Clearing it
+     * here let a peer re-send "enable" before every op to reset the budget. */
     g->active_enabled = enable;
-    if(enable) {
-        g->window_start_ms = 0;
-        g->frames_in_window = 0;
-    }
     return BL_OK;
 }
 
@@ -57,8 +56,8 @@ void bl_safety_reset(bl_safety_t* g) {
     if(g == NULL) return;
     g->estopped = false;
     g->active_enabled = false;
-    g->frames_in_window = 0;
-    g->window_start_ms = 0;
+    /* The rate window survives resets (incl. a new session): it is device
+     * transmit history, not session state, so reconnecting cannot refill it. */
 }
 
 void bl_safety_on_link_loss(bl_safety_t* g) {

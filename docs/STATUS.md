@@ -15,8 +15,9 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Reproducible host build + tests | ✅ | `tests/c` Makefile, ASan+UBSan |
 | Flipper FAP build (ufbt, mntm-012 SDK) | ✅ | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | ✅ | PlatformIO SUCCESS, RAM 10.1 % / Flash 17.1 % |
-| ESP32 bridge core host tests | ✅ | 88 checks, ASan+UBSan (`bl_bridge_tests`) |
-| PR #1 review defects (6 + 3 found while fixing) | ✅ | reproduced on `31629db`, fixed, regression-tested |
+| ESP32 bridge core host tests | ✅ | 128 checks, ASan+UBSan (`bl_bridge_tests`) |
+| PR #1 review defects, round 1 (6 + 3 found while fixing) | ✅ | reproduced on `31629db`, fixed, regression-tested |
+| PR #1 review defects, round 2 (2 + 2 found while fixing) | ✅ bridge / 🟡 transport | rate bypass reproduced on `9f89c4d`; link supervision host-tested; NimBLE transport compile-checked only |
 | Crypto (SHA-256/HMAC/HKDF/X25519) | ✅ | RFC/NIST known-answer tests pass |
 | Frame codec + MAC | ✅ | round-trip, tamper, malformed tests |
 | Authenticated session + replay protection | ✅ | handshake, wrong-PSK, replay, cross-key tests |

@@ -63,6 +63,26 @@ upstream capabilities against source rather than assuming them.
    (2-byte fragment header), one chunk per GATT write/notify.
 5. **Transfer path for bulk PCAP (ADR 0003):** not BLE. See that ADR.
 
+6. **Link supervision (added after PR #1 review).** The service UUID is public
+   and the StickS3 connects to whatever advertises it, so a BLE connection is
+   never trusted on its own:
+   - the bridge must reach an authenticated session within **10 s**
+     (`kAuthTimeoutMs`); a forged proof, a version mismatch or an unprovisioned
+     bridge ends the attempt immediately;
+   - on either, the transport disconnects and puts that peer's address on a
+     **30 s cooldown** (`PeerCooldown`), so the scan moves on instead of
+     reconnecting to the same impostor;
+   - **requirement on the Flipper BLE transport:** start the session handshake
+     (send `HELLO`) as soon as the StickS3 enables TX notifications, not on a
+     later user action. Otherwise the deadline drops the real Flipper.
+   - Residual risk: an attacker that rotates its address on every attempt can
+     still *delay* (never hijack) the connection, like any BLE jammer.
+     Mitigation option for later: pin the paired Flipper's address after the
+     first successful session (the FAP profile sets a fixed MAC).
+7. **Threading:** NimBLE callbacks only record events; the application task's
+   `loop()` is the sole owner of the bridge, and the bridge is brought up
+   *before* notifications are subscribed so an immediate `HELLO` is never lost.
+
 ## Consequences
 
 - Minimal Momentum change: **none to the core BT stack**; BruceLink is a FAP

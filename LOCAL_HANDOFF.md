@@ -26,8 +26,8 @@ verified from what was not.
 
 | Check | Result |
 |---|---|
-| Host C core, ASan+UBSan | 1517 checks, 0 failed |
-| ESP32 bridge core on host, ASan+UBSan | 88 checks, 0 failed |
+| Host C core, ASan+UBSan | 1527 checks, 0 failed |
+| ESP32 bridge core on host, ASan+UBSan | 128 checks, 0 failed |
 | cppcheck (core C + bridge C++) | clean |
 | Python ref + C↔Python interop | 11 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
@@ -103,6 +103,12 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 1. **Implement the Flipper BLE peripheral profile** (`transport/bl_ble_transport.c`)
    per ADR 0001; verify advertise → connect → pair → handshake with the StickS3.
+   **Hard requirement:** send `HELLO` as soon as the StickS3 enables TX
+   notifications. The StickS3 drops any link that is not authenticated within
+   10 s and skips that address for 30 s (ADR 0001 §6), so a Flipper that waits
+   for a user action after linking will be dropped. Also consider retransmitting
+   `HELLO` if no `HELLO_ACK` arrives within ~2 s (a lost chunk otherwise costs
+   the full 10 s + 30 s).
 2. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
    sniffer hooks (`PATCH.md`).
 3. Run `HARDWARE_TESTING.md` steps 5–9; update the capability matrix HW column.

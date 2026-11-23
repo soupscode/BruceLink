@@ -84,7 +84,11 @@ physical control (the button):
   `min(16, frames left in the window)`, passes that number to Bruce as a hard
   cap, and refunds what was not sent; a backend that exceeds its cap trips the
   e-stop (revised after PR #1 review — the first version charged one frame per
-  op while an op could send many);
+  op while an op could send many). The window is the device's **transmit
+  history**: only elapsed time expires it. Enabling or disabling active ops,
+  resetting the e-stop and starting a new session never clear it (second
+  review round: re-sending "enable" before each op, or reconnecting, refilled
+  the budget — 320 frames against a 64-frame limit);
 - an **optional** operator target scope (BSSID allowlist) to confine a test —
   a convenience, not a credential. Active ops need a **specific unicast**
   target: broadcast and multicast BSSIDs are refused (the first version only

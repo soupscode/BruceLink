@@ -100,6 +100,21 @@ Found while fixing: broadcast/multicast BSSIDs passed the "no broadcast" check
 (it only tested for NULL); untrusted SSIDs could inject lines; the bridge never
 learned the negotiated MTU. All fixed with tests.
 
+### PR #1 second Codex review (`9f89c4d`)
+
+| Finding | Fix |
+|---|---|
+| Re-sending "enable active" cleared the rate window (320 frames vs limit 64) | Window is transmit history; only time expires it. Also closed the reconnect variant found while fixing |
+| Impostor advertising the public UUID could hold the only connection | Bridge link supervision (10 s handshake deadline, immediate drop on failed proof) + transport per-peer cooldown |
+
+Found while fixing: the bridge was mutated from two FreeRTOS tasks, and
+subscribing before `onConnect()` could lose an immediate `HELLO`, which with
+the new deadline would have blocklisted the real Flipper. The transport now has
+a single owner. One lesson from my own first-round fix: the frame budget
+was correct per op but never tested against *administrative* resets of the
+window. The new tests drive the adversarial sequence (enable/op pairs,
+reconnect cycles) rather than the happy path.
+
 **Process change:** portable code is now host-tested, not just compile-checked.
 `make test` runs the bridge core under ASan+UBSan (`bl_bridge_tests`), and
 cppcheck covers it. Compile success alone is no longer accepted as review

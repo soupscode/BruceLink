@@ -36,6 +36,11 @@ static const uint16_t kCtrlEnableActive = 0xFF01;
  * backend as a hard cap; unused frames are refunded to the window. */
 static const uint32_t kMaxFramesPerActiveOp = 16;
 
+/* A new link must complete the authenticated handshake within this time,
+ * or the transport drops it. Requires the Flipper to start the handshake
+ * as soon as the BLE link is up (ADR 0001). */
+static const uint32_t kAuthTimeoutMs = 10000;
+
 /* Implemented by the Bruce-dependent glue (src/modules/brucelink). The
  * bridge core calls only these; everything Bruce-specific stays there. */
 class BruceBackend {
@@ -97,6 +102,14 @@ public:
     /* Poll capture counters; a backend failure stops the capture. */
     void tick();
 
+    /* Link supervision. True when the transport should drop the current
+     * link: it is up but has no authenticated session, and the handshake
+     * either failed terminally (bad proof, version mismatch, unprovisioned
+     * bridge) or did not complete within kAuthTimeoutMs of onConnect().
+     * Transport connectivity alone never holds the link. Poll from the
+     * transport loop; an established session never triggers it. */
+    bool needsDisconnect();
+
     bool established() const {
         return bl_session_established(&session_);
     }
@@ -128,6 +141,7 @@ private:
     void* tx_ctx_;
     size_t mtu_;
     bool link_up_;
+    uint32_t link_up_ms_; /* backend time of the last onConnect() */
 };
 
 } // namespace brucelink

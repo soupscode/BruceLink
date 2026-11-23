@@ -105,8 +105,14 @@ gate (ADR 0003); `REQUIRES_TARGET` ones must name a BSSID (no broadcast).
   capture is stopped and flushed. Read-only queries (`PING`, `DEVICE_INFO`,
   `CAPS`, `STATUS`) and `CAP_STOP` stay available.
 - A **new authenticated session** starts with the gate reset: e-stop cleared and
-  active ops disabled until the operator re-enables them.
+  active ops disabled until the operator re-enables them. The rate window is
+  **not** reset: it is device transmit history and only elapsed time expires it.
 - Link loss = automatic e-stop + capture stop (fail-safe).
+- **Handshake deadline:** after the BLE link comes up, the session must be
+  established within **10 s**, or the StickS3 drops the link. A forged proof
+  drops it immediately. Either way, that peer address is skipped for 30 s.
+  The Flipper must send `HELLO` as soon as the StickS3 enables TX
+  notifications (ADR 0001 §6).
 
 ## Capture
 

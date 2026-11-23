@@ -55,8 +55,9 @@ BruceLink core tests
 [textbuf]      7 tests  ok   (bounded builder: truncation, exact fit, zero/NULL
                               capacity, long input, newline injection, LONG_MIN)
 
-1517 checks, 0 failed           exit 0
+1527 checks, 0 failed           exit 0
 ```
+(1517 after the first review round; +`t_safety_window_survives_enable_and_reset`.)
 
 ## ESP32 bridge core — host tests (new)
 
@@ -72,8 +73,21 @@ $ ./bl_bridge_tests                 (built by `make test`)
                               overrun -> e-stop, broadcast/channel validation,
                               length clamping, capture args, MTU update,
                               Wi-Fi line formatting)
-88 checks, 0 failed             exit 0
+[supervision]  9 tests  ok   (rate window vs re-enable and reconnect, forged
+                              proof, silent peer, stalled handshake, established
+                              link kept, unprovisioned bridge, millis() wrap,
+                              per-peer cooldown table)
+128 checks, 0 failed            exit 0
 ```
+
+### PR #1 second Codex review (`9f89c4d`) — reproduced, fixed, regression-tested
+
+| Finding | Reproduction on `9f89c4d` | Regression test |
+|---|---|---|
+| Re-sending "enable active" reset the rate window (Codex P2) | 20 enable/deauth pairs at a constant clock sent **320 frames** vs the 64-frame limit; the new C test fails 6 assertions against the old `bl_safety.c` | `t_safety_window_survives_enable_and_reset`, `t_codex2_reenable_does_not_reset_budget` |
+| A new session also reset it (found while fixing) | 64 frames, reconnect inside the window → next op accepted (80 frames) | `t_codex2_reconnect_does_not_reset_budget` |
+| Unauthenticated peer could hold the only BLE connection (Codex P2) | By inspection: `connected_` set before auth, handshake failures ignored, rescan only when disconnected. The NimBLE transport is not host-runnable | Bridge supervision: `t_codex2_bad_proof_requests_disconnect`, `..._silent_peer_times_out`, `..._stalled_handshake_times_out`, `..._established_never_dropped`, `..._unprovisioned_drops_immediately`, `..._auth_deadline_wraps`; cooldown: `t_peer_cooldown` |
+| Bridge mutated from two FreeRTOS tasks; HELLO could reach the bridge before `onConnect()` (found while fixing) | By inspection (notify callback on NimBLE host task vs `loop()`; subscribe happened before `onConnect()`) | Transport restructured (single owner); compile-checked only, see hardware step 5 |
 
 ### PR #1 review defects — reproduced against `31629db`, fixed, regression-tested
 
@@ -127,11 +141,12 @@ Build success only. The app has **not** been run on a Flipper.
 
 ```
 $ cd esp32/test_compile && pio run     (board esp32-s3-devkitc-1, NimBLE 2.5.1)
-RAM:   [=         ]  10.1% (used 32972 bytes from 327680 bytes)
-Flash: [==        ]  17.1% (used 570876 bytes from 3342336 bytes)
+RAM:   [=         ]  10.1% (used 33140 bytes from 327680 bytes)
+Flash: [==        ]  17.1% (used 571936 bytes from 3342336 bytes)
 ========================= [SUCCESS] =========================
 ```
-(After PR #1 fixes; includes `BruceLinkFormat.cpp` and `bl_textbuf.c`.)
+(After both PR #1 review rounds; includes `BruceLinkFormat.cpp`,
+`BruceLinkPeerGuard.cpp`, the single-owner transport and `bl_textbuf.c`.)
 Compiles the bridge core + NimBLE central transport + shared core with a
 **stub** backend. Not the Bruce firmware, not flashed, not run.
 

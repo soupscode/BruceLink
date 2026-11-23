@@ -61,6 +61,14 @@ Requires the Flipper BLE transport to be implemented (currently a stub).
 - Send a 540-byte frame to exercise fragmentation across > 245-byte writes.
 - Pull power on the StickS3 mid-session: Flipper must show disconnected, and
   (on reconnect) the session must re-handshake (no replay of old keys).
+- **Link supervision** (compile-checked only so far): advertise the BruceLink
+  service UUID from a second device (e.g. a phone BLE peripheral app or a spare
+  ESP32) that never sends `HELLO`. The StickS3 must drop it after ~10 s, skip it
+  for 30 s, and connect to the real Flipper meanwhile. Repeat with a Flipper
+  holding the wrong pairing key: the drop must be immediate after its `AUTH`.
+- Confirm the real Flipper is never dropped by the 10 s deadline in normal use
+  (it must send `HELLO` on subscription), and that a `HELLO` sent immediately
+  after subscription is not lost (transport ordering fix).
 
 ## 6. Protocol functions over BLE
 

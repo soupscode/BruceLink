@@ -2,6 +2,27 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — PR #1 second review fixes (2026-11-23)
+
+### Fixed
+- **Rate-limit bypass**: re-sending "enable active ops" before each op (or
+  reconnecting) cleared the transmit window — 320 frames against a 64-frame
+  limit. The window now survives enable/disable, e-stop reset and new
+  sessions; only elapsed time expires it.
+- **Unauthenticated connection hold**: a peripheral advertising the public
+  BruceLink UUID could occupy the StickS3's only connection without the key.
+  The bridge now requires an authenticated session within 10 s (immediate on a
+  forged proof) and the transport drops the peer and skips it for 30 s.
+- Found while fixing: the bridge was driven from both the NimBLE host task and
+  the application task; a `HELLO` sent right after subscription could arrive
+  before `onConnect()`. NimBLE callbacks now only record events and `loop()` is
+  the bridge's single owner; the bridge comes up before subscribing.
+
+### Added
+- `BruceLinkBridge::needsDisconnect()` (link supervision) and `kAuthTimeoutMs`.
+- `PeerCooldown` (`BruceLinkPeerGuard`): wrap-safe per-peer reconnect cooldown.
+- 10 regression tests (bridge suite now 128 checks; core 1527).
+
 ## [Unreleased] — PR #1 review fixes (2026-11-23)
 
 ### Fixed
