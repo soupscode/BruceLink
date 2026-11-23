@@ -35,13 +35,35 @@ instead of the xPack substitute; confirm the FAP still passes APPCHK.
 ## 3. Flipper app on device (loopback first)
 
 1. `cd flipper/brucelink && ufbt launch` (installs + runs over USB).
-2. In BruceLink: **Connect** → expect status `connected`, then **Device Info**
-   showing the mock text ("BruceLink mock…").
+2. In BruceLink: **Settings → Transport: Loopback** (the default), then
+   **Connect** → expect `loopback (built-in mock)` / `connected` / `DEMO KEY:
+   not secure`, then **Device Info** showing the mock text ("BruceLink mock…").
 3. **Capabilities** and **Wi-Fi Scan** should render the mock replies.
 4. Back out; confirm the app exits cleanly (no hang, no leak warning).
 
-This validates the UI, timer pump, session handshake and request/response on
-real Flipper hardware **without** the StickS3.
+This validates the UI, tick-driven polling, session handshake and
+request/response on real Flipper hardware **without** the StickS3.
+
+### 3b. Flipper BLE profile alone (no StickS3 needed)
+
+Checks the part of the BLE transport that needs only a Flipper and a phone.
+1. **Settings → Transport: BLE**, then **Connect**. Expect `BLE advertising` /
+   `waiting for StickS3`. The Flipper's own Bluetooth link to the phone app
+   drops while BruceLink holds the radio; that is expected.
+2. On a phone, open a BLE scanner (nRF Connect or similar). Expect a device
+   named **BL** advertising service `a1b20001-7a9c-4b1d-9c2e-5f6a7b8c9d00`.
+3. Connect from the scanner. Expect the service with two characteristics:
+   `…0002` (write, write without response) and `…0003` (notify).
+4. First connect and do nothing: after about 20 s the Flipper should drop
+   the scanner (a central that never subscribes) and advertise again. Then
+   reconnect and enable notifications on `…0003`. The Flipper should show `BLE linked` /
+   `authenticating...` and the scanner should receive a few notifications (the
+   `HELLO`, in 20-byte pieces or one larger one). After 5 s with no answer the
+   Flipper drops the link by itself and must be **advertising again** (visible
+   in the scanner). This is the re-advertise path; note whether it works.
+5. Back out of BruceLink. The Flipper's normal Bluetooth (phone app) must work
+   again; with Bluetooth switched off in Flipper settings it must stay off.
+6. Repeat Connect → Back five times; no crash, no hang.
 
 ## 4. StickS3 bridge (Bruce + patch)
 
@@ -53,10 +75,26 @@ real Flipper hardware **without** the StickS3.
 
 ## 5. BLE link (implements ADR 0001)
 
-Requires the Flipper BLE transport to be implemented (currently a stub).
-- Verify advertising of the 128-bit service + name within 31 bytes.
-- Verify the StickS3 central discovers, connects, Just-Works pairs, and that
-  Flipper's `Connected` status fires.
+The Flipper transport is implemented but has never run on a radio; do step 3b
+first. Both devices use the public demo key until M5.3, so this proves the
+link, not its security; the bridge refuses active ops in that state.
+- Verify advertising of the 128-bit service + name `BL`. If nothing shows up,
+  look for `set_discoverable failed` in the Flipper log (`ufbt cli` → `log`).
+- Verify the StickS3 central discovers, connects (no pairing), subscribes, and
+  that the Flipper shows `BLE linked` then `connected` within about a second.
+- Device Info / Capabilities / Wi-Fi Scan over the air; `STATUS` shows `demo:1`.
+- Flipper-side recovery: power the StickS3 off mid-handshake or mid-request.
+  Expect `no reply (timed out)` after 10 s for a request, `link lost` when the
+  link drops, and a fresh handshake when the StickS3 returns.
+- **Measure** (the timeouts are estimates): time from `BLE linked` to
+  `connected` (two X25519 operations on the Flipper; budget 5 s), and how long
+  Bruce takes to answer a Wi-Fi scan (budget 10 s).
+- Questions the source could not settle (from the independent review):
+  does the subscription event fire on every reconnect; does the MTU event
+  fire on the Flipper with the negotiated value (otherwise chunks stay at
+  20 bytes: slow but working); how quickly advertising resumes after a
+  Flipper-initiated drop; does remounting the SD card while linked produce
+  `BLE taken by system` rather than a crash.
 - Record negotiated MTU (target ≥ 247) and measure notify throughput.
 - Send a 540-byte frame to exercise fragmentation across > 245-byte writes.
 - Pull power on the StickS3 mid-session: Flipper must show disconnected, and
@@ -104,8 +142,8 @@ Requires the Flipper BLE transport to be implemented (currently a stub).
 ## 10. Failure diagnosis
 
 Collect `hil-logs/` (serial logs, versions, backups' sha256). Common causes:
-wrong Flipper API version (rebuild FAP), Bruce patch not applied, NimBLE pairing
-refused (try `GapPairingNone` vs numeric comparison), MTU too small (check
+wrong Flipper API version (rebuild FAP), Bruce patch not applied, Flipper not
+advertising after a dropped link (ADR 0001 amendment), MTU too small (check
 negotiated value), DMA starvation dropping Wi-Fi (`radioHasMemForBle`).
 
 ## Recovery

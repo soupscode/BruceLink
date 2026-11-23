@@ -12,6 +12,10 @@
  */
 #include "NimBleCentralTransport.h"
 
+extern "C" {
+#include "bl_demo_key.h"
+}
+
 #include <Arduino.h>
 #include <esp_random.h>
 
@@ -61,10 +65,6 @@ public:
     }
 };
 
-static const uint8_t DEMO_PSK[BL_KEY_LEN] = {
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-    0xcc, 0xdd, 0xee, 0xff, 0x00, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a,
-    0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0};
 
 static BruceLinkBridge g_bridge;
 static NimBleCentralTransport g_transport;
@@ -72,7 +72,7 @@ static StubBackend g_backend;
 
 void setup() {
     Serial.begin(115200);
-    g_transport.begin(&g_bridge, DEMO_PSK, &g_backend);
+    g_transport.begin(&g_bridge, BRUCELINK_DEMO_PSK, &g_backend); // public demo key: see bl_demo_key.h
     g_transport.startScan(0);
 }
 

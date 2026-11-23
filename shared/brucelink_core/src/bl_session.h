@@ -5,7 +5,10 @@
  * key (PSK), forward secrecy via ephemeral X25519, and per-direction
  * replay protection via monotonic frame counters.
  *
- * Handshake (C = central/ESP32, P = peripheral/Flipper):
+ * Handshake. C = BL_ROLE_CENTRAL, the session initiator (the Flipper);
+ * P = BL_ROLE_PERIPHERAL, the responder (the StickS3). These are session
+ * roles and are the reverse of the BLE roles (ADR 0001: the Flipper is the
+ * BLE peripheral, the StickS3 the BLE central).
  *   C->P HELLO     : proto_min, proto_max, eph_pub_C(32), nonce_C(16)
  *   P->C HELLO_ACK : proto_sel,            eph_pub_P(32), nonce_P(16),
  *                    confirm_P(32) = HMAC(PSK, "BLcP" || transcript)

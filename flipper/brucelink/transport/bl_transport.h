@@ -2,10 +2,16 @@
  * BruceLink Flipper app — transport abstraction.
  *
  * The app talks to the protocol core through this interface, so the UI
- * and session logic are independent of whether frames travel over BLE,
- * a serial line, or an in-process loopback. Each transport delivers and
- * accepts whole protocol frames; fragmentation for a byte- or MTU-
- * limited link is the transport's own concern (see bl_reasm/bl_cobs).
+ * and session logic are independent of whether frames travel over BLE or
+ * an in-process loopback. A transport delivers and accepts whole protocol
+ * frames; fragmentation is its own concern (bl_reasm).
+ *
+ * Lifecycle: start() brings the transport up (BLE: start the GATT profile
+ * and advertise; loopback: nothing to wait for). A *link* then comes and
+ * goes on its own: link_id() is 0 while no peer can receive, and a
+ * different non-zero value for every new link, so a drop-and-reconnect
+ * between two polls is never mistaken for the same link. All calls are
+ * made from the app thread.
  * SPDX-License-Identifier: MIT
  */
 #pragma once
@@ -23,13 +29,22 @@ typedef void (*BlTransportRxCb)(const uint8_t* frame, size_t len, void* ctx);
 
 typedef struct {
     const char* name;
-    bool (*connect)(BlTransport* t);
-    void (*disconnect)(BlTransport* t);
-    /* Queue one complete frame for transmission. Returns BL_OK or <0. */
+    /* Bring the transport up. False if it cannot start (e.g. BLE refused). */
+    bool (*start)(BlTransport* t);
+    /* Tear it down and release the radio. Safe if start() failed. */
+    void (*stop)(BlTransport* t);
+    /* 0 = no link; otherwise an id unique to the current link. */
+    uint32_t (*link_id)(BlTransport* t);
+    /* Force the current link down (e.g. handshake timed out); the
+     * transport stays started and waits for a new link. */
+    void (*drop_link)(BlTransport* t);
+    /* Send one complete frame. Returns BL_OK or a negative bl_result_t. */
     int (*send)(BlTransport* t, const uint8_t* frame, size_t len);
     /* Deliver any received frames via cb(ctx). Non-blocking. */
     void (*poll)(BlTransport* t, BlTransportRxCb cb, void* ctx);
-    bool (*is_connected)(BlTransport* t);
+    /* One short line for the status screen (e.g. "advertising"). */
+    const char* (*status)(BlTransport* t);
+    void (*free)(BlTransport* t);
 } BlTransportApi;
 
 struct BlTransport {
@@ -37,26 +52,11 @@ struct BlTransport {
     void* impl;
 };
 
-static inline bool bl_transport_connect(BlTransport* t) {
-    return t && t->api->connect(t);
-}
-static inline void bl_transport_disconnect(BlTransport* t) {
-    if(t) t->api->disconnect(t);
-}
-static inline int bl_transport_send(BlTransport* t, const uint8_t* f, size_t n) {
-    return t ? t->api->send(t, f, n) : BL_E_ARG;
-}
-static inline void bl_transport_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
-    if(t) t->api->poll(t, cb, ctx);
-}
-static inline bool bl_transport_is_connected(BlTransport* t) {
-    return t && t->api->is_connected(t);
-}
-
-/* Factory for the in-process loopback transport (runs a mock StickS3
- * peripheral so the app is exercisable without hardware). */
+/* In-process loopback: a mock StickS3 running the real protocol, so the
+ * app is exercisable without hardware. */
 BlTransport* bl_transport_loopback_alloc(void);
-void bl_transport_loopback_free(BlTransport* t);
+/* BLE: the Flipper as a GATT peripheral for the StickS3 (ADR 0001). */
+BlTransport* bl_transport_ble_alloc(void);
 
 #ifdef __cplusplus
 }

@@ -1,31 +1,25 @@
 /*
- * BruceLink Flipper app — native UI + session driver.
+ * BruceLink Flipper app — native UI.
  *
  * A ViewDispatcher app: a main menu, a scrollable text view for
- * device info / capabilities / results, and a settings list. Protocol
- * traffic runs over a BlTransport (loopback by default; BLE is a
- * hardware-session stub). A periodic timer pumps the transport, feeds
- * received frames into the central session, and updates the UI. The
- * app stays responsive and reports a clean status when the peer is
- * absent or disconnects.
+ * connection status / device info / capabilities / results, and a
+ * settings list. All protocol logic lives in the host-tested shared core:
+ * bl_client drives the handshake, the single outstanding request and
+ * their timeouts; a BlTransport (BLE to a StickS3, or the built-in
+ * loopback mock) carries the frames. This file only connects those to the
+ * screen, from the ViewDispatcher tick on the app thread.
  * SPDX-License-Identifier: MIT
  */
 #include "brucelink_i.h"
 
 #include "../../shared/brucelink_core/src/bl_capability.h"
+#include "../../shared/brucelink_core/src/bl_demo_key.h"
 
 #include <furi_hal_random.h>
 #include <stdio.h>
 #include <string.h>
 
-/* The demo pairing key, matching the loopback mock peripheral. On real
- * hardware this is provisioned per device, not compiled in. */
-static const uint8_t DEMO_PSK[BL_KEY_LEN] = {
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-    0xcc, 0xdd, 0xee, 0xff, 0x00, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a,
-    0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0};
-
-extern const BlTransportApi BL_BLE_TRANSPORT_API;
+#define BL_TICK_MS 50
 
 typedef enum {
     MenuConnect,
@@ -36,74 +30,103 @@ typedef enum {
     MenuAbout,
 } MenuIndex;
 
+static const char* const TRANSPORT_NAMES[BlTransportCount] = {"Loopback", "BLE"};
+
 static void bl_rng(void* ctx, uint8_t* buf, size_t len) {
     UNUSED(ctx);
     furi_hal_random_fill_buf(buf, len);
 }
 
-void bl_app_set_text(BruceLinkApp* app, const char* title, const char* body) {
+static void bl_show_text(BruceLinkApp* app, const char* title, const char* body) {
     widget_reset(app->widget);
-    widget_add_string_element(
-        app->widget, 2, 2, AlignLeft, AlignTop, FontPrimary, title);
+    widget_add_string_element(app->widget, 2, 2, AlignLeft, AlignTop, FontPrimary, title);
     widget_add_text_scroll_element(app->widget, 2, 16, 124, 46, body);
 }
 
-void bl_app_show_view(BruceLinkApp* app, BlViewId id) {
-    view_dispatcher_switch_to_view(app->view_dispatcher, id);
-}
+/* ----------------------------------------------------- connection */
 
-/* ------------------------------------------------- session / transport */
-
-static void bl_set_status(BruceLinkApp* app, const char* s) {
-    strncpy(app->status, s, sizeof(app->status) - 1);
-    app->status[sizeof(app->status) - 1] = 0;
-}
-
-static void bl_send_frame(BruceLinkApp* app, const uint8_t* f, size_t n) {
-    int rc = bl_transport_send(app->transport, f, n);
-    if(rc != BL_OK) {
-        bl_set_status(app, bl_result_str(rc));
+static const char* bl_client_state_text(const BruceLinkApp* app) {
+    switch(app->client.state) {
+    case BL_CL_HANDSHAKING: return "authenticating...";
+    case BL_CL_READY: return "connected";
+    case BL_CL_FAILED:
+        return app->client.last_error == BL_E_AUTH ? "wrong pairing key" : "handshake failed";
+    default:
+        /* the StickS3 drops a link it could not authenticate; keep saying why */
+        return app->client.last_error == BL_E_AUTH ? "wrong pairing key" : "waiting for StickS3";
     }
 }
 
-/* Start a fresh session and kick off the handshake. */
-static void bl_begin_connect(BruceLinkApp* app) {
-    if(app->transport) {
-        bl_transport_disconnect(app->transport);
-        bl_transport_loopback_free(app->transport);
-        app->transport = NULL;
-    }
-    /* only the loopback transport is wired up in software today */
-    app->transport = bl_transport_loopback_alloc();
-    if(!bl_transport_connect(app->transport)) {
-        bl_set_status(app, "connect failed");
+/* Redraw the Connection screen if it is the one on display. */
+static void bl_refresh_connection(BruceLinkApp* app) {
+    if(app->screen != BlScreenConnection) return;
+    if(app->transport == NULL) {
+        bl_show_text(app, "Connection", "not started\nPress Connect.");
         return;
     }
-    bl_session_init(&app->session, BL_ROLE_CENTRAL, DEMO_PSK, bl_rng, NULL);
-    app->have_session = true;
-    uint8_t hello[BL_HS_FRAME_MAX];
-    int n = bl_session_start(&app->session, hello, sizeof(hello));
-    if(n > 0) {
-        bl_set_status(app, "handshaking...");
-        bl_send_frame(app, hello, (size_t)n);
-    }
+    app->shown_status = app->transport->api->status(app->transport);
+    snprintf(
+        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure",
+        app->shown_status, bl_client_state_text(app));
+    bl_show_text(app, "Connection", app->text);
 }
 
-/* Request helpers once established. */
-static void bl_request(BruceLinkApp* app, uint8_t type, const uint8_t* pl, uint16_t len) {
-    if(!app->have_session || !bl_session_established(&app->session)) {
-        bl_set_status(app, "not connected");
+static void bl_send(BruceLinkApp* app, const uint8_t* frame, size_t len) {
+    if(app->transport) (void)app->transport->api->send(app->transport, frame, len);
+}
+
+static void bl_stop_transport(BruceLinkApp* app) {
+    if(app->transport == NULL) return;
+    app->transport->api->free(app->transport); /* stops it first */
+    app->transport = NULL;
+    app->link_id = 0;
+    bl_client_link_down(&app->client);
+}
+
+/* (Re)start the transport chosen in Settings. The handshake begins by
+ * itself, from the tick, as soon as a link appears. */
+static void bl_connect(BruceLinkApp* app) {
+    bl_stop_transport(app);
+    app->client.last_error = BL_OK;
+    app->transport = (app->transport_kind == BlTransportBle) ? bl_transport_ble_alloc() :
+                                                             bl_transport_loopback_alloc();
+    if(!app->transport->api->start(app->transport)) {
+        bl_stop_transport(app);
+        if(app->screen == BlScreenConnection)
+            bl_show_text(app, "Connection", "could not start transport\n(is Bluetooth available?)");
         return;
     }
-    uint8_t out[BL_MAX_MSG];
-    int n = bl_session_seal(&app->session, type, 0, pl, len, out, sizeof(out));
-    if(n > 0) bl_send_frame(app, out, (size_t)n);
+    bl_refresh_connection(app);
+}
+
+/* ------------------------------------------------------- requests */
+
+static void bl_request(
+    BruceLinkApp* app,
+    const char* title,
+    uint8_t type,
+    const uint8_t* pl,
+    uint16_t len) {
+    app->screen = BlScreenRequest;
+    app->req_title = title;
+    uint8_t out[BL_HDR_LEN + 16 + BL_MAC_TAG_LEN]; /* requests carry tiny payloads */
+    int n = bl_client_request(&app->client, type, pl, len, furi_get_tick(), out, sizeof(out));
+    if(n == BL_E_STATE) {
+        bl_show_text(app, title, "not connected\nUse Connect first.");
+    } else if(n == BL_E_BUSY) {
+        bl_show_text(app, title, "busy: still waiting for the\nprevious reply");
+    } else if(n < 0) {
+        bl_show_text(app, title, bl_result_str(n));
+    } else {
+        bl_show_text(app, title, "requesting...");
+        bl_send(app, out, (size_t)n);
+    }
 }
 
 /* Render a CAPS payload as a text list. */
 static void bl_render_caps(BruceLinkApp* app, const uint8_t* buf, size_t len) {
     if(bl_caps_validate(buf, len) < 0) {
-        bl_app_set_text(app, "Capabilities", "malformed CAPS");
+        bl_show_text(app, "Capabilities", "malformed reply");
         return;
     }
     char* p = app->text;
@@ -124,109 +147,144 @@ static void bl_render_caps(BruceLinkApp* app, const uint8_t* buf, size_t len) {
         w += add;
         off += 6u + nlen;
     }
-    bl_app_set_text(app, "Capabilities", app->text);
+    bl_show_text(app, "Capabilities", app->text);
 }
 
-/* Received-frame handler (app thread, from the tick event). */
-static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
-    BruceLinkApp* app = ctx;
-    if(!app->have_session) return;
+static void bl_show_payload(BruceLinkApp* app, const char* title, const bl_frame_t* f) {
+    uint16_t n = f->payload_len < sizeof(app->text) - 1 ? f->payload_len :
+                                                           (uint16_t)(sizeof(app->text) - 1);
+    if(n) memcpy(app->text, f->payload, n);
+    app->text[n] = 0;
+    bl_show_text(app, title, app->text);
+}
 
-    if(!bl_session_established(&app->session)) {
-        /* drive central handshake steps */
-        uint8_t out[BL_HS_FRAME_MAX];
-        size_t olen = 0;
-        int rc = bl_session_handshake_rx(&app->session, frame, len, out, sizeof(out), &olen);
-        if(rc != BL_OK) {
-            bl_set_status(app, "auth failed");
-            return;
-        }
-        if(olen) bl_send_frame(app, out, olen);
-        if(bl_session_established(&app->session)) {
-            bl_set_status(app, "connected");
-            bl_app_set_text(app, "Connection", "connected\nfetching device info...");
-            /* auto-pull device info on connect */
-            bl_request(app, BL_MSG_DEVICE_INFO_REQ, NULL, 0);
-        }
-        return;
-    }
-
-    bl_frame_t f;
-    int rc = bl_session_open(&app->session, frame, len, &f);
-    if(rc != BL_OK) {
-        bl_set_status(app, bl_result_str(rc));
-        return;
-    }
-    switch(f.type) {
-    case BL_MSG_DEVICE_INFO: {
-        char body[BL_TEXT_MAX];
-        uint16_t n = f.payload_len < sizeof(body) - 1 ? f.payload_len : sizeof(body) - 1;
-        memcpy(body, f.payload, n);
-        body[n] = 0;
-        bl_app_set_text(app, "Device Info", body);
+/* An authenticated message from the StickS3. */
+static void bl_on_message(BruceLinkApp* app, const bl_frame_t* f) {
+    if(app->screen != BlScreenRequest) return; /* user moved on */
+    switch(f->type) {
+    case BL_MSG_DEVICE_INFO: bl_show_payload(app, "Device Info", f); break;
+    case BL_MSG_CAPS: bl_render_caps(app, f->payload, f->payload_len); break;
+    case BL_MSG_CMD_RESP: bl_show_payload(app, "Wi-Fi Scan", f); break;
+    case BL_MSG_ERROR: {
+        uint16_t code = f->payload_len >= 2 ?
+                            (uint16_t)(f->payload[0] | (f->payload[1] << 8)) :
+                            (uint16_t)BL_ERR_INTERNAL;
+        snprintf(app->text, sizeof(app->text), "StickS3 refused:\n%s", bl_wire_err_str(code));
+        bl_show_text(app, app->req_title ? app->req_title : "Error", app->text);
         break;
     }
-    case BL_MSG_CAPS:
-        bl_render_caps(app, f.payload, f.payload_len);
-        break;
-    case BL_MSG_CMD_RESP: {
-        char body[BL_TEXT_MAX];
-        uint16_t n = f.payload_len < sizeof(body) - 1 ? f.payload_len : sizeof(body) - 1;
-        memcpy(body, f.payload, n);
-        body[n] = 0;
-        bl_app_set_text(app, "Wi-Fi Scan", body);
-        break;
-    }
-    case BL_MSG_PONG: bl_set_status(app, "pong"); break;
-    case BL_MSG_ERROR:
-        bl_set_status(app, f.payload_len >= 1 ? bl_wire_err_str(f.payload[0]) : "error");
-        break;
     default: break;
     }
 }
 
-/* ViewDispatcher tick: runs on the app thread between GUI events. */
+/* ----------------------------------------------- tick (app thread) */
+
+/* A complete frame from the transport. */
+static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
+    BruceLinkApp* app = ctx;
+    uint8_t reply[BL_CLIENT_HS_FRAME_MAX];
+    size_t reply_len = 0;
+    bl_frame_t msg;
+    bool have_msg = false;
+    const bl_client_state_t before = app->client.state;
+    (void)bl_client_rx(
+        &app->client, frame, len, reply, sizeof(reply), &reply_len, &msg, &have_msg);
+    if(reply_len) bl_send(app, reply, reply_len);
+    if(have_msg) bl_on_message(app, &msg);
+    if(app->client.state != before) bl_refresh_connection(app);
+}
+
 static void bl_tick(void* ctx) {
     BruceLinkApp* app = ctx;
-    if(app->transport && bl_transport_is_connected(app->transport)) {
-        bl_transport_poll(app->transport, bl_on_frame, app);
+    if(app->connect_pending) {
+        /* Switching BLE profiles blocks for a few seconds, so it runs
+         * here, after the "starting..." screen is up, not in the menu
+         * callback. */
+        app->connect_pending = false;
+        bl_connect(app);
+    }
+    BlTransport* t = app->transport;
+    if(t == NULL) return;
+    const uint32_t now = furi_get_tick();
+
+    t->api->poll(t, bl_on_frame, app);
+
+    /* Link came up, went down, or was replaced by a new one. */
+    const uint32_t link = t->api->link_id(t);
+    if(link != app->link_id) {
+        app->link_id = link;
+        bl_client_link_down(&app->client);
+        if(link != 0) {
+            /* Start authenticating immediately: the StickS3 drops links
+             * that are not authenticated within its deadline. */
+            uint8_t hello[BL_CLIENT_HS_FRAME_MAX];
+            int n = bl_client_link_up(&app->client, now, hello, sizeof(hello));
+            if(n > 0) bl_send(app, hello, (size_t)n);
+        } else if(app->screen == BlScreenRequest) {
+            bl_show_text(app, app->req_title ? app->req_title : "BruceLink", "link lost");
+        }
+        bl_refresh_connection(app);
+    }
+
+    switch(bl_client_tick(&app->client, now)) {
+    case BL_CL_EVT_HANDSHAKE_TIMEOUT:
+        /* Give up on this link; the transport waits for a fresh one. */
+        t->api->drop_link(t);
+        bl_refresh_connection(app);
+        break;
+    case BL_CL_EVT_REQUEST_TIMEOUT:
+        if(app->screen == BlScreenRequest)
+            bl_show_text(
+                app, app->req_title ? app->req_title : "BruceLink", "no reply (timed out)");
+        break;
+    default: break;
+    }
+
+    /* The transport's own state (advertising / connecting / linked) changes
+     * without the link id changing, e.g. when a central connects but has
+     * not subscribed yet. Statuses are string literals: compare pointers. */
+    if(app->screen == BlScreenConnection && t->api->status(t) != app->shown_status) {
+        bl_refresh_connection(app);
     }
 }
 
-/* ----------------------------------------------------------- UI glue */
+/* ----------------------------------------------------------- menus */
 
 static void bl_submenu_cb(void* ctx, uint32_t index) {
     BruceLinkApp* app = ctx;
     switch(index) {
     case MenuConnect:
-        bl_begin_connect(app);
-        bl_app_set_text(app, "Connection", app->status);
-        bl_app_show_view(app, BlViewText);
+        app->screen = BlScreenConnection;
+        bl_show_text(app, "Connection", "starting...");
+        app->connect_pending = true; /* done by the next tick */
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     case MenuDeviceInfo:
-        bl_app_set_text(app, "Device Info", "requesting...");
-        bl_request(app, BL_MSG_DEVICE_INFO_REQ, NULL, 0);
-        bl_app_show_view(app, BlViewText);
+        bl_request(app, "Device Info", BL_MSG_DEVICE_INFO_REQ, NULL, 0);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
-    case MenuWifiScan:
-        bl_app_set_text(app, "Wi-Fi Scan", "scanning...");
-        bl_request(app, BL_MSG_CMD_REQ, (const uint8_t*)"\x10\x00", 2);
-        bl_app_show_view(app, BlViewText);
+    case MenuWifiScan: {
+        const uint8_t cap[2] = {(uint8_t)(BL_CAP_WIFI_SCAN & 0xFF), (uint8_t)(BL_CAP_WIFI_SCAN >> 8)};
+        bl_request(app, "Wi-Fi Scan", BL_MSG_CMD_REQ, cap, sizeof(cap));
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
+    }
     case MenuCapabilities:
-        bl_app_set_text(app, "Capabilities", "requesting...");
-        bl_request(app, BL_MSG_CAPS_REQ, NULL, 0);
-        bl_app_show_view(app, BlViewText);
+        bl_request(app, "Capabilities", BL_MSG_CAPS_REQ, NULL, 0);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
-    case MenuSettings: bl_app_show_view(app, BlViewSettings); break;
+    case MenuSettings:
+        app->screen = BlScreenNone;
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewSettings);
+        break;
     case MenuAbout:
-        bl_app_set_text(
+        app->screen = BlScreenStatic;
+        bl_show_text(
             app, "BruceLink",
-            "Native remote for a StickS3 running Bruce.\n"
-            "Authenticated BLE bridge.\n"
-            "Transport: loopback demo until BLE is\nhardware-verified.\n"
+            "Remote for a StickS3 running\nBruce, over an authenticated\nBLE link.\n\n"
+            "DEMO KEY build: the pairing\nkey is public and the link\nis not encrypted. Not secure\nuntil key setup is added.\n\n"
             "github.com/soupscode/BruceLink");
-        bl_app_show_view(app, BlViewText);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     default: break;
     }
@@ -242,14 +300,24 @@ static uint32_t bl_back_to_menu_cb(void* ctx) {
     return BlViewMenu;
 }
 
+static void bl_transport_changed_cb(VariableItem* item) {
+    BruceLinkApp* app = variable_item_get_context(item);
+    uint8_t idx = variable_item_get_current_value_index(item);
+    if(idx >= BlTransportCount) idx = 0;
+    variable_item_set_current_value_text(item, TRANSPORT_NAMES[idx]);
+    if((BlTransportKind)idx != app->transport_kind) {
+        app->transport_kind = (BlTransportKind)idx;
+        bl_stop_transport(app); /* takes effect on the next Connect */
+    }
+}
+
 static void bl_active_toggle_cb(VariableItem* item) {
     BruceLinkApp* app = variable_item_get_context(item);
     uint8_t idx = variable_item_get_current_value_index(item);
     app->active_ops_enabled = idx == 1;
     variable_item_set_current_value_text(item, idx == 1 ? "Enabled" : "Disabled");
-    /* Note: enabling here only reflects operator intent in the UI. The
-     * active-ops gate is enforced on the StickS3 and only honoured over an
-     * authenticated session; see bl_safety. */
+    /* Records operator intent only. The gate is enforced on the StickS3
+     * and only over an authenticated session; see bl_safety. */
 }
 
 static void bl_build_menu(BruceLinkApp* app) {
@@ -266,7 +334,11 @@ static void bl_build_menu(BruceLinkApp* app) {
 static void bl_build_settings(BruceLinkApp* app) {
     variable_item_list_reset(app->settings);
     VariableItem* it = variable_item_list_add(
-        app->settings, "Active ops", 2, bl_active_toggle_cb, app);
+        app->settings, "Transport", BlTransportCount, bl_transport_changed_cb, app);
+    variable_item_set_current_value_index(it, (uint8_t)app->transport_kind);
+    variable_item_set_current_value_text(it, TRANSPORT_NAMES[app->transport_kind]);
+
+    it = variable_item_list_add(app->settings, "Active ops", 2, bl_active_toggle_cb, app);
     variable_item_set_current_value_index(it, 0);
     variable_item_set_current_value_text(it, "Disabled");
 }
@@ -274,6 +346,9 @@ static void bl_build_settings(BruceLinkApp* app) {
 static BruceLinkApp* bl_app_alloc(void) {
     BruceLinkApp* app = malloc(sizeof(BruceLinkApp));
     memset(app, 0, sizeof(*app));
+    app->transport_kind = BlTransportLoopback;
+    bl_client_init(&app->client, BRUCELINK_DEMO_PSK, bl_rng, NULL);
+
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
     app->view_dispatcher = view_dispatcher_alloc();
@@ -297,16 +372,14 @@ static BruceLinkApp* bl_app_alloc(void) {
         app->view_dispatcher, BlViewSettings, variable_item_list_get_view(app->settings));
 
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
-    view_dispatcher_set_tick_event_callback(app->view_dispatcher, bl_tick, furi_ms_to_ticks(50));
+    view_dispatcher_set_tick_event_callback(
+        app->view_dispatcher, bl_tick, furi_ms_to_ticks(BL_TICK_MS));
     return app;
 }
 
 static void bl_app_free(BruceLinkApp* app) {
-    if(app->transport) {
-        bl_transport_disconnect(app->transport);
-        bl_transport_loopback_free(app->transport);
-    }
-    if(app->have_session) bl_session_close(&app->session);
+    /* Hands the radio back to the firmware's default BLE profile. */
+    bl_stop_transport(app);
 
     view_dispatcher_remove_view(app->view_dispatcher, BlViewMenu);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewText);
@@ -324,7 +397,6 @@ static void bl_app_free(BruceLinkApp* app) {
 int32_t brucelink_app(void* p) {
     UNUSED(p);
     BruceLinkApp* app = bl_app_alloc();
-    bl_set_status(app, "idle");
     view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
     view_dispatcher_run(app->view_dispatcher);
     bl_app_free(app);

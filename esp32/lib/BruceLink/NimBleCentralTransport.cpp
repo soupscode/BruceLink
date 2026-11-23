@@ -28,8 +28,9 @@ void NimBleCentralTransport::begin(
 }
 
 size_t NimBleCentralTransport::usableMtu(uint16_t att_mtu) {
-    // ATT header is 3 bytes; usable notify/write payload = MTU - 3.
-    return att_mtu > BL_FRAG_HDR + 4 ? (size_t)att_mtu - 3 : 20;
+    // Shared rule (bl_uuid.h): MTU - 3, never above what the Flipper's
+    // characteristics accept, whatever MTU NimBLE ends up negotiating.
+    return bl_ble_chunk_for_mtu(att_mtu);
 }
 
 size_t NimBleCentralTransport::addrId(const NimBLEAddress& a, uint8_t out[PeerCooldown::kIdMax]) {

@@ -15,7 +15,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Reproducible host build + tests | ✅ | `tests/c` Makefile, ASan+UBSan |
 | Flipper FAP build (ufbt, mntm-012 SDK) | ✅ | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | ✅ | PlatformIO SUCCESS, RAM 10.1 % / Flash 17.1 % |
-| ESP32 bridge core host tests | ✅ | 128 checks, ASan+UBSan (`bl_bridge_tests`) |
+| ESP32 bridge core host tests | ✅ | 188 checks, ASan+UBSan (`bl_bridge_tests`), incl. the Flipper client driven against the bridge |
 | PR #1 review defects, round 1 (6 + 3 found while fixing) | ✅ | reproduced on `31629db`, fixed, regression-tested |
 | PR #1 review defects, round 2 (2 + 2 found while fixing) | ✅ bridge / 🟡 transport | rate bypass reproduced on `9f89c4d`; link supervision host-tested; NimBLE transport compile-checked only |
 | Crypto (SHA-256/HMAC/HKDF/X25519) | ✅ | RFC/NIST known-answer tests pass |
@@ -27,9 +27,11 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Simulated transport (fault injection) | ✅ | clean bulk, corruption, dropped fragment, duplicate |
 | C↔Python wire interop | ✅ | frame+MAC, COBS, pcap, CRC32 byte-identical |
 | Ping/pong, device info, status, errors | 🟡 | on loopback + bridge core; not on air |
-| Timeouts / cancellation (ESTOP) | 🟡 | ESTOP + link-loss path in bridge; app-side timeouts 📐 |
+| Timeouts / cancellation (ESTOP) | 🟡 | ESTOP + link-loss path in bridge; app-side handshake/request timeouts host-tested (`bl_client`), UI path not yet run on a device |
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
-| BLE transport (Flipper peripheral profile) | 📐 | ADR 0001; FAP stub returns not-connected |
+| BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; first radio run 2026-11-23 against a phone scanner (owner-reported: advertises, connects, subscription and `HELLO` notifications work). **Not yet run against the StickS3** |
+| Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
+| Pairing key | ⬜ | both builds use the public demo key until M5.3 |
 
 ## Native application (Milestone 4)
 
@@ -38,7 +40,8 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Connection screen / menu / settings / about | ✅ runs on a Flipper over loopback (owner-reported, 2026-11-23) |
 | Device info, capabilities, Wi-Fi scan views | 🟡 builds; rendered from protocol replies |
 | BLE discovery screen | ⬜ |
-| Responsive on disconnect / recovery | 🟡 status reporting; auto-reconnect ⬜ |
+| Transport choice (Loopback / BLE) in Settings | 🟡 builds; not yet run on a device |
+| Responsive on disconnect / recovery | 🟡 live connection status, timeouts, re-handshake on every new link (host-tested logic) |
 
 ## Bruce integration (Milestone 5)
 
@@ -63,4 +66,5 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 ## Hardware
 
 Only the Flipper app over its loopback (mock) transport has run on a device
-(2026-11-23). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.
+(2026-11-23, the build before the BLE transport and the client rewrite), and
+the BLE profile against a phone BLE scanner (same day, owner-reported). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.

@@ -121,3 +121,13 @@ remote frontend *adds* controls that the local UI lacks (authenticated link,
 default-off active ops, link-loss auto-stop, rate limit, optional target scope).
 Active modes are advertised `REQUIRES_AUTH` + `HW_UNVERIFIED` and are to be used
 only in authorized, isolated lab environments.
+
+## Amendment — demo key (2026-11-23)
+
+Connection-level authorization only means something with a private key. Until
+key provisioning exists (M5.3) both builds compile in a published demo key, so
+a bridge that holds it treats the session as unauthenticated for anything that
+transmits: "enable active ops" and every `BL_CAP_F_ACTIVE_RF` capability
+return `not_authorized`, and `STATUS` reports `demo:1`. Passive requests are
+still served so the link can be brought up. Host-tested
+(`t_demo_key_never_enables_active_ops`).

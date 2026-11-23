@@ -21,7 +21,7 @@ It reuses Bruce's existing functions; it does not reimplement them.
 │   └───────────────────┘ │                                        │ ├──────────▼─────────────┤ │
 └─────────────────────────┘                                        │ │ BruceBackend (glue)    │ │
                                                                     │ │  → Bruce sniffer/scan/ │ │
-   * BLE transport is a hardware-session stub today;               │ │    TX via existing     │ │
+   * BLE transport: implemented, not yet run on a radio;           │ │    TX via existing     │ │
      the loopback transport runs the real protocol                 │ │    Bruce functions     │ │
      against an in-process mock peripheral.                        │ └────────────────────────┘ │
                                                                     └──────────────────────────┘
@@ -51,9 +51,13 @@ A native ViewDispatcher app: a main menu, a scrollable text view (device info /
 capabilities / results), and a settings list. Protocol traffic runs through a
 `BlTransport` abstraction. Two transports: a **loopback** (an in-process mock
 StickS3 that runs the real session + answers requests, so the app is usable
-without hardware) and a **BLE** transport (hardware-session stub, designed in
-ADR 0001). A 50 ms timer pumps the transport and feeds frames to the central
-session; the UI stays responsive and reports clean status if the peer is absent.
+without hardware) and a **BLE** transport (a FAP-owned GATT peripheral profile,
+ADR 0001; not yet run on a radio), chosen in Settings. The 50 ms ViewDispatcher
+tick polls the transport on the app thread and feeds frames to `bl_client`, the
+shared-core state machine that owns the handshake, the one outstanding request
+and their timeouts. A transport reports a link id that changes with every new
+link; the app starts a fresh handshake on each change. The UI shows live
+connection status and recovers from timeouts and link loss.
 
 ## StickS3 bridge (`esp32/lib/BruceLink` + `esp32/src/modules/brucelink`)
 

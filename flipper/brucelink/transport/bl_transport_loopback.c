@@ -12,26 +12,22 @@
  */
 #include "bl_transport.h"
 
-#include "../brucelink_i.h" /* BL_HS_FRAME_MAX */
 #include "../../../shared/brucelink_core/src/bl_capability.h"
+#include "../../../shared/brucelink_core/src/bl_client.h" /* BL_CLIENT_HS_FRAME_MAX */
 #include "../../../shared/brucelink_core/src/bl_session.h"
+#include "../../../shared/brucelink_core/src/bl_demo_key.h"
 
 #include <furi.h>
 #include <furi_hal_random.h>
 #include <string.h>
 
-/* The demo pairing key. On real hardware the key is provisioned per
- * device; this constant only pairs the app with its built-in mock. */
-static const uint8_t LOOPBACK_PSK[BL_KEY_LEN] = {
-    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-    0xcc, 0xdd, 0xee, 0xff, 0x00, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a,
-    0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0};
-
 #define RXQ 4
 
 typedef struct {
     bl_session_t peer; /* the mock peripheral session */
-    bool connected;
+    bool started;
+    uint32_t link; /* 0 = down; bumped for every new link */
+    uint32_t next_link;
     /* frames queued from peripheral back to the app */
     uint8_t q[RXQ][BL_MAX_MSG];
     size_t qlen[RXQ];
@@ -55,6 +51,20 @@ static void q_push(Loopback* l, const uint8_t* f, size_t n) {
     l->qlen[l->qtail] = n;
     l->qtail = (uint8_t)((l->qtail + 1) % RXQ);
     l->qcount++;
+}
+
+/* (Re)create the mock peer and present it as a brand-new link. */
+static bool lb_new_link(Loopback* l) {
+    bl_session_close(&l->peer);
+    l->qhead = l->qtail = l->qcount = 0;
+    if(bl_session_init(&l->peer, BL_ROLE_PERIPHERAL, BRUCELINK_DEMO_PSK, loopback_rng, NULL) !=
+       BL_OK) {
+        l->link = 0;
+        return false;
+    }
+    l->link = ++l->next_link;
+    if(l->link == 0) l->link = ++l->next_link; /* 0 is reserved for "down" */
+    return true;
 }
 
 /* Build and queue a sealed response from the mock peripheral. */
@@ -96,30 +106,37 @@ static void mock_handle_request(Loopback* l, const bl_frame_t* f) {
     }
 }
 
-static bool lb_connect(BlTransport* t) {
+static bool lb_start(BlTransport* t) {
     Loopback* l = t->impl;
-    /* (re)initialise the mock peripheral session */
-    if(bl_session_init(&l->peer, BL_ROLE_PERIPHERAL, LOOPBACK_PSK, loopback_rng, NULL) != BL_OK)
-        return false;
-    l->qhead = l->qtail = l->qcount = 0;
-    l->connected = true;
-    return true;
+    l->started = lb_new_link(l);
+    return l->started;
 }
 
-static void lb_disconnect(BlTransport* t) {
+static void lb_stop(BlTransport* t) {
     Loopback* l = t->impl;
     bl_session_close(&l->peer);
-    l->connected = false;
+    l->started = false;
+    l->link = 0;
     l->qhead = l->qtail = l->qcount = 0;
+}
+
+static uint32_t lb_link_id(BlTransport* t) {
+    Loopback* l = t->impl;
+    return l->started ? l->link : 0;
+}
+
+static void lb_drop_link(BlTransport* t) {
+    Loopback* l = t->impl;
+    if(l->started) lb_new_link(l); /* the mock "reconnects" at once */
 }
 
 static int lb_send(BlTransport* t, const uint8_t* frame, size_t len) {
     Loopback* l = t->impl;
-    if(!l->connected) return BL_E_STATE;
+    if(!l->started || l->link == 0) return BL_E_STATE;
     if(!bl_session_established(&l->peer)) {
-        /* drive the handshake on the peripheral side; the AUTH_OK reply
-         * is a sealed frame with no payload, so BL_HS_FRAME_MAX suffices */
-        uint8_t out[BL_HS_FRAME_MAX];
+        /* drive the handshake on the peripheral side; every handshake
+         * frame, incl. the payload-less AUTH_OK, fits the small buffer */
+        uint8_t out[BL_CLIENT_HS_FRAME_MAX];
         size_t olen = 0;
         int rc = bl_session_handshake_rx(&l->peer, frame, len, out, sizeof(out), &olen);
         if(rc != BL_OK) return rc;
@@ -144,18 +161,28 @@ static void lb_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
     }
 }
 
-static bool lb_is_connected(BlTransport* t) {
+static const char* lb_status(BlTransport* t) {
     Loopback* l = t->impl;
-    return l->connected;
+    return l->started ? "loopback (built-in mock)" : "stopped";
+}
+
+static void lb_free(BlTransport* t) {
+    if(!t) return;
+    lb_stop(t);
+    free(t->impl);
+    free(t);
 }
 
 static const BlTransportApi LOOPBACK_API = {
-    .name = "Loopback (demo)",
-    .connect = lb_connect,
-    .disconnect = lb_disconnect,
+    .name = "Loopback",
+    .start = lb_start,
+    .stop = lb_stop,
+    .link_id = lb_link_id,
+    .drop_link = lb_drop_link,
     .send = lb_send,
     .poll = lb_poll,
-    .is_connected = lb_is_connected,
+    .status = lb_status,
+    .free = lb_free,
 };
 
 BlTransport* bl_transport_loopback_alloc(void) {
@@ -165,10 +192,4 @@ BlTransport* bl_transport_loopback_alloc(void) {
     t->api = &LOOPBACK_API;
     t->impl = l;
     return t;
-}
-
-void bl_transport_loopback_free(BlTransport* t) {
-    if(!t) return;
-    free(t->impl);
-    free(t);
 }

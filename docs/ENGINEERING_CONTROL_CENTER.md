@@ -32,7 +32,7 @@ where files overlapped.
 | PCAP + CRC-32 | ✅ | ✅ + interop | ✅ | — |
 | Safety gate | ✅ | ✅ | ✅ | — |
 | Flipper UI + loopback | ✅ | — | ✅ APPCHK | — |
-| Flipper BLE transport | stub | — | ✅ | — |
+| Flipper BLE transport | ✅ | parser + client ✅; radio path — | ✅ APPCHK | — |
 | ESP32 bridge core | ✅ | ✅ 88 checks (host) | ✅ SUCCESS | — |
 | ESP32 NimBLE transport | ✅ | — (needs NimBLE) | ✅ SUCCESS | — |
 | Bruce glue + patch | written | — | ⬜ (Bruce tree) | — |
