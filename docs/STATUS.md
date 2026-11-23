@@ -31,7 +31,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
 | BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; run on hardware 2026-11-23 (owner-reported): against a phone scanner, then linked with the StickS3 — handshake completes, Device Info works |
 | Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
-| Pairing key | ⬜ | both builds use the public demo key until M5.3 |
+| Pairing (ADR 0005) | 🟡 | core: 13 host tests incl. man in the middle + Python recomputation; bridge pairing mode: 5 host tests; Flipper and StickS3 screens + key storage build; **not yet run on hardware**. Demo key now only in the Flipper's loopback mock |
 
 ## Native application (Milestone 4)
 
@@ -50,7 +50,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, four scans, no leak)** with the reduced, transient driver start (ADR 0004): 4.8 s each; guard headroom only 1.8 kB in steady state; capture / active op unavailable (placeholder hooks) |
 | Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
-| Pairing-key provisioning | 📐 |
+| Pairing-key provisioning | 🟡 pairing (ADR 0005) builds in Bruce; key in NVS; not yet run |
 
 ## Phase 2 — capture & research capabilities
 

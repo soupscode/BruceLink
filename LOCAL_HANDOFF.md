@@ -31,10 +31,10 @@ verified from what was not.
 
 | Check | Result |
 |---|---|
-| Host C core + Flipper event parser, ASan+UBSan | 1775 checks, 0 failed |
-| ESP32 bridge core on host (incl. Flipper client ↔ bridge), ASan+UBSan | 188 checks, 0 failed |
+| Host C core + Flipper event parser, ASan+UBSan | 2137 checks, 0 failed |
+| ESP32 bridge core on host (incl. Flipper client ↔ bridge, pairing mode), ASan+UBSan | 266 checks, 0 failed |
 | cppcheck (core C + bridge C++) | clean |
-| Python ref + C↔Python interop + wrapper check | 13 tests OK |
+| Python ref + C↔Python interop (incl. pairing) + wrapper + installer checks | 20 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.1 %) |
 | Bruce 1.17 + BruceLink, `m5stack-sticks3` (dependency sources from GitHub) | SUCCESS, 4.83 MB merged image, not flashed |
@@ -109,12 +109,11 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
   time is unmeasured. If Connect over BLE
   loops between `authenticating...` and `BLE advertising`, measure first.
-- **No link encryption and a public key.** GATT is open and unpaired; frames
-  are authenticated but readable on air (M4.6). Both builds use the demo key
-  (M5.3), so the bridge refuses all active ops (`STATUS` shows `demo:1`).
-- The Bruce build with BruceLink **compiles and links but has never been
-  flashed**. Expect first-run problems in `BruceLinkModule` (task, NimBLE
-  ownership, memory) rather than in the protocol.
+- **No link encryption.** GATT is open and unpaired at the BLE level; frames
+  are authenticated but readable on air (M4.6).
+- **Pairing (ADR 0005) has not run on hardware.** It replaces the demo key on
+  both devices: Connect over BLE and Toggle BruceLink now require it. If it
+  fails on the device, the Flipper's loopback mode still works (demo key).
 - Capture and active ops are "not available" in this build (placeholder hooks).
 - After switching BruceLink off, it may not start again until the StickS3 is
   rebooted (`not enough memory for BLE`), in particular once Bruce's own Wi-Fi
@@ -129,8 +128,9 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   e-stop by design. Test with `HARDWARE_TESTING.md` step 9.
 - BLE + Wi-Fi-promiscuous coexistence is unmanaged upstream (no `esp_coex`).
 - Full raw pcap is SD-gated on a bare StickS3 (by design, refused).
-- The demo pairing key (`bl_demo_key.h`) is compiled into both devices; real
-  key provisioning (`/brucelink.json`) is not implemented.
+- The StickS3 keeps the pairing in NVS; flashing the merged image at `0x0`
+  erases it (flash `firmware.bin` at `0x10000` to keep it). The Flipper's key
+  file only decrypts on the Flipper that wrote it.
 - A reply that arrives after its request timed out is shown as if it answered
   the next request (no request id yet; M4.7).
 - Observation: during the cloud session the capability flag
@@ -141,14 +141,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. The link works on hardware (2026-11-23, owner-reported: `connected`, Device
-   Info correct). Finish `HARDWARE_TESTING.md` step 5: Capabilities, Wi-Fi
-   Scan, timings, recovery. Then key provisioning (M5.3), which every active
-   op waits on, and the headless sniffer hooks (`PATCH.md`, M5.2). The
-   Flipper profile has passed the phone-scanner check (`HARDWARE_TESTING.md`
-   step 3b, owner-reported; see `docs/TEST_RESULTS.md` for what was and was
-   not confirmed).
-2. `HARDWARE_TESTING.md` step 5: the full link with the StickS3.
-3. Key provisioning (M5.3) — required before any active op can be enabled —
-   then link confidentiality (M4.6).
-4. Run `HARDWARE_TESTING.md` steps 5–9; update the capability matrix HW column.
+1. Run pairing on hardware (`HARDWARE_TESTING.md` step 4b), then step 5 with
+   the paired key. Fix what breaks.
+2. Headless sniffer hooks (`PATCH.md`, M5.2), using the reduced Wi-Fi start
+   from ADR 0004 — capture is the next user-visible feature.
+3. Link confidentiality (M4.6): AEAD with the session keys.
+4. Widen the Wi-Fi memory headroom (ADR 0004), re-enabling without reboot
+   (M5.6), BLE ownership in Bruce (M5.4).

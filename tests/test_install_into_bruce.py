@@ -62,10 +62,12 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertFalse((mod / "PATCH.md").exists())  # docs are not installed
         once = self.menu.read_text()
         self.assertEqual(once.count("toggleBruceLink"), 1)
+        self.assertEqual(once.count("bruceLinkPairingMenu"), 1)
         self.assertEqual(once.count("BruceLinkModule.h"), 1)
         # the entry sits inside the same LITE_VERSION guard as the BLE API toggle
         self.assertLess(once.index("enableBLEAPI"), once.index("toggleBruceLink"))
         self.assertLess(once.index("toggleBruceLink"), once.index("#endif"))
+        self.assertLess(once.index("bruceLinkPairingMenu"), once.index("#endif"))
         # second run changes nothing
         r = run(self.bruce, "--force")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -86,6 +88,26 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))  # no bare LF introduced
         self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
         self.assertEqual(self.menu.read_bytes(), MENU.replace("\n", "\r\n").encode())
+
+    def test_upgrade_from_a_single_entry_install(self):
+        """An older install added only the toggle; re-running adds pairing once."""
+        old = MENU.replace(
+            '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n',
+            '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n'
+            '            {"Toggle BruceLink", [this]() { toggleBruceLink(); }   }, // BruceLink\n',
+        ).replace(
+            '#include "core/wifi/wifi_common.h"\n',
+            '#include "core/wifi/wifi_common.h"\n'
+            '#include "modules/brucelink/BruceLinkModule.h" // BruceLink\n',
+        )
+        self.menu.write_text(old)
+        self.assertEqual(run(self.bruce, "--force").returncode, 0)
+        text = self.menu.read_text()
+        self.assertEqual(text.count("toggleBruceLink"), 1)
+        self.assertEqual(text.count("bruceLinkPairingMenu"), 1)
+        self.assertEqual(text.count("BruceLinkModule.h"), 1)
+        self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
+        self.assertEqual(self.menu.read_bytes(), MENU.encode())
 
     def test_unknown_menu_layout_is_reported_not_guessed(self):
         self.menu.write_text(MENU.replace("Toggle BLE API", "Something else"))

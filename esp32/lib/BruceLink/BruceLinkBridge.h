@@ -21,6 +21,7 @@
 extern "C" {
 #include "bl_capability.h"
 #include "bl_capture.h"
+#include "bl_pair.h"
 #include "bl_reasm.h"
 #include "bl_safety.h"
 #include "bl_session.h"
@@ -77,7 +78,9 @@ public:
     ~BruceLinkBridge();
     /* Provision the pairing key, wire the backend and the tx path. mtu is
      * the usable GATT payload per chunk. The key is kept for the bridge's
-     * lifetime and reused for every (re)connection. */
+     * lifetime and reused for every (re)connection. psk may be nullptr: the
+     * bridge is then unprovisioned and drops every link, unless it is in
+     * pairing mode. */
     void begin(
         const uint8_t psk[BL_KEY_LEN],
         BruceBackend* backend,
@@ -99,7 +102,8 @@ public:
     /* Feed one received GATT chunk (one write/notify). */
     void onChunk(const uint8_t* chunk, size_t len);
 
-    /* Poll capture counters; a backend failure stops the capture. */
+    /* Poll capture counters (a backend failure stops the capture); in
+     * pairing mode, enforce the pairing attempt's time limit. */
     void tick();
 
     /* Link supervision. True when the transport should drop the current
@@ -113,6 +117,48 @@ public:
     bool established() const {
         return bl_session_established(&session_);
     }
+
+    /* Whether the transport should put a peer it drops on cooldown. False
+     * for peers that were genuinely pairing (a rejected or timed-out
+     * attempt may be retried at once); true otherwise. */
+    bool penalizeOnDrop() const;
+
+    /* --- Pairing mode (ADR 0005) ------------------------------------
+     * Every new link runs a pairing attempt (responder) instead of a
+     * session; no key is needed. Call from the task that owns the bridge.
+     * The attempt's progress is read with the pair*() accessors; the
+     * caller relays the user's answer with pairAnswer() and collects the
+     * key with pairTakeResult() once the state is BL_PS_DONE. */
+    void beginPairing(const char* local_name);
+    /* Leave pairing mode (any attempt is abandoned and wiped). Links are
+     * then handled as sessions with the provisioned key, if there is one. */
+    void endPairing();
+    bool pairing() const {
+        return pairing_;
+    }
+    /* A new key, e.g. from pairing. Takes effect from the next link. */
+    void setKey(const uint8_t psk[BL_KEY_LEN]);
+
+    bl_pair_state_t pairState() const {
+        return pair_link_ ? bl_pair_state(&pair_) : BL_PS_IDLE;
+    }
+    bool pairCode(uint32_t* code) const {
+        return pair_link_ && bl_pair_code(&pair_, code);
+    }
+    const char* pairPeerName() const {
+        return pair_link_ ? bl_pair_peer_name(&pair_) : "";
+    }
+    bl_pair_fail_t pairFail() const {
+        return pair_.fail;
+    }
+    uint8_t pairPeerReason() const {
+        return pair_.peer_reason;
+    }
+    /* Local user's answer to "same code?"; ignored unless comparing. */
+    void pairAnswer(bool accept);
+    /* BL_PS_DONE only: copy out the key and its display id, then wipe the
+     * attempt. Returns false otherwise. */
+    bool pairTakeResult(uint8_t psk[BL_KEY_LEN], uint8_t key_id[BL_PAIR_KEY_ID_LEN]);
 
 private:
     BruceLinkBridge(const BruceLinkBridge&);
@@ -130,6 +176,8 @@ private:
     void sendError(uint16_t err);
     void sendStatus();
 
+    void onPairFrame(const uint8_t* frame, size_t len);
+
     uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */
     bool have_psk_;
     bool demo_key_; /* provisioned with the public demo key: no active ops */
@@ -143,6 +191,15 @@ private:
     size_t mtu_;
     bool link_up_;
     uint32_t link_up_ms_; /* backend time of the last onConnect() */
+
+    bool pairing_; /* pairing mode */
+    bool pair_link_; /* pair_ belongs to the current or last link */
+    bool pair_foreign_; /* the peer sent something that is not pairing */
+    bool pair_taken_; /* the result of this attempt was handed out (and wiped) */
+    bool penalize_; /* verdict for the last needsDisconnect() */
+    bool clean_drop_; /* drop the current link, unpenalised (left pairing mode) */
+    char pair_name_[BL_PAIR_NAME_MAX + 1];
+    bl_pair_t pair_;
 };
 
 } // namespace brucelink

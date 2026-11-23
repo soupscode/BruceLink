@@ -52,7 +52,9 @@ public:
     static const uint32_t kConnectTimeoutMs = 5000;
 
     NimBleCentralTransport();
-    // Initialise NimBLE and the bridge; psk is the provisioned pairing key.
+    // Initialise NimBLE and the bridge; psk is the provisioned pairing key
+    // (nullptr when there is none yet: put the bridge in pairing mode before
+    // the first loop(), or it drops every link). Clears the peer cooldowns.
     void begin(BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend);
     // Start scanning for a BruceLink peripheral.
     void startScan(uint32_t duration_s = 0);

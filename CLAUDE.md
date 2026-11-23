@@ -8,7 +8,7 @@ it is not a reimplementation.
 
 - `LOCAL_HANDOFF.md` — what's implemented / tested / not, and the next task.
 - `docs/STATUS.md` — verified status. `TASKS.md` — backlog.
-- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety, radio memory on the StickS3).
+- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety, radio memory on the StickS3, pairing).
 - `docs/CAPABILITY_MATRIX.md` — what Bruce supports vs what BruceLink exposes.
 
 ## Pinned versions
@@ -66,9 +66,12 @@ scripts/hil/build_all.sh                     # everything
 - Never broadcast an active op. Never expose unauthenticated control or
   unrestricted command execution. Bound all payloads (≤ 512 B).
 - Never store the pairing key in `bruce.conf` (Bruce prints it to serial).
-- Until M5.3 both builds use the public demo key (`bl_demo_key.h`) and until M4.6
-  frames are authenticated but not encrypted. Say so wherever status is reported.
-  A bridge holding the demo key refuses every active op; do not weaken that.
+- Real devices use a key from pairing (ADR 0005); the public demo key (`bl_demo_key.h`)
+  is only for the Flipper's loopback mock and the compile check. Never ship it on a
+  device. A bridge holding the demo key refuses every active op; do not weaken that.
+- Pairing keys: Flipper file encrypted with the device-unique enclave key; StickS3 in
+  NVS. Never in `bruce.conf`, on LittleFS, in logs or on a screen (the key id is fine).
+- Until M4.6 frames are authenticated but not encrypted. Say so wherever status is reported.
 - Active-RF testing only in owned/authorized, isolated lab environments.
 
 ## Testing rule

@@ -25,6 +25,7 @@ void NimBleCentralTransport::begin(
     BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend) {
     bridge_ = bridge;
     backend_ = backend;
+    cooldown_.clear(); // a fresh start (or a switch to pairing) owes nobody a penalty
     // ~4 kB of chunk storage: keep it out of internal RAM when there is
     // PSRAM (only tasks touch this queue, never an ISR).
     chunks_ = xQueueCreateWithCaps(kEventQueueDepth, sizeof(ChunkEvent), MALLOC_CAP_SPIRAM);
@@ -239,8 +240,9 @@ void NimBleCentralTransport::loop() {
     if(lost) handleLinkLoss();
     if(mtu != 0 && connected_) bridge_->setMtu(usableMtu(mtu));
 
-    // 3. supervision: no authenticated session in time -> drop + cooldown
-    if(connected_ && !dropping_ && bridge_->needsDisconnect()) dropPeer(true);
+    // 3. supervision: no authenticated session in time -> drop (+ cooldown,
+    //    unless the peer was genuinely pairing; see penalizeOnDrop)
+    if(connected_ && !dropping_ && bridge_->needsDisconnect()) dropPeer(bridge_->penalizeOnDrop());
 
     // 4. connect / rescan when idle
     const bool idle = !connected_ && !dropping_ && (client_ == nullptr || !client_->isConnected());

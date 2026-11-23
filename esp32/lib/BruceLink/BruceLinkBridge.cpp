@@ -59,8 +59,11 @@ static uint16_t boundedTextLen(const char* buf, size_t reported, size_t cap) {
 
 BruceLinkBridge::BruceLinkBridge()
     : have_psk_(false), demo_key_(false), backend_(nullptr), tx_(nullptr), tx_ctx_(nullptr), mtu_(20),
-      link_up_(false), link_up_ms_(0) {
+      link_up_(false), link_up_ms_(0), pairing_(false), pair_link_(false), pair_foreign_(false),
+      pair_taken_(false), penalize_(true), clean_drop_(false) {
     memset(psk_, 0, sizeof(psk_));
+    memset(pair_name_, 0, sizeof(pair_name_));
+    memset(&pair_, 0, sizeof(pair_));
     memset(&session_, 0, sizeof(session_));
     bl_safety_init(&safety_);
     bl_capture_init(&capture_, nullptr, nullptr); /* valid (IDLE) before begin() */
@@ -70,6 +73,7 @@ BruceLinkBridge::BruceLinkBridge()
 BruceLinkBridge::~BruceLinkBridge() {
     bl_capture_stop(&capture_);
     bl_session_close(&session_);
+    bl_pair_wipe(&pair_);
     bl_secure_zero(psk_, sizeof(psk_));
 }
 
@@ -83,14 +87,16 @@ void BruceLinkBridge::begin(
     tx_ = tx;
     tx_ctx_ = tx_ctx;
     setMtu(mtu);
-    /* The provisioned key lives in its own field: session_ is disposable
-     * and bl_session_close() wipes its copy on every disconnect. */
-    memcpy(psk_, psk, BL_KEY_LEN);
-    have_psk_ = true;
-    /* The demo key is published: a session made with it authenticates
-     * nobody. Such a bridge serves passive requests for bring-up but never
-     * transmits on a remote request (see handleCommand / handleActiveOp). */
-    demo_key_ = memcmp(psk_, BRUCELINK_DEMO_PSK, BL_KEY_LEN) == 0;
+    if(psk != nullptr) {
+        setKey(psk);
+    } else {
+        bl_secure_zero(psk_, sizeof(psk_));
+        have_psk_ = false;
+        demo_key_ = false;
+    }
+    pairing_ = false;
+    pair_link_ = false;
+    bl_pair_wipe(&pair_);
     bl_safety_init(&safety_);
     /* Unconditionally valid; attach a backend only if the build has one. */
     bl_capture_init(&capture_, nullptr, nullptr);
@@ -99,6 +105,58 @@ void BruceLinkBridge::begin(
     if(backend_ != nullptr && backend_->captureBackend(&cbe, &cctx) && cbe != nullptr) {
         bl_capture_init(&capture_, cbe, cctx);
     }
+}
+
+void BruceLinkBridge::setKey(const uint8_t psk[BL_KEY_LEN]) {
+    /* The provisioned key lives in its own field: session_ is disposable
+     * and bl_session_close() wipes its copy on every disconnect. */
+    memcpy(psk_, psk, BL_KEY_LEN);
+    have_psk_ = true;
+    /* The demo key is published: a session made with it authenticates
+     * nobody. Such a bridge serves passive requests for bring-up but never
+     * transmits on a remote request (see handleCommand / handleActiveOp). */
+    demo_key_ = memcmp(psk_, BRUCELINK_DEMO_PSK, BL_KEY_LEN) == 0;
+}
+
+void BruceLinkBridge::beginPairing(const char* local_name) {
+    size_t n = 0;
+    if(local_name != nullptr) {
+        while(n < BL_PAIR_NAME_MAX && local_name[n] != '\0') n++;
+        memcpy(pair_name_, local_name, n);
+    }
+    pair_name_[n] = '\0';
+    pairing_ = true;
+    pair_link_ = false;
+    pair_foreign_ = false;
+    bl_pair_wipe(&pair_);
+}
+
+void BruceLinkBridge::endPairing() {
+    /* A link still up was opened for pairing; it carries no session.
+     * Release it without holding it against the peer. */
+    clean_drop_ = link_up_;
+    pairing_ = false;
+    pair_link_ = false;
+    pair_foreign_ = false;
+    bl_pair_wipe(&pair_);
+}
+
+void BruceLinkBridge::pairAnswer(bool accept) {
+    if(!pairing_ || !pair_link_ || !link_up_) return;
+    uint8_t out[BL_PAIR_FRAME_MAX];
+    size_t olen = 0;
+    if(bl_pair_accept(&pair_, accept, out, sizeof(out), &olen) == BL_OK && olen) sendRaw(out, olen);
+}
+
+bool BruceLinkBridge::pairTakeResult(uint8_t psk[BL_KEY_LEN], uint8_t key_id[BL_PAIR_KEY_ID_LEN]) {
+    if(!pairing_ || !pair_link_ || pair_taken_) return false;
+    if(bl_pair_result(&pair_, psk, key_id) != BL_OK) return false;
+    bl_pair_wipe(&pair_);
+    /* Keep reporting "done", but the key is gone: a second take must not
+     * hand out the wiped (all-zero) buffer as a key. */
+    pair_.state = BL_PS_DONE;
+    pair_taken_ = true;
+    return true;
 }
 
 /* Largest chunk sendRaw() can stage. */
@@ -115,6 +173,20 @@ void BruceLinkBridge::onConnect() {
     bl_safety_reset(&safety_); /* new session: e-stop cleared, active ops off */
     link_up_ = true;
     link_up_ms_ = backend_ != nullptr ? backend_->nowMs() : 0;
+    penalize_ = true;
+    clean_drop_ = false;
+    if(pairing_) {
+        /* Every link is a fresh attempt; no session in pairing mode. */
+        memset(&session_, 0, sizeof(session_));
+        session_.state = BL_SS_CLOSED;
+        pair_foreign_ = false;
+        pair_taken_ = false;
+        pair_link_ = backend_ != nullptr &&
+                     bl_pair_init(
+                         &pair_, BL_PAIR_RESPONDER, pair_name_, bridge_rng, backend_, link_up_ms_) ==
+                         BL_OK;
+        return;
+    }
     if(!have_psk_ || backend_ == nullptr) {
         /* not provisioned: leave the session closed; handshakes are refused */
         memset(&session_, 0, sizeof(session_));
@@ -126,10 +198,17 @@ void BruceLinkBridge::onConnect() {
 
 void BruceLinkBridge::onDisconnect() {
     link_up_ = false;
+    clean_drop_ = false;
     bl_safety_on_link_loss(&safety_); /* fail-safe: halt active ops */
     bl_capture_stop(&capture_); /* idempotent; also clears an errored capture */
     bl_session_close(&session_); /* wipes session secrets, not psk_ */
     bl_reasm_init(&reasm_);
+    if(pairing_ && pair_link_) {
+        /* Nobody left to tell; keep the outcome for the UI, drop secrets. */
+        uint8_t out[BL_PAIR_FRAME_MAX];
+        size_t olen = 0;
+        (void)bl_pair_cancel(&pair_, out, sizeof(out), &olen);
+    }
 }
 
 void BruceLinkBridge::onChunk(const uint8_t* chunk, size_t len) {
@@ -140,7 +219,24 @@ void BruceLinkBridge::onChunk(const uint8_t* chunk, size_t len) {
     /* reassembly errors drop the partial frame; the peer re-requests */
 }
 
+void BruceLinkBridge::onPairFrame(const uint8_t* frame, size_t len) {
+    if(!pair_link_) return;
+    uint8_t out[BL_PAIR_FRAME_MAX];
+    size_t olen = 0;
+    int rc = bl_pair_rx(&pair_, frame, len, out, sizeof(out), &olen);
+    if(olen) sendRaw(out, olen);
+    if(rc == BL_E_STATE && bl_pair_state(&pair_) == BL_PS_WAIT_COMMIT) {
+        /* Not a pairing Flipper (e.g. one that is starting a normal
+         * session): let it go so a pairing one can be found. */
+        pair_foreign_ = true;
+    }
+}
+
 void BruceLinkBridge::onFrame(const uint8_t* frame, size_t len) {
+    if(pairing_) {
+        onPairFrame(frame, len);
+        return;
+    }
     if(!established()) {
         uint8_t out[BL_MAX_MSG];
         size_t olen = 0;
@@ -416,8 +512,37 @@ void BruceLinkBridge::sendRaw(const uint8_t* frame, size_t len) {
     }
 }
 
+bool BruceLinkBridge::penalizeOnDrop() const {
+    return penalize_;
+}
+
 bool BruceLinkBridge::needsDisconnect() {
-    if(!link_up_ || established()) return false;
+    if(!link_up_) return false;
+    if(pairing_) {
+        if(!pair_link_ || backend_ == nullptr) {
+            penalize_ = false;
+            return true;
+        }
+        const uint32_t now = backend_->nowMs();
+        const bl_pair_state_t st = bl_pair_state(&pair_);
+        if(pair_foreign_ ||
+           (st == BL_PS_WAIT_COMMIT && (uint32_t)(now - link_up_ms_) >= kAuthTimeoutMs)) {
+            /* Not pairing with us: move on, and do not come straight back. */
+            penalize_ = true;
+            return true;
+        }
+        /* An attempt that ended (accepted, rejected, timed out) frees the
+         * link; the same Flipper may try again at once. */
+        penalize_ = false;
+        return st == BL_PS_DONE || st == BL_PS_FAILED;
+    }
+    if(clean_drop_) {
+        /* the link that carried the pairing, after leaving pairing mode */
+        penalize_ = false;
+        return true;
+    }
+    penalize_ = true;
+    if(established()) return false;
     /* terminal: proof failed, version mismatch, or never provisioned */
     if(session_.state == BL_SS_FAILED || session_.state == BL_SS_CLOSED) return true;
     if(backend_ == nullptr) return true;
@@ -426,6 +551,15 @@ bool BruceLinkBridge::needsDisconnect() {
 }
 
 void BruceLinkBridge::tick() {
+    if(pairing_) {
+        if(!link_up_ || !pair_link_ || backend_ == nullptr) return;
+        uint8_t out[BL_PAIR_FRAME_MAX];
+        size_t olen = 0;
+        if(bl_pair_tick(&pair_, backend_->nowMs(), out, sizeof(out), &olen) && olen) {
+            sendRaw(out, olen);
+        }
+        return;
+    }
     /* A failing poll stops and flushes the backend (see bl_capture_poll). */
     if(link_up_ && bl_capture_is_running(&capture_)) (void)bl_capture_poll(&capture_);
 }

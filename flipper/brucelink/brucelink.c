@@ -13,9 +13,11 @@
 #include "brucelink_i.h"
 
 #include "../../shared/brucelink_core/src/bl_capability.h"
+#include "../../shared/brucelink_core/src/bl_crypto.h"
 #include "../../shared/brucelink_core/src/bl_demo_key.h"
 
 #include <furi_hal_random.h>
+#include <furi_hal_version.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -26,6 +28,8 @@ typedef enum {
     MenuDeviceInfo,
     MenuWifiScan,
     MenuCapabilities,
+    MenuPair,
+    MenuForget,
     MenuSettings,
     MenuAbout,
 } MenuIndex;
@@ -50,10 +54,10 @@ static const char* bl_client_state_text(const BruceLinkApp* app) {
     case BL_CL_HANDSHAKING: return "authenticating...";
     case BL_CL_READY: return "connected";
     case BL_CL_FAILED:
-        return app->client.last_error == BL_E_AUTH ? "wrong pairing key" : "handshake failed";
+        return app->client.last_error == BL_E_AUTH ? "wrong key: pair again" : "handshake failed";
     default:
         /* the StickS3 drops a link it could not authenticate; keep saying why */
-        return app->client.last_error == BL_E_AUTH ? "wrong pairing key" : "waiting for StickS3";
+        return app->client.last_error == BL_E_AUTH ? "wrong key: pair again" : "waiting for StickS3";
     }
 }
 
@@ -69,9 +73,15 @@ static void bl_refresh_connection(BruceLinkApp* app) {
     diag[0] = 0;
     if(app->transport->api->diag)
         app->transport->api->diag(app->transport, diag, sizeof(app->shown_diag));
+    char key[40];
+    if(app->transport_kind == BlTransportBle) {
+        snprintf(key, sizeof(key), "Key %02X%02X, not encrypted", app->key_id[0], app->key_id[1]);
+    } else {
+        snprintf(key, sizeof(key), "DEMO KEY (mock): not secure");
+    }
     snprintf(
-        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure%s%s",
-        app->shown_status, bl_client_state_text(app), diag[0] ? "\n\n" : "", diag);
+        app->text, sizeof(app->text), "%s\n%s\n\n%s%s%s", app->shown_status,
+        bl_client_state_text(app), key, diag[0] ? "\n\n" : "", diag);
     bl_show_text(app, "Connection", app->text);
 }
 
@@ -91,7 +101,19 @@ static void bl_stop_transport(BruceLinkApp* app) {
  * itself, from the tick, as soon as a link appears. */
 static void bl_connect(BruceLinkApp* app) {
     bl_stop_transport(app);
-    app->client.last_error = BL_OK;
+    if(app->transport_kind == BlTransportBle && !app->paired) {
+        bl_show_text(
+            app, "Connection",
+            app->key_state == BlKeyfileForeign ?
+                "The stored pairing is from\nanother Flipper or damaged.\nUse Pair." :
+                "Not paired with a StickS3.\nUse Pair first.");
+        return;
+    }
+    /* A real StickS3 only accepts the paired key; the built-in mock uses
+     * the public demo key. */
+    bl_client_init(
+        &app->client, app->transport_kind == BlTransportBle ? app->psk : BRUCELINK_DEMO_PSK, bl_rng,
+        NULL);
     app->transport = (app->transport_kind == BlTransportBle) ? bl_transport_ble_alloc() :
                                                              bl_transport_loopback_alloc();
     if(!app->transport->api->start(app->transport)) {
@@ -198,8 +220,14 @@ static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
     if(app->client.state != before) bl_refresh_connection(app);
 }
 
+static void bl_pairing_tick(BruceLinkApp* app);
+
 static void bl_tick(void* ctx) {
     BruceLinkApp* app = ctx;
+    if(app->pair_mode) {
+        bl_pairing_tick(app);
+        return;
+    }
     if(app->connect_pending) {
         /* Switching BLE profiles blocks for a few seconds, so it runs
          * here, after the "starting..." screen is up, not in the menu
@@ -263,6 +291,293 @@ static void bl_tick(void* ctx) {
     }
 }
 
+/* -------------------------------------------- pairing (ADR 0005) */
+
+static void bl_pair_send(BruceLinkApp* app, const uint8_t* frame, size_t len) {
+    if(len) bl_send(app, frame, len);
+}
+
+static const char* bl_pair_fail_text(const bl_pair_t* p) {
+    switch(p->fail) {
+    case BL_PF_REJECTED: return "You said the codes differ.";
+    case BL_PF_PEER_REJECTED:
+        switch(p->peer_reason) {
+        case BL_PAIR_ABORT_REJECTED: return "The StickS3 said the\ncodes differ.";
+        case BL_PAIR_ABORT_TIMEOUT: return "The StickS3 timed out.";
+        case BL_PAIR_ABORT_MISMATCH: return "Key check failed\n(interference?).";
+        default: return "The StickS3 cancelled.";
+        }
+    case BL_PF_MISMATCH: return "Key check failed\n(interference?).";
+    case BL_PF_CRYPTO: return "Bad key from the StickS3.";
+    case BL_PF_TIMEOUT: return "Timed out.";
+    case BL_PF_CANCELLED: return "Link lost.";
+    default: return "Failed.";
+    }
+}
+
+static void bl_pair_button_cb(GuiButtonType button, InputType type, void* ctx) {
+    BruceLinkApp* app = ctx;
+    if(type != InputTypeShort) return;
+    const bool yes = button == GuiButtonTypeRight;
+    const uint32_t evt = app->screen == BlScreenForget ? (yes ? BlEvtForgetYes : BlEvtForgetNo) :
+                                                         (yes ? BlEvtPairYes : BlEvtPairNo);
+    view_dispatcher_send_custom_event(app->view_dispatcher, evt);
+}
+
+/* Draw the pairing screen for the current state. */
+static void bl_pair_draw(BruceLinkApp* app) {
+    Widget* w = app->pair_widget;
+    widget_reset(w);
+    const bl_pair_state_t st = app->pair_done    ? BL_PS_DONE :
+                               app->pair_running ? bl_pair_state(&app->pair) :
+                                                   BL_PS_IDLE;
+    uint32_t code = 0;
+    if(st == BL_PS_COMPARE && !app->pair_answered && bl_pair_code(&app->pair, &code)) {
+        /* code < 10^6, so each half is exactly three digits */
+        char a[8], b[8], who[40];
+        snprintf(a, sizeof(a), "%03lu", (unsigned long)((code / 1000u) % 1000u));
+        snprintf(b, sizeof(b), "%03lu", (unsigned long)(code % 1000u));
+        const char* peer = bl_pair_peer_name(&app->pair);
+        snprintf(who, sizeof(who), "%s", peer[0] ? peer : "StickS3");
+        widget_add_string_element(w, 64, 0, AlignCenter, AlignTop, FontSecondary, who);
+        widget_add_string_element(w, 33, 12, AlignCenter, AlignTop, FontBigNumbers, a);
+        widget_add_string_element(w, 95, 12, AlignCenter, AlignTop, FontBigNumbers, b);
+        widget_add_string_element(
+            w, 64, 40, AlignCenter, AlignTop, FontSecondary, "Same code on the StickS3?");
+        widget_add_button_element(w, GuiButtonTypeLeft, "No", bl_pair_button_cb, app);
+        widget_add_button_element(w, GuiButtonTypeRight, "Yes", bl_pair_button_cb, app);
+        return;
+    }
+    if(st == BL_PS_DONE) {
+        snprintf(
+            app->text, sizeof(app->text),
+            "Paired with %s\nKey %02X%02X\n\nUse Connect.\nThe link is not encrypted\nyet; frames are\nauthenticated.",
+            app->peer[0] ? app->peer : "StickS3", app->key_id[0], app->key_id[1]);
+    } else if(st == BL_PS_COMPARE || st == BL_PS_WAIT_PEER) {
+        snprintf(app->text, sizeof(app->text), "Waiting for the StickS3\nto confirm...");
+    } else {
+        snprintf(
+            app->text, sizeof(app->text),
+            "%s%s%sOn the StickS3:\nConfig > Advanced >\nBruceLink pairing >\nPair with Flipper\n\nBack: stop",
+            app->pair_last_failure ? "Last try: " : "",
+            app->pair_last_failure ? app->pair_last_failure : "",
+            app->pair_last_failure ? "\n\n" : "");
+    }
+    widget_add_string_element(w, 2, 2, AlignLeft, AlignTop, FontPrimary, "Pairing");
+    widget_add_text_scroll_element(w, 2, 16, 124, 46, app->text);
+}
+
+/* Finish an attempt that is still open, without anyone left to tell. */
+static void bl_pair_drop_attempt(BruceLinkApp* app) {
+    if(!app->pair_running) return;
+    uint8_t out[BL_PAIR_FRAME_MAX];
+    size_t ol = 0;
+    (void)bl_pair_cancel(&app->pair, out, sizeof(out), &ol);
+}
+
+static void bl_pair_start_mode(BruceLinkApp* app) {
+    bl_stop_transport(app);
+    app->screen = BlScreenPairing;
+    app->pair_mode = true;
+    app->pair_running = false;
+    app->pair_done = false;
+    app->pair_last_failure = NULL;
+    bl_pair_wipe(&app->pair);
+    app->transport = bl_transport_ble_alloc();
+    if(!app->transport->api->start(app->transport)) {
+        bl_stop_transport(app);
+        app->pair_mode = false;
+        widget_reset(app->pair_widget);
+        widget_add_text_scroll_element(
+            app->pair_widget, 2, 2, 124, 60, "Could not start Bluetooth.\n\nBack: menu");
+        return;
+    }
+    bl_pair_draw(app);
+}
+
+static void bl_pair_end_mode(BruceLinkApp* app) {
+    if(!app->pair_mode) return;
+    if(app->pair_running && app->transport && app->link_id != 0) {
+        uint8_t out[BL_PAIR_FRAME_MAX];
+        size_t ol = 0;
+        if(bl_pair_cancel(&app->pair, out, sizeof(out), &ol) == BL_OK) bl_pair_send(app, out, ol);
+    }
+    bl_pair_wipe(&app->pair);
+    app->pair_running = false;
+    app->pair_mode = false;
+    bl_stop_transport(app); /* gives the radio back */
+}
+
+static void bl_on_pair_frame(const uint8_t* frame, size_t len, void* ctx) {
+    BruceLinkApp* app = ctx;
+    if(!app->pair_running) return;
+    uint8_t out[BL_PAIR_FRAME_MAX];
+    size_t ol = 0;
+    (void)bl_pair_rx(&app->pair, frame, len, out, sizeof(out), &ol);
+    bl_pair_send(app, out, ol); /* the tick compares states and redraws */
+}
+
+/* The attempt just finished well: keep the key. */
+static void bl_pair_keep(BruceLinkApp* app) {
+    uint8_t psk[BL_KEY_LEN];
+    uint8_t kid[BL_PAIR_KEY_ID_LEN];
+    if(bl_pair_result(&app->pair, psk, kid) != BL_OK) return;
+    const char* peer = bl_pair_peer_name(&app->pair);
+    if(!bl_keyfile_save(psk, peer)) {
+        bl_secure_zero(psk, sizeof(psk));
+        app->pair_last_failure = "Paired, but saving the\nkey failed (SD card?).";
+        app->pair_running = false;
+        return;
+    }
+    memcpy(app->psk, psk, BL_KEY_LEN);
+    memcpy(app->key_id, kid, sizeof(kid));
+    strncpy(app->peer, peer, BL_PAIR_NAME_MAX);
+    app->peer[BL_PAIR_NAME_MAX] = '\0';
+    app->paired = true;
+    app->pair_done = true;
+    app->key_state = BlKeyfileOk;
+    bl_secure_zero(psk, sizeof(psk));
+    /* Pairing is a BLE thing: make BLE the transport for Connect. */
+    app->transport_kind = BlTransportBle;
+    variable_item_set_current_value_index(app->transport_item, BlTransportBle);
+    variable_item_set_current_value_text(app->transport_item, TRANSPORT_NAMES[BlTransportBle]);
+}
+
+static void bl_build_menu(BruceLinkApp* app);
+
+static void bl_pairing_tick(BruceLinkApp* app) {
+    BlTransport* t = app->transport;
+    if(t == NULL) return;
+    const uint32_t now = furi_get_tick();
+    const bl_pair_state_t before = app->pair_running ? bl_pair_state(&app->pair) : BL_PS_IDLE;
+
+    t->api->poll(t, bl_on_pair_frame, app);
+
+    const uint32_t link = t->api->link_id(t);
+    if(link != app->link_id && app->pair_done) {
+        /* Paired. The StickS3 drops this link and comes back in normal
+         * mode; stop advertising in pairing mode so it does not find us
+         * here. Connect starts a normal BLE session. */
+        app->link_id = link;
+        if(link == 0) bl_stop_transport(app);
+        return;
+    }
+    if(link != app->link_id) {
+        app->link_id = link;
+        bl_pair_drop_attempt(app); /* whatever the old link was doing is over */
+        if(app->pair_running && bl_pair_state(&app->pair) == BL_PS_FAILED &&
+           app->pair.fail != BL_PF_CANCELLED) {
+            app->pair_last_failure = bl_pair_fail_text(&app->pair);
+        }
+        app->pair_running = false;
+        if(link != 0) {
+            const char* name = furi_hal_version_get_name_ptr();
+            if(bl_pair_init(&app->pair, BL_PAIR_INITIATOR, name ? name : "Flipper", bl_rng, NULL, now) ==
+               BL_OK) {
+                uint8_t out[BL_PAIR_FRAME_MAX];
+                const int n = bl_pair_start(&app->pair, out, sizeof(out));
+                if(n > 0) {
+                    bl_pair_send(app, out, (size_t)n);
+                    app->pair_running = true;
+                    app->pair_answered = false;
+                }
+            }
+        }
+        bl_pair_draw(app);
+        return;
+    }
+    if(!app->pair_running) return;
+
+    uint8_t out[BL_PAIR_FRAME_MAX];
+    size_t ol = 0;
+    if(bl_pair_tick(&app->pair, now, out, sizeof(out), &ol)) {
+        bl_pair_send(app, out, ol);
+        app->pair_last_failure = bl_pair_fail_text(&app->pair);
+    }
+
+    const bl_pair_state_t st = bl_pair_state(&app->pair);
+    if(st == before) return;
+    if(st == BL_PS_DONE) {
+        bl_pair_keep(app);
+        bl_build_menu(app); /* "Forget pairing" appears */
+        notification_message(app->notifications, &sequence_success);
+    } else if(st == BL_PS_FAILED) {
+        app->pair_last_failure = bl_pair_fail_text(&app->pair);
+        notification_message(app->notifications, &sequence_error);
+    } else if(st == BL_PS_COMPARE) {
+        notification_message(app->notifications, &sequence_single_vibro);
+    }
+    bl_pair_draw(app);
+}
+
+static void bl_forget_draw(BruceLinkApp* app) {
+    Widget* w = app->pair_widget;
+    widget_reset(w);
+    snprintf(
+        app->text, sizeof(app->text),
+        "Forget the pairing with\n%s (key %02X%02X)?\nThe StickS3 keeps its copy\nuntil you forget it there.",
+        app->peer[0] ? app->peer : "StickS3", app->key_id[0], app->key_id[1]);
+    widget_add_string_element(w, 2, 2, AlignLeft, AlignTop, FontPrimary, "Forget pairing");
+    widget_add_text_box_element(w, 2, 14, 124, 36, AlignLeft, AlignTop, app->text, false);
+    widget_add_button_element(w, GuiButtonTypeLeft, "No", bl_pair_button_cb, app);
+    widget_add_button_element(w, GuiButtonTypeRight, "Yes", bl_pair_button_cb, app);
+}
+
+static bool bl_custom_event_cb(void* ctx, uint32_t event) {
+    BruceLinkApp* app = ctx;
+    switch(event) {
+    case BlEvtPairYes:
+    case BlEvtPairNo: {
+        if(!app->pair_mode || !app->pair_running || bl_pair_state(&app->pair) != BL_PS_COMPARE) {
+            return true; /* stale button press */
+        }
+        uint8_t out[BL_PAIR_FRAME_MAX];
+        size_t ol = 0;
+        if(bl_pair_accept(&app->pair, event == BlEvtPairYes, out, sizeof(out), &ol) == BL_OK) {
+            bl_pair_send(app, out, ol);
+        }
+        app->pair_answered = true;
+        const bl_pair_state_t st = bl_pair_state(&app->pair);
+        if(st == BL_PS_DONE) { /* the StickS3 had already confirmed */
+            bl_pair_keep(app);
+            bl_build_menu(app);
+            notification_message(app->notifications, &sequence_success);
+        } else if(st == BL_PS_FAILED) {
+            app->pair_last_failure = bl_pair_fail_text(&app->pair);
+        }
+        bl_pair_draw(app);
+        return true;
+    }
+    case BlEvtForgetYes:
+        bl_keyfile_forget();
+        bl_secure_zero(app->psk, sizeof(app->psk));
+        memset(app->key_id, 0, sizeof(app->key_id));
+        app->peer[0] = '\0';
+        app->paired = false;
+        app->key_state = BlKeyfileNone;
+        bl_stop_transport(app);
+        bl_build_menu(app);
+        app->screen = BlScreenNone;
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
+        return true;
+    case BlEvtForgetNo:
+        app->screen = BlScreenNone;
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
+        return true;
+    default: return false;
+    }
+}
+
+/* Back on the pairing / forget screens (they have no "previous" view, so
+ * the dispatcher asks us): stop pairing, release the radio, go to the menu. */
+static bool bl_navigation_cb(void* ctx) {
+    BruceLinkApp* app = ctx;
+    bl_pair_end_mode(app);
+    app->screen = BlScreenNone;
+    view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
+    return true;
+}
+
 /* ----------------------------------------------------------- menus */
 
 static void bl_submenu_cb(void* ctx, uint32_t index) {
@@ -295,6 +610,15 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         bl_request(app, "Capabilities", BL_MSG_CAPS_REQ, NULL, 0);
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
+    case MenuPair:
+        bl_pair_start_mode(app);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewPair);
+        break;
+    case MenuForget:
+        app->screen = BlScreenForget;
+        bl_forget_draw(app);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewPair);
+        break;
     case MenuSettings:
         app->screen = BlScreenNone;
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewSettings);
@@ -304,7 +628,9 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         bl_show_text(
             app, "BruceLink",
             "Remote for a StickS3 running\nBruce, over an authenticated\nBLE link.\n\n"
-            "DEMO KEY build: the pairing\nkey is public and the link\nis not encrypted. Not secure\nuntil key setup is added.\n\n"
+            "Pair once (Pair, and on the\nStickS3: BruceLink pairing).\nThe key is stored encrypted\nwith this Flipper's own key.\n\n"
+            "Not yet: link encryption.\nFrames are authenticated\nbut readable over the air.\n\n"
+            "Loopback mode uses a public\ndemo key: not secure.\n\n"
             "github.com/soupscode/BruceLink");
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
@@ -349,6 +675,10 @@ static void bl_build_menu(BruceLinkApp* app) {
     submenu_add_item(app->submenu, "Device Info", MenuDeviceInfo, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Wi-Fi Scan", MenuWifiScan, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Capabilities", MenuCapabilities, bl_submenu_cb, app);
+    submenu_add_item(app->submenu, app->paired ? "Pair again" : "Pair", MenuPair, bl_submenu_cb, app);
+    if(app->paired) {
+        submenu_add_item(app->submenu, "Forget pairing", MenuForget, bl_submenu_cb, app);
+    }
     submenu_add_item(app->submenu, "Settings", MenuSettings, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "About", MenuAbout, bl_submenu_cb, app);
 }
@@ -359,6 +689,7 @@ static void bl_build_settings(BruceLinkApp* app) {
         app->settings, "Transport", BlTransportCount, bl_transport_changed_cb, app);
     variable_item_set_current_value_index(it, (uint8_t)app->transport_kind);
     variable_item_set_current_value_text(it, TRANSPORT_NAMES[app->transport_kind]);
+    app->transport_item = it;
 
     it = variable_item_list_add(app->settings, "Active ops", 2, bl_active_toggle_cb, app);
     variable_item_set_current_value_index(it, 0);
@@ -368,7 +699,10 @@ static void bl_build_settings(BruceLinkApp* app) {
 static BruceLinkApp* bl_app_alloc(void) {
     BruceLinkApp* app = malloc(sizeof(BruceLinkApp));
     memset(app, 0, sizeof(*app));
-    app->transport_kind = BlTransportLoopback;
+    app->key_state = bl_keyfile_load(app->psk, app->key_id, app->peer);
+    app->paired = app->key_state == BlKeyfileOk;
+    /* With a pairing, the real StickS3 is what Connect is for. */
+    app->transport_kind = app->paired ? BlTransportBle : BlTransportLoopback;
     bl_client_init(&app->client, BRUCELINK_DEMO_PSK, bl_rng, NULL);
 
     app->gui = furi_record_open(RECORD_GUI);
@@ -393,7 +727,13 @@ static BruceLinkApp* bl_app_alloc(void) {
     view_dispatcher_add_view(
         app->view_dispatcher, BlViewSettings, variable_item_list_get_view(app->settings));
 
+    app->pair_widget = widget_alloc();
+    /* no previous callback: Back reaches bl_navigation_cb */
+    view_dispatcher_add_view(app->view_dispatcher, BlViewPair, widget_get_view(app->pair_widget));
+
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
+    view_dispatcher_set_custom_event_callback(app->view_dispatcher, bl_custom_event_cb);
+    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, bl_navigation_cb);
     view_dispatcher_set_tick_event_callback(
         app->view_dispatcher, bl_tick, furi_ms_to_ticks(BL_TICK_MS));
     return app;
@@ -401,13 +741,19 @@ static BruceLinkApp* bl_app_alloc(void) {
 
 static void bl_app_free(BruceLinkApp* app) {
     /* Hands the radio back to the firmware's default BLE profile. */
+    bl_pair_end_mode(app);
     bl_stop_transport(app);
+    bl_pair_wipe(&app->pair);
+    bl_secure_zero(app->psk, sizeof(app->psk));
+    bl_client_link_down(&app->client);
 
     view_dispatcher_remove_view(app->view_dispatcher, BlViewMenu);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewText);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewSettings);
+    view_dispatcher_remove_view(app->view_dispatcher, BlViewPair);
     submenu_free(app->submenu);
     widget_free(app->widget);
+    widget_free(app->pair_widget);
     variable_item_list_free(app->settings);
     view_dispatcher_free(app->view_dispatcher);
 

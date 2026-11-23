@@ -131,3 +131,10 @@ transmits: "enable active ops" and every `BL_CAP_F_ACTIVE_RF` capability
 return `not_authorized`, and `STATUS` reports `demo:1`. Passive requests are
 still served so the link can be brought up. Host-tested
 (`t_demo_key_never_enables_active_ops`).
+
+Update (2026-11-23, ADR 0005): real devices now use a key from pairing, so the
+demo-key lock no longer applies to them; it still applies to any bridge given
+the demo key (the compile check, a misconfigured build). Being paired lifts only
+that lock: the session-level enable, e-stop, rate limit and unicast-only target
+rules apply in full, and in the current Bruce build the transmit hook still
+reports "not available" (nothing is sent).

@@ -8,8 +8,9 @@ What it does (and nothing else):
        esp32/lib/BruceLink/*          (bridge core + NimBLE central transport)
        shared/brucelink_core/src/*    (shared protocol core)
   2. copies the Bruce glue to       <bruce>/src/modules/brucelink/
-  3. adds one menu entry to         <bruce>/src/core/menu_items/ConfigMenu.cpp
-       Config > Advanced > "Toggle BruceLink", next to "Toggle BLE API"
+  3. adds two menu entries to       <bruce>/src/core/menu_items/ConfigMenu.cpp
+       Config > Advanced > "Toggle BruceLink" and "BruceLink pairing",
+       next to "Toggle BLE API"
 
 It is idempotent (safe to run again after updating BruceLink) and refuses
 to touch a tree that does not look like the Bruce version it was written
@@ -38,7 +39,11 @@ MENU_FILE = Path("src/core/menu_items/ConfigMenu.cpp")
 MENU_INCLUDE_ANCHOR = '#include "core/wifi/wifi_common.h"\n'
 MENU_INCLUDE = '#include "modules/brucelink/BruceLinkModule.h" // BruceLink\n'
 MENU_ENTRY_ANCHOR = '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n'
-MENU_ENTRY = '            {"Toggle BruceLink", [this]() { toggleBruceLink(); }   }, // BruceLink\n'
+MENU_ENTRY = (
+    '            {"Toggle BruceLink", [this]() { toggleBruceLink(); }   }, // BruceLink\n'
+    '            {"BruceLink pairing", [this]() { bruceLinkPairingMenu(); } }, // BruceLink\n'
+)
+MARKER = " // BruceLink"
 
 LIBRARY_JSON = """{
   "name": "BruceLink",
@@ -87,8 +92,12 @@ def patch_menu(path, uninstall):
     raw = path.read_bytes()
     crlf = b"\r\n" in raw  # keep the checkout's line endings (Windows autocrlf)
     text = raw.decode("utf-8").replace("\r\n", "\n")
-    # Always start from the unpatched text so re-running never duplicates.
-    clean = text.replace(MENU_INCLUDE, "").replace(MENU_ENTRY, "")
+    # Always start from the unpatched text so re-running never duplicates:
+    # every line this script ever added ends with MARKER (this also removes
+    # entries written by an older version of the script).
+    clean = "".join(
+        line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(MARKER)
+    )
     if uninstall:
         new = clean
     else:
@@ -150,7 +159,7 @@ def main():
     print(f"  src/modules/brucelink/    {n_mod} files")
     print(f"  {MENU_FILE}  {'menu entry added' if changed else 'menu entry already present'}")
     print("Build:  pio run -e m5stack-sticks3")
-    print("On the device:  Config > Advanced > Toggle BruceLink")
+    print("On the device:  Config > Advanced > BruceLink pairing, then Toggle BruceLink")
 
 
 if __name__ == "__main__":

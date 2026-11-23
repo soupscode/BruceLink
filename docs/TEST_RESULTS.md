@@ -259,6 +259,44 @@ entries for slash-named Arduino `depends=` lines, and the framework's built-in
 the installer does. A local build with the real registry is the reference;
 this one shows the integration compiles, links and fits.
 
+## Pairing (ADR 0005) — host tests and builds (2026-11-23)
+
+```
+$ make -C tests/c clean test cppcheck
+[pair]      13 tests ok   (happy path + session with the new key, peer confirms
+                           first, rejection either side, man in the middle,
+                           tampering with name / nonce / key changes the code,
+                           commitment enforced, forged confirm, out-of-order and
+                           garbage ignored, malformed COMMITs, low-order key,
+                           timeout across tick wrap + cancel, name sanitising,
+                           wipe and argument checks)
+2137 checks, 0 failed
+[pairing]    5 tests ok   (bridge pairing mode: full pairing then a session with
+                           the key, rejections, foreign / silent peers dropped
+                           with cooldown, modes kept separate, link loss and
+                           time limit)
+266 checks, 0 failed
+cppcheck clean
+$ python3 -m unittest discover -s tests       20 tests OK
+  incl. test_pairing_interop: Python recomputes commitment, transcript, code,
+  key, both confirm tags and key id from the ADR and matches the C vector
+```
+
+Mutation check of `bl_pair.c`: six deliberately broken variants (no commitment
+check, confirm never verified, names or responder nonce left out of the
+transcript, secrets kept after failure, reveal sent before checking the peer's
+key) each fail at least one test.
+
+Bug found by the new bridge tests before shipping: taking the pairing result a
+second time returned the wiped, all-zero buffer as a key.
+
+Builds: Flipper FAP 45,616 bytes, APPCHK pass (enclave and FlipperFormat calls
+are exported at API 87.1); ESP32 compile check OK; Bruce 1.17 + BruceLink for
+`m5stack-sticks3` builds and links (RAM 40.8 %, Flash 56.9 %).
+
+**Not run on hardware.** Not host-testable: the Flipper key file (secure
+enclave), both pairing screens, the StickS3 NVS store.
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)

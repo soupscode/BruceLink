@@ -5,10 +5,10 @@ M5StickS3 (ESP32-S3) running Bruce firmware, over an authenticated BLE link.
 BruceLink **reuses Bruce's existing functions** through a remote interface — it
 does not reimplement them.
 
-> **Status: both ends of the BLE link are implemented and host-tested; the link
-> has never run on a radio.** The Flipper app has run on a device over its
-> built-in mock only. Both builds use a public demo pairing key, and frames are
-> authenticated but not encrypted. See
+> **Status: the Flipper and the StickS3 link over BLE on real hardware** (device
+> info, capabilities, Wi-Fi scan; owner-reported). Pairing with a comparison
+> code is implemented but not yet run on hardware. Frames are authenticated but
+> not encrypted; capture and active operations are not wired into Bruce yet. See
 > [`docs/STATUS.md`](docs/STATUS.md) and [`LOCAL_HANDOFF.md`](LOCAL_HANDOFF.md).
 
 ## What works today (verified in CI)
