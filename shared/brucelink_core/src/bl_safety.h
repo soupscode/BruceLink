@@ -89,13 +89,30 @@ void bl_safety_reset(bl_safety_t* g);
 void bl_safety_on_link_loss(bl_safety_t* g);
 
 /*
+ * True only for a specific (individual, unicast) station/AP address:
+ * rejects all-zero and any group address (I/G bit set — this includes
+ * the broadcast address ff:ff:ff:ff:ff:ff and all multicast).
+ */
+bool bl_safety_bssid_is_specific(const uint8_t bssid[BL_BSSID_LEN]);
+
+/*
+ * Frames still available in the current rate window at now_ms (rolls an
+ * expired window first). Use it to bound how many frames an active op may
+ * transmit, authorize exactly that many, then refund what was not used.
+ */
+uint32_t bl_safety_budget(bl_safety_t* g, uint32_t now_ms);
+
+/* Return frames reserved by bl_safety_authorize but not transmitted. */
+void bl_safety_refund(bl_safety_t* g, uint32_t frames);
+
+/*
  * Authorize one operation at time now_ms. Passive ops pass unless
  * emergency-stopped. Active ops require: not e-stopped, active enabled,
- * a specific target when require_target is set (never broadcast), the
- * target within the scope when one is configured, and spare budget in
- * the rate window (consuming `frames`). Returns BL_OK, BL_E_DENIED
- * (estopped / disabled / target out of scope / missing required
- * target), or BL_E_LOCKED (rate limited).
+ * a specific (unicast, non-zero) target when require_target is set —
+ * never broadcast or multicast — the target within the scope when one is
+ * configured, and spare budget in the rate window (reserving `frames`).
+ * Returns BL_OK, BL_E_DENIED (estopped / disabled / non-specific or
+ * missing target / target out of scope), or BL_E_LOCKED (rate limited).
  */
 int bl_safety_authorize(
     bl_safety_t* g,

@@ -2,7 +2,36 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
-## [Unreleased] — dev/foundation-v1 (2026-11-23)
+## [Unreleased] — PR #1 review fixes (2026-11-23)
+
+### Fixed
+- **Bridge lost the pairing key on disconnect** (P1): every reconnect failed
+  authentication. The provisioned key is now held separately from the session.
+- **ESTOP did not block capture start**: a latched e-stop now refuses
+  `CAP_START` (and all radio use) for the rest of the session.
+- **Capture poll failure left the radio/file open**: the backend is stopped and
+  flushed exactly once on failure; later cleanup cannot double-stop.
+- **Uninitialised capture manager** in the bridge constructor / no-backend builds.
+- **Rate limit did not bound real transmissions** (one frame charged per op):
+  ops now get a frame budget passed to Bruce as a hard cap, with refunds;
+  backend overrun trips the e-stop.
+- **Wi-Fi scan length bookkeeping** (summed `snprintf` results; `SIZE_MAX` at
+  zero capacity): replaced with a bounded text builder.
+- Found while fixing: broadcast/multicast BSSIDs passed the active-target check;
+  SSIDs could inject lines into scan output; the bridge ignored the negotiated
+  BLE MTU; capture mode/channel and active-op channel were not range-checked.
+
+### Added
+- `bl_textbuf` (shared core): bounded, printf-free text builder.
+- `BruceLinkFormat`: sanitized Wi-Fi result line formatting.
+- Host test suite for the ESP32 bridge core (`bl_bridge_tests`, 88 checks,
+  ASan+UBSan); cppcheck now covers the bridge core.
+
+### Changed
+- `BruceBackend::activeOp` and the `bruce_brucelink_deauth` hook take
+  `max_frames` and must not exceed it.
+
+## [Foundation] — dev/foundation-v1 (2026-11-23)
 
 ### Added
 - **Shared protocol core** (`shared/brucelink_core`, C99, allocation-free):

@@ -59,8 +59,9 @@ bool NimBleCentralTransport::discover(NimBLEClient* client) {
 }
 
 void NimBleCentralTransport::onConnect(NimBLEClient* client) {
-    mtu_ = client->getMTU() > BL_FRAG_HDR + 1 ? (size_t)client->getMTU() - 3 : 20;
     // ATT header is 3 bytes; usable notify/write payload = MTU - 3.
+    mtu_ = client->getMTU() > BL_FRAG_HDR + 4 ? (size_t)client->getMTU() - 3 : 20;
+    if(bridge_) bridge_->setMtu(mtu_); // bridge fragments responses at this size
 }
 
 void NimBleCentralTransport::onDisconnect(NimBLEClient* client, int reason) {

@@ -15,6 +15,17 @@ void bl_capture_init(bl_capture_mgr_t* m, const bl_capture_backend_t* be, void* 
     m->be = be;
     m->be_ctx = be_ctx;
     m->state = BL_CAPST_IDLE;
+    m->backend_active = false;
+}
+
+/* Stop the backend if (and only if) it is still active. */
+static int backend_stop_once(bl_capture_mgr_t* m) {
+    int rc = BL_OK;
+    if(m->backend_active && m->be != NULL && m->be->stop != NULL) {
+        rc = m->be->stop(m->be_ctx);
+    }
+    m->backend_active = false;
+    return rc;
 }
 
 int bl_capture_start(
@@ -23,8 +34,12 @@ int bl_capture_start(
     uint8_t channel,
     uint32_t session_id,
     uint32_t now_ms) {
-    if(m == NULL || m->be == NULL) return BL_E_ARG;
+    if(m == NULL || m->be == NULL || m->be->start == NULL) return BL_E_ARG;
     if(m->state == BL_CAPST_RUNNING || m->state == BL_CAPST_STOPPING) return BL_E_BUSY;
+    /* One unsigned bound check: enum signedness differs between targets
+     * (unsigned short-enums on the Flipper toolchain), and a negative
+     * value converts to a huge unsigned one, so this rejects both ends. */
+    if((unsigned)mode > (unsigned)BL_CAP_MODE_DEAUTH_PCAP) return BL_E_ARG;
     if(channel < BL_CAP_CH_MIN || channel > BL_CAP_CH_MAX) return BL_E_ARG;
     if(m->be->mode_available) {
         if(m->be->mode_available(m->be_ctx, mode) != 1) return BL_E_DENIED;
@@ -32,10 +47,13 @@ int bl_capture_start(
     memset(&m->counts, 0, sizeof(m->counts));
     int rc = m->be->start(m->be_ctx, mode, channel);
     if(rc != BL_OK) {
+        /* contract: a failed start leaves the backend stopped */
+        m->backend_active = false;
         m->state = BL_CAPST_ERROR;
         m->last_error = rc;
         return rc;
     }
+    m->backend_active = true;
     m->mode = mode;
     m->channel = channel;
     m->session_id = session_id;
@@ -67,8 +85,11 @@ int bl_capture_poll(bl_capture_mgr_t* m) {
     memset(&c, 0, sizeof(c));
     int rc = m->be->poll(m->be_ctx, &c);
     if(rc != BL_OK) {
-        /* a backend error during a running capture (e.g. storage full)
-         * transitions to ERROR so the operator sees it; caller should stop */
+        /* A failure mid-capture (e.g. LittleFS full) must not leave the
+         * radio in promiscuous mode or the pcap file open: stop and flush
+         * the backend now, exactly once, then surface ERROR to the operator.
+         * The last good counters are kept. */
+        (void)backend_stop_once(m);
         m->state = BL_CAPST_ERROR;
         m->last_error = rc;
         return rc;
@@ -78,10 +99,10 @@ int bl_capture_poll(bl_capture_mgr_t* m) {
 }
 
 int bl_capture_stop(bl_capture_mgr_t* m) {
-    if(m == NULL || m->be == NULL) return BL_E_ARG;
+    if(m == NULL) return BL_E_ARG;
     if(m->state == BL_CAPST_IDLE) return BL_OK; /* idempotent */
     m->state = BL_CAPST_STOPPING;
-    int rc = m->be->stop ? m->be->stop(m->be_ctx) : BL_OK;
+    int rc = backend_stop_once(m);
     m->state = BL_CAPST_IDLE;
     if(rc != BL_OK) m->last_error = rc;
     return rc;

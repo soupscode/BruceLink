@@ -40,10 +40,14 @@ checkout for the `m5stack-sticks3` env. None of it is verified on hardware yet.
    `config.cpp:456`). First run generates one with `esp_fill_random` and shows a
    setup code; the Flipper is provisioned with the same key out of band.
 
-4. **(Active ops only) gate call-sites.** `bruce_brucelink_deauth` calls Bruce's
-   existing `send_raw_frame`/`wsl_bypasser_send_raw_frame` (`wifi_atks.cpp:140-147`).
-   The remote safety gate is enforced in the bridge *before* this is reached;
-   no change to Bruce's transmit code itself.
+4. **(Active ops only) gate call-sites.** `bruce_brucelink_deauth(target, channel,
+   max_frames)` calls Bruce's existing `send_raw_frame`/`wsl_bypasser_send_raw_frame`
+   (`wifi_atks.cpp:140-147`) and **must stop before exceeding `max_frames`**,
+   returning the count actually transmitted. Bruce's helpers emit several frames
+   per call (`send_raw_frame` ×3, `sendDeauthToAP` ×12), so the hook counts
+   frames rather than calls. The remote safety gate (enable, e-stop, unicast
+   target, optional scope, frame budget) is enforced in the bridge *before* this
+   is reached; no change to Bruce's transmit code itself.
 
 ## Coexistence note
 

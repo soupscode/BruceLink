@@ -67,13 +67,20 @@ typedef struct {
     uint32_t start_ms;
     bl_capture_counts_t counts;
     int last_error;
+    /* true between a successful backend start() and its matching stop();
+     * guarantees the backend's stop (flush + close file) runs exactly once */
+    bool backend_active;
 } bl_capture_mgr_t;
 
+/* Initialise. `be` may be NULL (no capture hardware/backend): the manager
+ * is then permanently IDLE and start() returns BL_E_ARG. Safe to call on
+ * uninitialised storage; always call before any other bl_capture_* use. */
 void bl_capture_init(bl_capture_mgr_t* m, const bl_capture_backend_t* be, void* be_ctx);
 
-/* Start a session. Validates channel (1..14) and that the backend
- * reports the mode available. Returns BL_OK, BL_E_BUSY, BL_E_ARG,
- * BL_E_DENIED (mode unavailable), or the backend error. */
+/* Start a session. Validates mode and channel (1..14) and that the
+ * backend reports the mode available. Returns BL_OK, BL_E_BUSY, BL_E_ARG,
+ * BL_E_DENIED (mode unavailable on this hardware), or the backend error.
+ * Backend contract: a start() that fails must leave the backend stopped. */
 int bl_capture_start(
     bl_capture_mgr_t* m,
     bl_capture_mode_t mode,
@@ -84,10 +91,15 @@ int bl_capture_start(
 /* Change channel mid-session (RUNNING only). */
 int bl_capture_set_channel(bl_capture_mgr_t* m, uint8_t channel);
 
-/* Refresh counters from the backend (RUNNING only). */
+/* Refresh counters from the backend (RUNNING only). On a backend error
+ * (e.g. storage full) the backend is stopped and flushed immediately and
+ * the manager moves to ERROR with last_error set, so a failed capture
+ * never leaves the radio running or the file open. */
 int bl_capture_poll(bl_capture_mgr_t* m);
 
-/* Stop and flush. Idempotent when already IDLE. */
+/* Stop and flush. Idempotent from every state: it calls the backend's
+ * stop only if the backend is still active, then returns to IDLE
+ * (clearing ERROR; last_error is kept for status reporting). */
 int bl_capture_stop(bl_capture_mgr_t* m);
 
 static inline bool bl_capture_is_running(const bl_capture_mgr_t* m) {

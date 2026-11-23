@@ -88,6 +88,38 @@ gate (ADR 0003); `REQUIRES_TARGET` ones must name a BSSID (no broadcast).
 
 `CMD_REQ` for an active capability: `[u16 cap_id][u8 channel][u8 bssid[6]]`.
 
+- `channel` must be 1–14 and `bssid` a **specific unicast** address (I/G bit
+  clear, not all-zero); broadcast/multicast → `bad_arg`.
+- Checked in order: e-stop (`estopped`) → active ops enabled
+  (`not_authorized`) → args (`bad_arg`) → frame budget (`rate_limited`) →
+  operator scope (`target_not_allowed`).
+- **Frame budget:** the bridge reserves `min(16, frames left in the rate
+  window)` and passes it to Bruce as a hard cap on transmitted frames; unused
+  frames are refunded. A backend that reports more than its cap trips the
+  e-stop (`internal`). The window default is 64 frames / 1000 ms.
+
+## Emergency stop and session lifetime
+
+- `ESTOP` latches for the **rest of the session**: every radio operation
+  (Wi-Fi scan, `CAP_START`, active ops) is refused with `estopped`, and any
+  capture is stopped and flushed. Read-only queries (`PING`, `DEVICE_INFO`,
+  `CAPS`, `STATUS`) and `CAP_STOP` stay available.
+- A **new authenticated session** starts with the gate reset: e-stop cleared and
+  active ops disabled until the operator re-enables them.
+- Link loss = automatic e-stop + capture stop (fail-safe).
+
+## Capture
+
+`CAP_START [u8 mode][u8 channel]`: mode 0 handshake-only, 1 raw (needs SD;
+`no_resource` on a bare StickS3), 2 deauth-pcap; channel 1–14. Errors:
+`estopped`, `capability_disabled` (build has no capture backend), `bad_arg`,
+`busy`, `no_resource`. If the backend fails mid-capture (e.g. LittleFS full) the
+bridge stops and flushes it immediately; `STATUS` then reports `capture:error`
+with the cause in `err:` until `CAP_STOP` or a new start.
+
+`STATUS` text: `capture:<idle|running|error> pkts:N eapol:N hs:N err:<code>
+estop:<0|1> active:<0|1>`.
+
 ## Wire error codes (ERROR payload, u16)
 
 0 none · 1 bad_frame · 2 unsupported_version · 3 not_authenticated ·

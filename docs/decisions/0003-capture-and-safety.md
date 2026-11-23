@@ -80,10 +80,20 @@ physical control (the button):
   operator command over the authenticated link;
 - an **emergency stop** that latches closed and is engaged automatically on
   **link loss** (`bl_safety_on_link_loss`) — the fail-safe Bruce lacks remotely;
-- a **transmission-rate/duration limiter** so a wedged remote session can't
-  transmit unbounded;
+- a **transmission-rate limiter that bounds actual frames**: the bridge reserves
+  `min(16, frames left in the window)`, passes that number to Bruce as a hard
+  cap, and refunds what was not sent; a backend that exceeds its cap trips the
+  e-stop (revised after PR #1 review — the first version charged one frame per
+  op while an op could send many);
 - an **optional** operator target scope (BSSID allowlist) to confine a test —
-  a convenience, not a credential; broadcast active ops are refused.
+  a convenience, not a credential. Active ops need a **specific unicast**
+  target: broadcast and multicast BSSIDs are refused (the first version only
+  rejected a NULL pointer, which the wire format never produces).
+
+E-stop latches for the session and blocks all radio use, including capture
+start; a new authenticated session resets the gate with active ops disabled.
+A capture whose backend fails is stopped and flushed at once (exactly-once
+stop), never left with the radio in promiscuous mode or the file open.
 
 No per-function token. Active capabilities carry `REQUIRES_AUTH` purely to route
 them through this gate. The gate decides policy; it never emits RF — the actual

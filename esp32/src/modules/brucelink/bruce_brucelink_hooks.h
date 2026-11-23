@@ -44,9 +44,14 @@ void bruce_brucelink_sniffer_stop(void);
 bool bruce_brucelink_raw_mode_available(void); /* == sniffer_full_mode_available() */
 
 /* Active op: forwards to Bruce's existing send_raw_frame/wsl_bypasser
- * (wifi_atks.cpp). target is a 6-byte BSSID; returns frames sent or <0.
- * BruceLink has already enforced the remote safety gate before calling. */
-int bruce_brucelink_deauth(const uint8_t* target_bssid, uint8_t channel);
+ * (wifi_atks.cpp). target is a specific 6-byte BSSID. MUST transmit at
+ * most max_frames frames (Bruce's helpers send several frames per call,
+ * e.g. send_raw_frame x3, sendDeauthToAP x12 — stop before exceeding the
+ * cap) and return the number actually transmitted, or <0 on error.
+ * BruceLink has already enforced the remote safety gate and reserved
+ * max_frames from its rate window before calling; returning more than
+ * max_frames makes the bridge engage the emergency stop. */
+int bruce_brucelink_deauth(const uint8_t* target_bssid, uint8_t channel, uint32_t max_frames);
 
 #ifdef __cplusplus
 }

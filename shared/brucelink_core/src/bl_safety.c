@@ -66,6 +66,33 @@ void bl_safety_on_link_loss(bl_safety_t* g) {
     bl_safety_estop(g);
 }
 
+bool bl_safety_bssid_is_specific(const uint8_t bssid[BL_BSSID_LEN]) {
+    if(bssid == NULL) return false;
+    if(bssid[0] & 0x01u) return false; /* I/G bit: broadcast or multicast */
+    uint8_t any = 0;
+    for(size_t i = 0; i < BL_BSSID_LEN; i++) any |= bssid[i];
+    return any != 0; /* 00:00:00:00:00:00 is not a station */
+}
+
+static void roll_window(bl_safety_t* g, uint32_t now_ms) {
+    if(g->window_start_ms == 0 || now_ms - g->window_start_ms >= g->window_ms) {
+        g->window_start_ms = now_ms ? now_ms : 1;
+        g->frames_in_window = 0;
+    }
+}
+
+uint32_t bl_safety_budget(bl_safety_t* g, uint32_t now_ms) {
+    if(g == NULL) return 0;
+    roll_window(g, now_ms);
+    if(g->frames_in_window >= g->max_frames_per_window) return 0;
+    return g->max_frames_per_window - g->frames_in_window;
+}
+
+void bl_safety_refund(bl_safety_t* g, uint32_t frames) {
+    if(g == NULL) return;
+    g->frames_in_window = (frames >= g->frames_in_window) ? 0 : g->frames_in_window - frames;
+}
+
 static bool target_in_scope(const bl_safety_t* g, const uint8_t target[BL_BSSID_LEN]) {
     if(g->allowlist_count == 0) return true; /* no scoping configured */
     for(uint8_t i = 0; i < g->allowlist_count; i++) {
@@ -88,16 +115,14 @@ int bl_safety_authorize(
     /* active path */
     if(!g->active_enabled) return BL_E_DENIED;
     if(require_target) {
-        if(target == NULL) return BL_E_DENIED; /* no broadcast active ops */
+        /* never broadcast/multicast: the target must be one specific station */
+        if(!bl_safety_bssid_is_specific(target)) return BL_E_DENIED;
         if(!target_in_scope(g, target)) return BL_E_DENIED;
     } else if(target != NULL && !target_in_scope(g, target)) {
         return BL_E_DENIED;
     }
     /* fixed-window rate limit */
-    if(g->window_start_ms == 0 || now_ms - g->window_start_ms >= g->window_ms) {
-        g->window_start_ms = now_ms ? now_ms : 1;
-        g->frames_in_window = 0;
-    }
+    roll_window(g, now_ms);
     if(frames == 0) frames = 1;
     if(g->frames_in_window + frames > g->max_frames_per_window) return BL_E_LOCKED;
     g->frames_in_window += frames;

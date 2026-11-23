@@ -26,11 +26,15 @@ verified from what was not.
 
 | Check | Result |
 |---|---|
-| Host C core, ASan+UBSan | 1434 checks, 0 failed |
-| cppcheck (core) | clean |
+| Host C core, ASan+UBSan | 1517 checks, 0 failed |
+| ESP32 bridge core on host, ASan+UBSan | 88 checks, 0 failed |
+| cppcheck (core C + bridge C++) | clean |
 | Python ref + C↔Python interop | 11 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
-| ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.0 %) |
+| ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.1 %) |
+
+PR #1 review defects were reproduced on `31629db`, fixed, and regression-tested;
+see `docs/TEST_RESULTS.md`.
 
 Full evidence: `docs/TEST_RESULTS.md`.
 
@@ -81,6 +85,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 - Momentum's `Connected` event only fires after pairing completes — the ESP32
   must initiate Just-Works pairing (ADR 0001).
 - `ble_gatt_characteristic_update` returns **true on failure** (inverted).
+- When implementing the Bruce hook `bruce_brucelink_deauth(target, channel,
+  max_frames)`: it **must count frames, not calls** (Bruce's helpers send 3–12
+  frames per call) and stop at `max_frames`. Exceeding it trips the bridge's
+  e-stop by design. Test with `HARDWARE_TESTING.md` step 9.
 - BLE + Wi-Fi-promiscuous coexistence is unmanaged upstream (no `esp_coex`).
 - Full raw pcap is SD-gated on a bare StickS3 (by design, refused).
 - Demo pairing key is compiled into the loopback path only; real key

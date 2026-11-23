@@ -23,7 +23,8 @@ public:
     size_t deviceInfo(char* out, size_t cap) override;
     size_t wifiScan(char* out, size_t cap) override;
     bool captureBackend(const bl_capture_backend_t** be, void** ctx) override;
-    int activeOp(uint16_t cap_id, const uint8_t* target, uint8_t channel) override;
+    int activeOp(uint16_t cap_id, const uint8_t* target, uint8_t channel, uint32_t max_frames)
+        override;
     uint32_t nowMs() override;
     void randomBytes(uint8_t* out, size_t len) override;
 };

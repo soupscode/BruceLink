@@ -9,8 +9,8 @@
  * chunks through a tx callback.
  *
  * This file depends ONLY on the shared protocol core (portable C99), so
- * it compiles and is unit-tested off-device. NimBLE lives in the
- * transport layer; Bruce lives behind BruceBackend.
+ * it compiles and is unit-tested on the host (tests/c/test_bridge.cpp).
+ * NimBLE lives in the transport layer; Bruce lives behind BruceBackend.
  * SPDX-License-Identifier: MIT
  */
 #pragma once
@@ -31,25 +31,35 @@ namespace brucelink {
 /* Reserved capability ids for bridge control (not Bruce functions). */
 static const uint16_t kCtrlEnableActive = 0xFF01;
 
+/* Upper bound on frames a single active op may transmit. The bridge
+ * authorizes min(this, remaining window budget) and passes it to the
+ * backend as a hard cap; unused frames are refunded to the window. */
+static const uint32_t kMaxFramesPerActiveOp = 16;
+
 /* Implemented by the Bruce-dependent glue (src/modules/brucelink). The
- * bridge core calls only these; everything Bruce-specific stays here. */
+ * bridge core calls only these; everything Bruce-specific stays there. */
 class BruceBackend {
 public:
     virtual ~BruceBackend() {}
-    /* Fill out with a human-readable device/firmware summary; return
-     * the number of bytes written (<= cap). */
+    /* Write a human-readable device/firmware summary into out (text, NUL-
+     * terminated) and return its length (< cap). The bridge clamps the
+     * reported length to the text actually present. */
     virtual size_t deviceInfo(char* out, size_t cap) = 0;
-    /* Passive Wi-Fi scan rendered as text lines; return bytes written. */
+    /* Passive Wi-Fi scan rendered as text lines; same contract. */
     virtual size_t wifiScan(char* out, size_t cap) = 0;
-    /* Provide the capture backend vtable + context for the manager. */
+    /* Provide the capture backend vtable + context; false if this build has
+     * no capture support (capture requests then report "disabled"). */
     virtual bool captureBackend(const bl_capture_backend_t** be, void** ctx) = 0;
-    /* Forward an authorized active op (e.g. deauth) to Bruce. target is
-     * a 6-byte BSSID. Returns frames transmitted, or <0 on error. The
-     * bridge has already checked the safety gate. */
-    virtual int activeOp(uint16_t cap_id, const uint8_t* target, uint8_t channel) = 0;
+    /* Forward an authorized active op (e.g. deauth) to Bruce. target is a
+     * specific 6-byte BSSID. The backend MUST transmit at most max_frames
+     * frames and returns the number actually transmitted, or <0 on error.
+     * Returning more than max_frames is a contract violation: the bridge
+     * treats it as a fault and engages the emergency stop. The bridge has
+     * already passed the safety gate before calling. */
+    virtual int activeOp(uint16_t cap_id, const uint8_t* target, uint8_t channel, uint32_t max_frames) = 0;
     /* Monotonic milliseconds (millis()). */
     virtual uint32_t nowMs() = 0;
-    /* Fill 32 random bytes (esp_fill_random). */
+    /* Fill len cryptographically random bytes (esp_fill_random). */
     virtual void randomBytes(uint8_t* out, size_t len) = 0;
 };
 
@@ -59,8 +69,10 @@ typedef void (*TxChunkFn)(void* ctx, const uint8_t* chunk, size_t len);
 class BruceLinkBridge {
 public:
     BruceLinkBridge();
-    /* Provision the pairing key and operator secret, wire the backend
-     * and the tx path. mtu is the usable GATT payload per chunk. */
+    ~BruceLinkBridge();
+    /* Provision the pairing key, wire the backend and the tx path. mtu is
+     * the usable GATT payload per chunk. The key is kept for the bridge's
+     * lifetime and reused for every (re)connection. */
     void begin(
         const uint8_t psk[BL_KEY_LEN],
         BruceBackend* backend,
@@ -68,15 +80,21 @@ public:
         void* tx_ctx,
         size_t mtu);
 
-    /* Call when a BLE link is established (resets session + reassembly). */
+    /* Call when a BLE link is established: fresh session from the
+     * provisioned key, cleared reassembly, safety gate reset (e-stop
+     * cleared, active ops disabled until re-enabled). */
     void onConnect();
-    /* Call when the BLE link drops: fail-safe (e-stop, stop capture). */
+    /* Call when the BLE link drops: fail-safe (e-stop, stop capture),
+     * then discard session secrets. The provisioned key is kept. */
     void onDisconnect();
+
+    /* Update the usable per-chunk payload after ATT MTU negotiation. */
+    void setMtu(size_t mtu);
 
     /* Feed one received GATT chunk (one write/notify). */
     void onChunk(const uint8_t* chunk, size_t len);
 
-    /* Poll capture counters so BL_MSG_STATUS reflects live numbers. */
+    /* Poll capture counters; a backend failure stops the capture. */
     void tick();
 
     bool established() const {
@@ -84,14 +102,24 @@ public:
     }
 
 private:
+    BruceLinkBridge(const BruceLinkBridge&);
+    BruceLinkBridge& operator=(const BruceLinkBridge&);
+
     void onFrame(const uint8_t* frame, size_t len);
     void handleRequest(const bl_frame_t* f);
+    void handleCommand(const bl_frame_t* f);
+    void handleActiveOp(const bl_capability_desc_t* d, const uint8_t* args, uint16_t arglen);
+    void handleCaptureStart(const bl_frame_t* f);
+    bool radioAllowed(); /* passive radio use permitted (not e-stopped) */
     void sendSealed(uint8_t type, uint8_t flags, const uint8_t* pl, uint16_t len);
+    void sendText(uint8_t type, const char* text, size_t len);
     void sendRaw(const uint8_t* frame, size_t len); /* fragment + tx */
     void sendError(uint16_t err);
     void sendStatus();
 
-    bl_session_t session_;
+    uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */
+    bool have_psk_;
+    bl_session_t session_; /* per-connection; secrets wiped on disconnect */
     bl_safety_t safety_;
     bl_capture_mgr_t capture_;
     bl_reasm_t reasm_;

@@ -29,7 +29,7 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
 ## Commands
 
 ```
-make -C tests/c test cppcheck                # core tests + static analysis
+make -C tests/c test cppcheck                # core + bridge-core tests (ASan/UBSan) + static analysis
 python3 -m unittest discover -s tests -v     # Python ref + C interop
 (cd flipper/brucelink && ufbt)               # build FAP
 (cd esp32/test_compile && pio run)           # build ESP32 bridge
@@ -59,6 +59,12 @@ scripts/hil/build_all.sh                     # everything
   unrestricted command execution. Bound all payloads (≤ 512 B).
 - Never store the pairing key in `bruce.conf` (Bruce prints it to serial).
 - Active-RF testing only in owned/authorized, isolated lab environments.
+
+## Testing rule
+
+Code that can run on the host (shared core, bridge core, formatters) must be
+**host-tested**, not just cross-compiled. Compile success is not review evidence
+for logic. New defects get a regression test reproduced against the old code.
 
 ## Definition of done
 

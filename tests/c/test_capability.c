@@ -104,8 +104,11 @@ static void t_safety_enable_and_scope(void) {
     CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
     CHECK(bl_safety_active_ready(&g));
 
-    uint8_t allowed[6] = {1, 2, 3, 4, 5, 6};
-    uint8_t other[6] = {9, 9, 9, 9, 9, 9};
+    /* Unicast BSSIDs (I/G bit clear). Earlier fixtures {1,2,3,..} and
+     * {9,9,..} were group addresses, which the gate now correctly rejects
+     * as non-specific targets (see t_safety_rejects_non_specific_targets). */
+    uint8_t allowed[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t other[6] = {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
     /* with no scope, any specific target passes */
     CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, other, true, 1, 1000), BL_OK);
     /* broadcast (no target) is never allowed for an active op */
@@ -128,7 +131,7 @@ static void t_safety_rate_limit(void) {
     bl_safety_init(&g);
     bl_safety_set_limits(&g, 1000, 10, 30000);
     bl_safety_enable_active(&g, true);
-    uint8_t t[6] = {1, 1, 1, 1, 1, 1};
+    uint8_t t[6] = {0x02, 1, 1, 1, 1, 1}; /* unicast */
     /* 10 frames in the window OK, 11th blocked */
     CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 10, 5000), BL_OK);
     CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5100), BL_E_LOCKED);
@@ -158,11 +161,69 @@ static void t_safety_estop_and_link_loss(void) {
     CHECK(!bl_safety_active_ready(&g));
 }
 
+/* Regression: "no broadcast active ops" previously held only for a NULL
+ * target pointer, but the wire always carries 6 bytes, so ff:ff:ff:ff:ff:ff
+ * or any multicast address passed. */
+static void t_safety_rejects_non_specific_targets(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    bl_safety_enable_active(&g, true);
+    uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t mcast[6] = {0x01, 0x00, 0x5e, 0x00, 0x00, 0x01};
+    uint8_t zero[6] = {0};
+    uint8_t uni[6] = {0x3c, 0x22, 0xfb, 0x01, 0x02, 0x03};
+    CHECK(!bl_safety_bssid_is_specific(bcast));
+    CHECK(!bl_safety_bssid_is_specific(mcast));
+    CHECK(!bl_safety_bssid_is_specific(zero));
+    CHECK(!bl_safety_bssid_is_specific(NULL));
+    CHECK(bl_safety_bssid_is_specific(uni));
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, mcast, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, zero, true, 1, 1000), BL_E_DENIED);
+    /* even an operator scope that lists broadcast cannot authorize it */
+    uint8_t list[1][6];
+    memcpy(list[0], bcast, 6);
+    bl_safety_set_allowlist(&g, list, 1);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, true, 1, 1000), BL_E_DENIED);
+    /* a denied attempt consumes no budget */
+    bl_safety_set_allowlist(&g, NULL, 0);
+    CHECK_EQ_INT(bl_safety_budget(&g, 1000), g.max_frames_per_window);
+}
+
+/* Regression for "rate limit must bound actual transmissions": the
+ * bridge reserves a budget, lets the backend send up to it, and refunds
+ * the unused part. */
+static void t_safety_budget_and_refund(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    bl_safety_set_limits(&g, 1000, 20, 30000);
+    bl_safety_enable_active(&g, true);
+    uint8_t t[6] = {0x02, 1, 2, 3, 4, 5};
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 20);
+    /* reserve 16, only 4 actually sent -> refund 12 */
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 16, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 4);
+    bl_safety_refund(&g, 12);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 16);
+    /* reserving more than remains is refused */
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 17, 5000), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 16, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
+    /* over-refund clamps at an empty window, never wraps */
+    bl_safety_refund(&g, 1000);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5000), 20);
+    /* window roll restores the full budget */
+    bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 20, 5000);
+    CHECK_EQ_INT(bl_safety_budget(&g, 5999), 0);
+    CHECK_EQ_INT(bl_safety_budget(&g, 6000), 20);
+}
+
 /* ---------------------------------------------------------- capture */
 
 typedef struct {
     int start_rc, channel_rc, poll_rc, stop_rc;
     int started, stopped;
+    int stop_calls; /* counts backend stop (flush+close) invocations */
     int raw_available;
     uint32_t packets;
 } mock_be_t;
@@ -190,6 +251,7 @@ static int mb_poll(void* c, bl_capture_counts_t* o) {
 static int mb_stop(void* c) {
     mock_be_t* b = c;
     b->stopped = 1;
+    b->stop_calls++;
     return b->stop_rc;
 }
 static int mb_mode_avail(void* c, bl_capture_mode_t m) {
@@ -261,7 +323,60 @@ static void t_capture_poll_failure_transitions_error(void) {
     bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 1, 1, 0);
     CHECK_EQ_INT(bl_capture_poll(&m), BL_E_NO_RESOURCE);
     CHECK_EQ_INT(m.state, BL_CAPST_ERROR);
-    /* operator can still stop to clean up */
+    CHECK_EQ_INT(m.last_error, BL_E_NO_RESOURCE);
+    /* Regression (PR #1, Codex): the failed poll itself must stop and flush
+     * the backend — previously it only flagged ERROR and left the radio in
+     * promiscuous mode with the pcap file open. */
+    CHECK_EQ_INT(be.stop_calls, 1);
+    CHECK(!bl_capture_is_running(&m));
+    /* operator stop afterwards is clean and does NOT stop the backend twice */
+    CHECK_EQ_INT(bl_capture_stop(&m), BL_OK);
+    CHECK_EQ_INT(be.stop_calls, 1);
+    CHECK_EQ_INT(m.state, BL_CAPST_IDLE);
+    /* a new session can start after the error */
+    be.poll_rc = BL_OK;
+    CHECK_EQ_INT(bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 1, 2, 0), BL_OK);
+}
+
+static void t_capture_stop_exactly_once(void) {
+    mock_be_t be = {0};
+    bl_capture_mgr_t m;
+    bl_capture_init(&m, &MOCK_BE, &be);
+    bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 6, 1, 0);
+    bl_capture_stop(&m);
+    bl_capture_stop(&m);
+    bl_capture_stop(&m);
+    CHECK_EQ_INT(be.stop_calls, 1);
+    /* a failed start never needs a stop */
+    mock_be_t be2 = {0};
+    be2.start_rc = BL_E_NO_RESOURCE;
+    bl_capture_init(&m, &MOCK_BE, &be2);
+    bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 6, 1, 0);
+    bl_capture_stop(&m);
+    CHECK_EQ_INT(be2.stop_calls, 0);
+    CHECK_EQ_INT(m.state, BL_CAPST_IDLE);
+}
+
+static void t_capture_invalid_mode_rejected(void) {
+    mock_be_t be = {0};
+    bl_capture_mgr_t m;
+    bl_capture_init(&m, &MOCK_BE, &be);
+    CHECK_EQ_INT(bl_capture_start(&m, (bl_capture_mode_t)7, 6, 1, 0), BL_E_ARG);
+    CHECK_EQ_INT(bl_capture_start(&m, (bl_capture_mode_t)-1, 6, 1, 0), BL_E_ARG);
+    CHECK_EQ_INT(bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 0, 1, 0), BL_E_ARG);
+    CHECK(!be.started);
+}
+
+/* Regression (PR #1 review: capture manager initialisation): a manager
+ * with no backend must be a valid, permanently idle object. */
+static void t_capture_null_backend(void) {
+    bl_capture_mgr_t m;
+    memset(&m, 0xA5, sizeof(m)); /* simulate uninitialised storage */
+    bl_capture_init(&m, NULL, NULL);
+    CHECK_EQ_INT(m.state, BL_CAPST_IDLE);
+    CHECK(!bl_capture_is_running(&m));
+    CHECK_EQ_INT(bl_capture_start(&m, BL_CAP_MODE_HANDSHAKE, 6, 1, 0), BL_E_ARG);
+    CHECK_EQ_INT(bl_capture_poll(&m), BL_E_ARG);
     CHECK_EQ_INT(bl_capture_stop(&m), BL_OK);
 }
 
@@ -274,8 +389,13 @@ void run_capability_tests(void) {
     RUN(t_safety_enable_and_scope);
     RUN(t_safety_rate_limit);
     RUN(t_safety_estop_and_link_loss);
+    RUN(t_safety_rejects_non_specific_targets);
+    RUN(t_safety_budget_and_refund);
     RUN(t_capture_lifecycle);
     RUN(t_capture_raw_mode_gated);
     RUN(t_capture_backend_start_failure);
     RUN(t_capture_poll_failure_transitions_error);
+    RUN(t_capture_stop_exactly_once);
+    RUN(t_capture_invalid_mode_rejected);
+    RUN(t_capture_null_backend);
 }

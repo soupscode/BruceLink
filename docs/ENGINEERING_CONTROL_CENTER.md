@@ -33,7 +33,8 @@ where files overlapped.
 | Safety gate | ✅ | ✅ | ✅ | — |
 | Flipper UI + loopback | ✅ | — | ✅ APPCHK | — |
 | Flipper BLE transport | stub | — | ✅ | — |
-| ESP32 bridge + NimBLE | ✅ | core via shared tests | ✅ SUCCESS | — |
+| ESP32 bridge core | ✅ | ✅ 88 checks (host) | ✅ SUCCESS | — |
+| ESP32 NimBLE transport | ✅ | — (needs NimBLE) | ✅ SUCCESS | — |
 | Bruce glue + patch | written | — | ⬜ (Bruce tree) | — |
 
 ## Capture subsystem tracker (Phase 2)
@@ -79,3 +80,27 @@ Procedures: `docs/HARDWARE_TESTING.md`.
   - ESP32 bridge used a stale flag name and lacked `<stdio.h>` → fixed; rebuilt.
 - **Not accepted as done:** anything on-air; BLE transport (stub); Bruce glue
   (uncompiled in-tree). These stay 🟡/⬜.
+
+### PR #1 external review (2026-11-23) — gaps in the internal review
+
+The internal gate accepted `31629db` with the bridge core only *compile*-checked.
+Independent review (project owner + Codex) found six real defects there, all
+reproduced against `31629db` before fixing (evidence: `docs/TEST_RESULTS.md`):
+
+| Finding | Fix |
+|---|---|
+| P1: PSK wiped by `bl_session_close` on disconnect → every reconnect fails auth | Provisioned key kept in `psk_`, separate from the disposable session |
+| ESTOP didn't block `CAP_START` | Capture start goes through the gate; refused while latched |
+| Poll failure left radio + pcap file open | `bl_capture_poll` stops the backend exactly once (`backend_active`); cleanup paths call idempotent `bl_capture_stop` |
+| `capture_` uninitialised (constructor; no-backend builds) | Initialised in ctor and `begin()`; null backend = permanently idle |
+| Rate limit charged 1 frame/op while ops send many (16× over) | Frame budget: reserve `min(16, window remaining)`, pass as hard cap to the backend, refund unused; overrun → e-stop |
+| Wi-Fi scan summed `snprintf` returns (SIZE_MAX at cap 0, cut lines) | Bounded `bl_textbuf` + `formatWifiApLine`; bridge clamps backend lengths |
+
+Found while fixing: broadcast/multicast BSSIDs passed the "no broadcast" check
+(it only tested for NULL); untrusted SSIDs could inject lines; the bridge never
+learned the negotiated MTU. All fixed with tests.
+
+**Process change:** portable code is now host-tested, not just compile-checked.
+`make test` runs the bridge core under ASan+UBSan (`bl_bridge_tests`), and
+cppcheck covers it. Compile success alone is no longer accepted as review
+evidence for logic that can run on the host.

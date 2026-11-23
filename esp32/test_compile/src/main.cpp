@@ -50,7 +50,7 @@ public:
         *ctx = nullptr;
         return true;
     }
-    int activeOp(uint16_t, const uint8_t*, uint8_t) override {
+    int activeOp(uint16_t, const uint8_t*, uint8_t, uint32_t) override {
         return 0; // stub: no transmission
     }
     uint32_t nowMs() override {
