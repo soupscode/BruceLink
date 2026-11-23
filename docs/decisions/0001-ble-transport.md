@@ -128,7 +128,9 @@ details that only became clear while writing the Flipper profile.
   attribute-modified → RX data (value handle = characteristic handle + 1) or
   subscription (CCCD = handle + 2); MTU response; connection complete;
   disconnect.
-- **A central that connects but does not subscribe is dropped after 5 s.**
+- **A central that connects but does not subscribe is dropped after 20 s**
+  (5 s at first; raised after the first hardware run, where it was too short
+  to subscribe by hand from a phone scanner).
   The radio does not advertise while connected and the GATT is open, so any
   BLE device could otherwise hold the Flipper's only link.
 - **Chunk size is one shared rule** (`bl_ble_chunk_for_mtu`): MTU − 3, capped

@@ -187,7 +187,7 @@ Findings and outcome:
 
 | Finding | Outcome |
 |---|---|
-| A central that connects but never subscribes holds the only link | Fixed: connection event parsed, dropped after 5 s (`t_gatt_connection_complete`, `t_sub_guard`) |
+| A central that connects but never subscribes holds the only link | Fixed: connection event parsed, dropped after a timeout (5 s, later 20 s) (`t_gatt_connection_complete`, `t_sub_guard`) |
 | StickS3 chunk size not capped at 244 if a larger MTU is negotiated | Fixed: one shared rule (`t_ble_chunk_for_mtu`) |
 | Any handshake receive error was terminal (≈40 s recovery from one stray frame) | Fixed; test failed on the old code (10 checks) (`t_client_stray_handshake_frame_ignored`) |
 | 3 s handshake budget unmeasured against X25519 on the Flipper | Raised to 5 s; request timeout raised to 10 s; **to be measured on hardware** |
@@ -230,6 +230,9 @@ Transport: BLE, phone running a BLE scanner. Reported by the owner:
 | The scanner finds the service and connects | Profile start, advertising (128-bit UUID + name within 31 bytes) and the GATT service work |
 | The connection lasts about 5 s | Consistent with the subscription guard dropping a central that has not enabled notifications; **not yet confirmed** that notifications were off |
 | The Flipper kept showing `BLE advertising` throughout | Display defect: the Connection screen was redrawn only on link-id or session changes, so `BLE connecting` never appeared. Fixed in the next commit |
+
+Follow-up: 5 s proved too short to enable notifications by hand in the scanner
+app; the guard timeout was raised to 20 s.
 
 Not yet observed: subscription detected (`BLE linked`), `HELLO` notifications,
 re-advertising after the drop, radio handed back on exit.

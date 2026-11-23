@@ -56,7 +56,8 @@
 #define BLE_RX_QUEUE_DEPTH 32
 /* A central that connects but never enables notifications is dropped
  * after this long, so it cannot keep the StickS3 out. */
-#define BLE_SUBSCRIBE_TIMEOUT_MS 5000u
+#define BLE_SUBSCRIBE_TIMEOUT_MS 20000u /* the StickS3 subscribes within a second; 20 s
+                                         leaves room to do it by hand from a phone */
 /* service + RX (decl, value) + TX (decl, value, CCCD) = 6; small margin */
 #define BLE_MAX_ATTR_RECORDS 8
 /* 0x09 = AD_TYPE_COMPLETE_LOCAL_NAME. A 31-byte advertisement holds flags

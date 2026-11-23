@@ -54,7 +54,7 @@ Checks the part of the BLE transport that needs only a Flipper and a phone.
    named **BL** advertising service `a1b20001-7a9c-4b1d-9c2e-5f6a7b8c9d00`.
 3. Connect from the scanner. Expect the service with two characteristics:
    `…0002` (write, write without response) and `…0003` (notify).
-4. First connect and do nothing: after about 5 s the Flipper should drop
+4. First connect and do nothing: after about 20 s the Flipper should drop
    the scanner (a central that never subscribes) and advertise again. Then
    reconnect and enable notifications on `…0003`. The Flipper should show `BLE linked` /
    `authenticating...` and the scanner should receive a few notifications (the

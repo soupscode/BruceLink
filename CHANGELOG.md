@@ -19,7 +19,7 @@ compile-checked.
   recovered by dropping the link and re-linking, not by retransmitting; a
   stray or garbled frame during the handshake is ignored.
 - The Flipper drops a central that connects but does not subscribe within
-  5 s, so it cannot keep the StickS3 out.
+  20 s, so it cannot keep the StickS3 out.
 - One chunk-size rule for both ends (`bl_ble_chunk_for_mtu`): the StickS3 no
   longer sends chunks larger than the Flipper accepts if a bigger MTU is
   negotiated.
