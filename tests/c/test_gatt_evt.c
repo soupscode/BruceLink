@@ -65,6 +65,65 @@ static void t_gatt_subscribe(void) {
     CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
 }
 
+/* Review P2: a central that connects and never subscribes used to hold the
+ * Flipper's only link forever (the radio stops advertising while connected).
+ * The parser now reports the connection and a guard times it out. */
+static void t_gatt_connection_complete(void) {
+    bl_gatt_evt_t e;
+    /* LE meta, subevent 0x01: status 0, handle 0x0801, role 1, peer..., params */
+    uint8_t ok[] = {0x04, 0x3E, 0x13, 0x01, 0x00, 0x01, 0x08, 0x01, 0x00, 1, 2, 3, 4, 5, 6,
+                    0x18, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00};
+    CHECK(!bl_gatt_evt_parse(ok, sizeof(ok), RX_H, TX_H, &e)); /* GAP needs it too */
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_CONNECTED);
+    uint8_t failed[sizeof(ok)];
+    memcpy(failed, ok, sizeof(ok));
+    failed[4] = 0x3E; /* status: connection failed to be established */
+    CHECK(!bl_gatt_evt_parse(failed, sizeof(failed), RX_H, TX_H, &e));
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
+    uint8_t other[sizeof(ok)];
+    memcpy(other, ok, sizeof(ok));
+    other[3] = 0x03; /* connection update complete: not a new link */
+    CHECK(!bl_gatt_evt_parse(other, sizeof(other), RX_H, TX_H, &e));
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
+    uint8_t cut[] = {0x04, 0x3E, 0x02, 0x01, 0x00}; /* too short for a handle */
+    CHECK(!bl_gatt_evt_parse(cut, sizeof(cut), RX_H, TX_H, &e));
+    CHECK_EQ_INT(e.kind, BL_GATT_EVT_NONE);
+}
+
+static void t_sub_guard(void) {
+    bl_sub_guard_t g;
+    bl_sub_guard_init(&g);
+    const uint32_t T = 5000;
+    /* idle or subscribed: never fires */
+    CHECK(!bl_sub_guard_expired(&g, false, false, 0, T));
+    CHECK(!bl_sub_guard_expired(&g, false, false, 100000, T));
+    CHECK(!bl_sub_guard_expired(&g, true, true, 100000, T));
+    CHECK(!bl_sub_guard_expired(&g, true, true, 900000, T));
+    /* connected, not subscribed: fires once, T after it was first seen */
+    CHECK(!bl_sub_guard_expired(&g, true, false, 1000000, T));
+    CHECK(!bl_sub_guard_expired(&g, true, false, 1000000 + T - 1, T));
+    CHECK(bl_sub_guard_expired(&g, true, false, 1000000 + T, T));
+    CHECK(!bl_sub_guard_expired(&g, true, false, 1000000 + T + 1, T)); /* re-armed, not repeated */
+    CHECK(bl_sub_guard_expired(&g, true, false, 1000000 + 2 * T + 1, T));
+    /* subscribing in time disarms it; a later unsubscribe starts a new wait */
+    bl_sub_guard_init(&g);
+    CHECK(!bl_sub_guard_expired(&g, true, false, 10, T));
+    CHECK(!bl_sub_guard_expired(&g, true, true, 4000, T));
+    CHECK(!bl_sub_guard_expired(&g, true, false, 6000, T)); /* wait restarts here */
+    CHECK(!bl_sub_guard_expired(&g, true, false, 10999, T));
+    CHECK(bl_sub_guard_expired(&g, true, false, 11000, T));
+    /* a disconnect disarms it */
+    bl_sub_guard_init(&g);
+    CHECK(!bl_sub_guard_expired(&g, true, false, 10, T));
+    CHECK(!bl_sub_guard_expired(&g, false, false, 20, T));
+    CHECK(!bl_sub_guard_expired(&g, true, false, 9000, T));
+    /* tick wraparound */
+    bl_sub_guard_init(&g);
+    CHECK(!bl_sub_guard_expired(&g, true, false, 0xFFFFF000u, T));
+    CHECK(!bl_sub_guard_expired(&g, true, false, 0x00000100u, T)); /* +4352 ms */
+    CHECK(bl_sub_guard_expired(&g, true, false, 0x00000400u, T)); /* +5120 ms */
+}
+
 static void t_gatt_mtu_and_disconnect_pass_through(void) {
     bl_gatt_evt_t e;
     /* ACI_ATT_EXCHANGE_MTU_RESP: conn 0x0801, mtu 247 */
@@ -168,6 +227,8 @@ void run_gatt_evt_tests(void) {
     RUN(t_gatt_rx_data);
     RUN(t_gatt_subscribe);
     RUN(t_gatt_mtu_and_disconnect_pass_through);
+    RUN(t_gatt_connection_complete);
+    RUN(t_sub_guard);
     RUN(t_gatt_foreign_events_ignored);
     RUN(t_gatt_offset_write_dropped);
     RUN(t_gatt_malformed_rejected);

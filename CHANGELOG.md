@@ -14,9 +14,15 @@ compile-checked.
   to the firmware's default profile on exit.
 - `bl_gatt_evt`: portable parser for the BLE controller events the profile
   needs; host-tested including malformed and fuzzed input.
-- `bl_client` (shared core): session-initiator state machine with a 3 s
-  handshake timeout and a 5 s request timeout (M3.5). A stalled handshake is
-  recovered by dropping the link and re-linking, not by retransmitting.
+- `bl_client` (shared core): session-initiator state machine with a 5 s
+  handshake timeout and a 10 s request timeout (M3.5). A stalled handshake is
+  recovered by dropping the link and re-linking, not by retransmitting; a
+  stray or garbled frame during the handshake is ignored.
+- The Flipper drops a central that connects but does not subscribe within
+  5 s, so it cannot keep the StickS3 out.
+- One chunk-size rule for both ends (`bl_ble_chunk_for_mtu`): the StickS3 no
+  longer sends chunks larger than the Flipper accepts if a bigger MTU is
+  negotiated.
 - **Transport** setting (Loopback / BLE); live connection status; "timed
   out", "link lost", "busy" and "wrong pairing key" reporting.
 - `bl_uuid.h` and `bl_demo_key.h`: GATT UUIDs, chunk limits and the demo key

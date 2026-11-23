@@ -116,9 +116,15 @@ static void t_client_handshake_timeout_wraps(void) {
     pair_t p;
     pair_init(&p, 3, 3);
     uint8_t a[BL_MAX_MSG];
-    bl_client_link_up(&p.cl, 0xFFFFFC00u, a, sizeof(a)); /* 1024 ms before rollover */
-    CHECK_EQ_INT(bl_client_tick(&p.cl, 0x00000100u), BL_CL_EVT_NONE); /* +1280 ms */
-    CHECK_EQ_INT(bl_client_tick(&p.cl, 0x00000800u), BL_CL_EVT_HANDSHAKE_TIMEOUT); /* +3072 */
+    /* The deadline lies across the tick rollover. Expressed relative to the
+     * timeout (it was 3 s when this was written with literal tick values). */
+    const uint32_t start = 0xFFFFFC00u; /* 1024 ms before rollover */
+    CHECK(BL_CLIENT_HS_TIMEOUT_MS > 1024u + 256u); /* so both probes are past the wrap */
+    bl_client_link_up(&p.cl, start, a, sizeof(a));
+    CHECK_EQ_INT(bl_client_tick(&p.cl, 0x00000100u), BL_CL_EVT_NONE); /* +1280 ms, wrapped */
+    CHECK_EQ_INT(bl_client_tick(&p.cl, start + BL_CLIENT_HS_TIMEOUT_MS - 1u), BL_CL_EVT_NONE);
+    CHECK_EQ_INT(
+        bl_client_tick(&p.cl, start + BL_CLIENT_HS_TIMEOUT_MS), BL_CL_EVT_HANDSHAKE_TIMEOUT);
 }
 
 static void t_client_request_timeout_and_busy(void) {
@@ -217,7 +223,67 @@ static void t_uuid_forms_agree(void) {
     CHECK(memcmp(svc, rx, 16) != 0 && memcmp(rx, tx, 16) != 0);
 }
 
+/* Review P2: any handshake receive error used to be terminal, so one stray
+ * or garbled frame left the Flipper stuck until the StickS3's 10 s deadline
+ * and 30 s cooldown. Only a failure of the session itself is terminal. */
+static void t_client_stray_handshake_frame_ignored(void) {
+    pair_t p;
+    pair_init(&p, 7, 7);
+    uint8_t hello[BL_MAX_MSG], ack[BL_MAX_MSG], out[BL_MAX_MSG];
+    size_t ackl = 0, ol = 0;
+    bl_frame_t m;
+    bool have = true;
+    int n = bl_client_link_up(&p.cl, 100, hello, sizeof(hello));
+    CHECK(n > 0);
+
+    /* (a) noise */
+    uint8_t junk[40];
+    memset(junk, 0xA5, sizeof(junk));
+    CHECK(bl_client_rx(&p.cl, junk, sizeof(junk), out, sizeof(out), &ol, &m, &have) != BL_OK);
+    CHECK_EQ_INT(p.cl.state, BL_CL_HANDSHAKING);
+    CHECK_EQ_INT(ol, 0);
+    CHECK(!have);
+    /* (b) a well-formed frame of the wrong kind (our own HELLO, echoed) */
+    CHECK(bl_client_rx(&p.cl, hello, (size_t)n, out, sizeof(out), &ol, &m, &have) != BL_OK);
+    CHECK_EQ_INT(p.cl.state, BL_CL_HANDSHAKING);
+    CHECK_EQ_INT(ol, 0);
+    CHECK_EQ_INT(p.cl.last_error, BL_OK);
+
+    /* the real handshake still completes */
+    CHECK_EQ_INT(bl_session_handshake_rx(&p.srv, hello, (size_t)n, ack, sizeof(ack), &ackl), BL_OK);
+    CHECK_EQ_INT(bl_client_rx(&p.cl, ack, ackl, out, sizeof(out), &ol, &m, &have), BL_OK);
+    CHECK(ol > 0);
+    CHECK_EQ_INT(bl_session_handshake_rx(&p.srv, out, ol, ack, sizeof(ack), &ackl), BL_OK);
+    CHECK_EQ_INT(bl_client_rx(&p.cl, ack, ackl, out, sizeof(out), &ol, &m, &have), BL_OK);
+    CHECK(bl_client_ready(&p.cl));
+
+    /* and noise alone still ends in the timeout, not a hang */
+    pair_init(&p, 7, 7);
+    CHECK(bl_client_link_up(&p.cl, 100, hello, sizeof(hello)) > 0);
+    (void)bl_client_rx(&p.cl, junk, sizeof(junk), out, sizeof(out), &ol, &m, &have);
+    CHECK_EQ_INT(bl_client_tick(&p.cl, 100 + BL_CLIENT_HS_TIMEOUT_MS), BL_CL_EVT_HANDSHAKE_TIMEOUT);
+}
+
+/* Review P2: the StickS3 sized its chunks as MTU - 3 with no upper bound,
+ * while the Flipper drops anything over 244. One rule for both ends. */
+static void t_ble_chunk_for_mtu(void) {
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(0), BL_BLE_CHUNK_DEFAULT);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(22), BL_BLE_CHUNK_DEFAULT);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(23), 20);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(100), 97);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(247), 244);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(248), BL_BLE_CHUNK_MAX);
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(414), BL_BLE_CHUNK_MAX); /* Flipper's stack maximum */
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(517), BL_BLE_CHUNK_MAX); /* NimBLE's maximum */
+    CHECK_EQ_INT(bl_ble_chunk_for_mtu(0xFFFF), BL_BLE_CHUNK_MAX);
+    /* the handshake must not be starved by its own computation time, and
+     * must give up before the StickS3's 10 s deadline */
+    CHECK(BL_CLIENT_HS_TIMEOUT_MS >= 5000u && BL_CLIENT_HS_TIMEOUT_MS < 10000u);
+}
+
 void run_client_tests(void) {
+    RUN(t_client_stray_handshake_frame_ignored);
+    RUN(t_ble_chunk_for_mtu);
     RUN(t_uuid_forms_agree);
     RUN(t_client_handshake_and_request);
     RUN(t_client_hello_fits_small_buffer);

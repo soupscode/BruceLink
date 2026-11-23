@@ -51,13 +51,20 @@
 #define TAG "BruceLinkBle"
 
 #define BLE_KEYS_PATH APP_DATA_PATH(".brucelink.keys")
-#define BLE_RX_QUEUE_DEPTH 8
+/* A full 540-byte frame is 30 chunks at the default MTU, and the queue is
+ * only drained once per app tick. */
+#define BLE_RX_QUEUE_DEPTH 32
+/* A central that connects but never enables notifications is dropped
+ * after this long, so it cannot keep the StickS3 out. */
+#define BLE_SUBSCRIBE_TIMEOUT_MS 5000u
 /* service + RX (decl, value) + TX (decl, value, CCCD) = 6; small margin */
 #define BLE_MAX_ATTR_RECORDS 8
-/* 0x09 = AD_TYPE_COMPLETE_LOCAL_NAME. Keep the name <= 5 chars: with the
- * 128-bit service UUID (18 bytes), flags (3) and an optional TX-power
- * field (3), that is all a 31-byte advertisement leaves. */
-#define BLE_ADV_NAME "\x09" "BLink"
+/* 0x09 = AD_TYPE_COMPLETE_LOCAL_NAME. A 31-byte advertisement holds flags
+ * (3), the TX-power field the stack adds (3), the 128-bit service UUID (18)
+ * and a name of at most 5 characters. If the stack rejects the data the
+ * firmware only logs it and the radio stays silent, so the name is kept to
+ * 2 characters for margin. The StickS3 matches on the UUID, not the name. */
+#define BLE_ADV_NAME "\x09" "BL"
 
 typedef struct {
     uint16_t len;
@@ -92,6 +99,7 @@ struct Ble {
     /* BLE event thread -> app thread */
     FuriMessageQueue* rxq;
     BleChunk scratch; /* event thread only; keeps 246 bytes off its stack */
+    volatile bool connected; /* a central is connected (maybe not subscribed) */
     volatile bool subscribed;
     volatile uint32_t link_seq; /* bumped on every new subscription */
     volatile uint16_t mtu; /* negotiated ATT MTU; 0 = not yet known */
@@ -100,6 +108,7 @@ struct Ble {
     /* app thread only */
     bl_reasm_t reasm;
     uint32_t seen_link;
+    bl_sub_guard_t sub_guard;
 };
 
 /* ------------------------------------------------------------ GATT */
@@ -175,7 +184,11 @@ static BleEventAckStatus ble_evt(void* event, void* context) {
     case BL_GATT_EVT_MTU:
         ble->mtu = e.mtu;
         break;
+    case BL_GATT_EVT_CONNECTED:
+        ble->connected = true;
+        break;
     case BL_GATT_EVT_DISCONNECTED:
+        ble->connected = false;
         ble->subscribed = false;
         ble->mtu = 0;
         break;
@@ -192,6 +205,7 @@ static const FuriHalBleProfileTemplate ble_profile_template;
 /* Remove everything ble_profile_start() added. bt service thread. */
 static void ble_gatt_teardown(Ble* ble) {
     ble->svc_ready = false;
+    ble->connected = false;
     ble->subscribed = false;
     /* The dispatcher asserts its handler list is empty on reset, so this
      * must be unregistered here. */
@@ -310,8 +324,11 @@ static bool ble_start(BlTransport* t) {
     Ble* ble = t->impl;
     if(ble->started) return true;
 
+    ble->connected = false;
     ble->subscribed = false;
     ble->mtu = 0;
+    ble->seen_link = 0;
+    bl_sub_guard_init(&ble->sub_guard);
     ble_flush_rx(ble);
 
     /* Same sequence as the stock HID app: drop the phone link, use our own
@@ -325,6 +342,10 @@ static bool ble_start(BlTransport* t) {
         ble_restore_default(ble);
         return false;
     }
+    /* Deliberate, as in the stock HID app: starting this transport is an
+     * explicit request to use the radio, so it advertises even when
+     * Bluetooth is switched off in the Flipper's settings. The setting is
+     * honoured again when the default profile is restored. */
     furi_hal_bt_start_advertising();
     ble->started = true;
     return true;
@@ -335,40 +356,55 @@ static void ble_stop(BlTransport* t) {
     if(!ble->started) return;
     ble->started = false;
     ble_restore_default(ble); /* runs ble_profile_stop on the bt thread */
+    ble->connected = false;
     ble->subscribed = false;
     ble_flush_rx(ble);
 }
 
+/* The firmware can replace our profile behind our back (it reloads the
+ * default one when the SD card is remounted, for example). The services
+ * are gone then; only stopping and starting the transport brings it back. */
+static bool ble_lost(const Ble* ble) {
+    return ble->started && !ble->svc_ready;
+}
+
+/* The one place the link state is sampled. On every change, anything
+ * queued or half-assembled belongs to the previous link and is discarded
+ * (a peer sends nothing on a new link until it has received our HELLO, and
+ * the caller sends HELLO only after seeing the new id from here). */
 static uint32_t ble_link_id(BlTransport* t) {
     Ble* ble = t->impl;
-    if(!ble->started || !ble->subscribed) return 0;
-    uint32_t seq = ble->link_seq;
-    return seq ? seq : 1; /* 0 is reserved for "down" */
+    uint32_t link = 0;
+    if(ble->started && ble->svc_ready && ble->subscribed) {
+        link = ble->link_seq;
+        if(link == 0) link = 1; /* 0 is reserved for "down" */
+    }
+    if(link != ble->seen_link) {
+        ble->seen_link = link;
+        ble_flush_rx(ble);
+    }
+    return link;
 }
 
 static void ble_drop_link(BlTransport* t) {
     Ble* ble = t->impl;
-    if(!ble->started) return;
+    if(!ble->started || ble_lost(ble)) return;
     ble->subscribed = false;
-    /* bt_disconnect() terminates the link by *stopping advertising*
-     * (gap_stop_advertising clears the firmware's auto-restart flag), and
-     * returns once the radio is idle. Start advertising again or the
-     * StickS3 could never find us after a failed handshake. */
+    ble->connected = false;
+    /* bt_disconnect() ends the link through gap_stop_advertising(), which
+     * also clears the firmware's restart-advertising flag, and returns as
+     * soon as GAP is idle (before the disconnect has completed on air).
+     * Ask for advertising again, or the StickS3 could never find us after
+     * a failed handshake; that sets the flag, so GAP also re-advertises
+     * when the disconnect completes. ble_poll() re-checks as well. */
     bt_disconnect(ble->bt);
     furi_hal_bt_start_advertising();
 }
 
-static size_t ble_chunk_size(const Ble* ble) {
-    uint16_t mtu = ble->mtu;
-    if(mtu < 23) return BL_BLE_CHUNK_DEFAULT; /* not negotiated yet */
-    size_t n = (size_t)mtu - 3u; /* ATT notification header */
-    return n > BL_BLE_CHUNK_MAX ? BL_BLE_CHUNK_MAX : n;
-}
-
 static int ble_send(BlTransport* t, const uint8_t* frame, size_t len) {
     Ble* ble = t->impl;
-    if(!ble->started || !ble->subscribed) return BL_E_STATE;
-    const size_t chunk_cap = ble_chunk_size(ble);
+    if(!ble->started || !ble->svc_ready || !ble->subscribed) return BL_E_STATE;
+    const size_t chunk_cap = bl_ble_chunk_for_mtu(ble->mtu);
     uint8_t chunk[BL_BLE_CHUNK_MAX];
     unsigned i = 0;
     int done = 0;
@@ -389,13 +425,21 @@ static int ble_send(BlTransport* t, const uint8_t* frame, size_t len) {
 static void ble_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
     Ble* ble = t->impl;
     if(!ble->started) return;
+    if(ble_lost(ble)) {
+        ble->connected = false;
+        ble->subscribed = false;
+        (void)ble_link_id(t); /* reports the link as down, flushes */
+        return; /* not our radio any more: do not touch it */
+    }
 
-    /* A new link: anything queued or half-assembled belongs to the old one
-     * (a peer sends nothing until we have sent HELLO). */
-    uint32_t link = ble_link_id(t);
-    if(link != ble->seen_link) {
-        ble->seen_link = link;
-        ble_flush_rx(ble);
+    (void)ble_link_id(t);
+
+    /* A central that is connected but has not subscribed blocks everyone
+     * else, since the radio does not advertise while connected. */
+    if(bl_sub_guard_expired(
+           &ble->sub_guard, ble->connected, ble->subscribed, furi_get_tick(),
+           BLE_SUBSCRIBE_TIMEOUT_MS)) {
+        ble_drop_link(t);
     }
 
     /* Self-heal: while this transport is running the radio must be either
@@ -418,7 +462,9 @@ static void ble_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
 static const char* ble_status(BlTransport* t) {
     Ble* ble = t->impl;
     if(!ble->started) return "BLE off";
-    return ble->subscribed ? "BLE linked" : "BLE advertising";
+    if(ble_lost(ble)) return "BLE taken by system\nPress Connect again";
+    if(ble->subscribed) return "BLE linked";
+    return ble->connected ? "BLE connecting" : "BLE advertising";
 }
 
 static void ble_free(BlTransport* t) {

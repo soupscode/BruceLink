@@ -765,7 +765,7 @@ static void t_e2e_client_handshake_and_requests() {
 }
 
 /* M3.5: a lost handshake frame is recovered by restarting the link. The
- * client gives up (3 s) well before the bridge would drop the peer (10 s),
+ * client gives up (5 s) well before the bridge would drop the peer (10 s),
  * so the Flipper is never the one put on the bridge's cooldown list. */
 static void t_e2e_lost_handshake_frame_recovers_by_relink() {
     Link l;

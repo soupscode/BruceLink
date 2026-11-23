@@ -65,7 +65,7 @@ static void bl_refresh_connection(BruceLinkApp* app) {
         return;
     }
     snprintf(
-        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY: not secure",
+        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure",
         app->transport->api->status(app->transport), bl_client_state_text(app));
     bl_show_text(app, "Connection", app->text);
 }
@@ -195,6 +195,13 @@ static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
 
 static void bl_tick(void* ctx) {
     BruceLinkApp* app = ctx;
+    if(app->connect_pending) {
+        /* Switching BLE profiles blocks for a few seconds, so it runs
+         * here, after the "starting..." screen is up, not in the menu
+         * callback. */
+        app->connect_pending = false;
+        bl_connect(app);
+    }
     BlTransport* t = app->transport;
     if(t == NULL) return;
     const uint32_t now = furi_get_tick();
@@ -240,7 +247,8 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
     switch(index) {
     case MenuConnect:
         app->screen = BlScreenConnection;
-        bl_connect(app);
+        bl_show_text(app, "Connection", "starting...");
+        app->connect_pending = true; /* done by the next tick */
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     case MenuDeviceInfo:
@@ -266,7 +274,7 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         bl_show_text(
             app, "BruceLink",
             "Remote for a StickS3 running\nBruce, over an authenticated\nBLE link.\n\n"
-            "DEMO KEY build: the pairing\nkey is public. Not secure\nuntil key setup is added.\n\n"
+            "DEMO KEY build: the pairing\nkey is public and the link\nis not encrypted. Not secure\nuntil key setup is added.\n\n"
             "github.com/soupscode/BruceLink");
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;

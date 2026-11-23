@@ -16,7 +16,7 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M3.2 | Fragmentation + COBS | ✅ | 540 B over MTU 23/244; resync |
 | M3.3 | Simulated transport + fault injection | ✅ | bulk/corrupt/drop/dup tests |
 | M3.4 | Ping, device ID, status, errors | 🟡 | Works on loopback + bridge; needs air |
-| M3.5 | App-side timeouts + handshake recovery | 🟡 | Handshake 3 s → drop link and re-link; request 5 s → slot freed, session stays up. Host-tested (`bl_client`, client↔bridge); UI path needs a device run |
+| M3.5 | App-side timeouts + handshake recovery | 🟡 | Handshake 5 s → drop link and re-link; request 10 s → slot freed, session stays up; stray handshake frames ignored. Host-tested (`bl_client`, client↔bridge); UI path needs a device run |
 | M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
 | M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
 | M4.2 | **Flipper BLE peripheral profile** | 🟡 **next: run on HW** | Implemented; builds (APPCHK); event parser + client host-tested. Acceptance: advertise → connect → subscribe → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |

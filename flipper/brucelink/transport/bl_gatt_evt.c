@@ -6,6 +6,8 @@
 
 #define HCI_EVENT_PKT_TYPE 0x04u
 #define EVT_DISCONNECTION_COMPLETE 0x05u
+#define EVT_LE_META 0x3Eu
+#define SUBEVT_LE_CONNECTION_COMPLETE 0x01u
 #define EVT_VENDOR 0xFFu
 #define ECODE_ATTRIBUTE_MODIFIED 0x0C01u
 #define ECODE_ATT_EXCHANGE_MTU_RESP 0x0C03u
@@ -38,6 +40,13 @@ bool bl_gatt_evt_parse(
         if(plen < 4) return false;
         out->kind = BL_GATT_EVT_DISCONNECTED;
         return false; /* GAP must also process it */
+    }
+    if(evt == EVT_LE_META) {
+        /* subevent(1) status(1) handle(2) ... ; status 0 = connected */
+        if(plen >= 4 && p[0] == SUBEVT_LE_CONNECTION_COMPLETE && p[1] == 0x00u) {
+            out->kind = BL_GATT_EVT_CONNECTED;
+        }
+        return false; /* GAP owns connection management */
     }
     if(evt != EVT_VENDOR || plen < 2) return false;
 
@@ -76,4 +85,31 @@ bool bl_gatt_evt_parse(
         return true;
     }
     return false; /* some other service's attribute */
+}
+
+void bl_sub_guard_init(bl_sub_guard_t* g) {
+    if(g == NULL) return;
+    g->waiting = false;
+    g->since_ms = 0;
+}
+
+bool bl_sub_guard_expired(
+    bl_sub_guard_t* g,
+    bool connected,
+    bool subscribed,
+    uint32_t now_ms,
+    uint32_t timeout_ms) {
+    if(g == NULL) return false;
+    if(!connected || subscribed) {
+        g->waiting = false;
+        return false;
+    }
+    if(!g->waiting) {
+        g->waiting = true;
+        g->since_ms = now_ms;
+        return false;
+    }
+    if((uint32_t)(now_ms - g->since_ms) < timeout_ms) return false;
+    g->waiting = false; /* fire once; a link that stays up is timed again */
+    return true;
 }

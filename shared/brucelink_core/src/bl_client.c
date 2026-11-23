@@ -65,8 +65,14 @@ int bl_client_rx(
         int rc = bl_session_handshake_rx(&c->session, in, in_len, reply, reply_cap, reply_len);
         if(rc != BL_OK) {
             *reply_len = 0;
-            c->state = BL_CL_FAILED;
-            c->last_error = rc;
+            /* Terminal only if the session itself gave up (bad proof,
+             * no common version). Noise, a truncated frame or a frame of
+             * the wrong kind is ignored: the real reply may still come,
+             * and if it does not the handshake timeout ends the attempt. */
+            if(c->session.state == BL_SS_FAILED) {
+                c->state = BL_CL_FAILED;
+                c->last_error = rc;
+            }
             return rc;
         }
         if(bl_session_established(&c->session)) c->state = BL_CL_READY;

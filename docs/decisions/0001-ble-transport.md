@@ -108,22 +108,44 @@ details that only became clear while writing the Flipper profile.
   the central enables notifications, and the app sends `HELLO` in the same
   tick (decision 6).
 - **Handshake recovery is a link restart, not a retransmit (M3.5).** If the
-  handshake has not completed 3 s after `HELLO`, the Flipper drops the BLE
-  link and advertises again. 3 s is well inside the StickS3's 10 s deadline,
+  handshake has not completed 5 s after `HELLO`, the Flipper drops the BLE
+  link and advertises again. 5 s is inside the StickS3's 10 s deadline,
   and a peer that disconnects itself is not put on the cooldown list, so a
   lost frame costs one reconnect instead of 10 s + 30 s. Requests time out
-  after 5 s and leave the session up.
+  after 10 s (a Wi-Fi scan is answered only once it has run) and leave the
+  session up. Both values are estimates: the Flipper's X25519 time and
+  Bruce's scan time have not been measured on hardware.
 - **Dropping a link from the Flipper stops advertising.** `bt_disconnect()`
   ends the connection through `gap_stop_advertising()`, which clears the
   firmware's restart-advertising flag. The transport restarts advertising
   after every drop and re-checks on each poll.
 - **Own address and key file.** The profile advertises on the Flipper's BLE
-  address with byte 2 + 2 (the HID profile uses + 1), name `BLink` (a 128-bit
-  UUID leaves five characters in a 31-byte advertisement), and points the key
+  address with byte 2 + 2 (the HID profile uses + 1), name `BL` (a 128-bit
+  UUID leaves at most five characters in a 31-byte advertisement, and a
+  rejected advertisement fails silently, so two are used for margin), and points the key
   store at `.brucelink.keys` so the phone bond is untouched.
 - **Events are parsed by a portable, host-tested parser** (`bl_gatt_evt`):
   attribute-modified → RX data (value handle = characteristic handle + 1) or
-  subscription (CCCD = handle + 2); MTU response; disconnect.
+  subscription (CCCD = handle + 2); MTU response; connection complete;
+  disconnect.
+- **A central that connects but does not subscribe is dropped after 5 s.**
+  The radio does not advertise while connected and the GATT is open, so any
+  BLE device could otherwise hold the Flipper's only link.
+- **Chunk size is one shared rule** (`bl_ble_chunk_for_mtu`): MTU − 3, capped
+  at 244, 20 until an MTU is known. The Flipper's stack accepts MTUs up to
+  414 but its characteristics carry 244 bytes.
+- **Starting the transport advertises even if Bluetooth is off in the
+  Flipper's settings** (same as the stock HID app); the setting applies again
+  when the default profile is restored on exit.
+- **The firmware can take the radio back** (it reloads the default profile
+  when the SD card is remounted). The transport detects that its services
+  are gone, reports the link down and stops touching the radio until the
+  user presses Connect again.
+- **Independent review (2026-11-23)** checked the profile against the pinned
+  Momentum, ST and NimBLE sources: event layouts and handle offsets,
+  lifecycle `furi_check`s, threading, TX callback use and interop were found
+  consistent; its robustness findings are the items above. Open questions
+  that only hardware can answer are listed in `docs/HARDWARE_TESTING.md` §5.
 
 ## Consequences
 

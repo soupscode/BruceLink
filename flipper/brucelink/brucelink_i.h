@@ -50,6 +50,7 @@ typedef struct {
     BlTransportKind transport_kind; /* chosen in Settings */
     bl_client_t client; /* session initiator state machine */
     uint32_t link_id; /* last transport link id seen (0 = none) */
+    bool connect_pending; /* Connect pressed: start the transport on the next tick */
     bool active_ops_enabled; /* operator opt-in for active ops (default off) */
 
     /* All protocol work runs on the app thread via the ViewDispatcher

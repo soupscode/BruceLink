@@ -9,16 +9,21 @@
  *
  * Timeouts and recovery
  *   - Handshake: must complete within hs_timeout_ms of link-up
- *     (default 3 s). On expiry the client reports
+ *     (default 5 s). On expiry the client reports
  *     BL_CL_EVT_HANDSHAKE_TIMEOUT once and enters FAILED; the caller
  *     should drop the transport link and wait for a new one. There is no
  *     in-place retransmit: the responder cannot rewind a half-finished
  *     handshake, and BLE delivers GATT writes/notifications reliably, so
- *     a clean new link is both simpler and correct. 3 s is well inside the
- *     StickS3's own 10 s authentication deadline (ADR 0001 §6).
+ *     a clean new link is both simpler and correct. 5 s leaves room for
+ *     the two X25519 operations the Flipper performs inside the window
+ *     (their duration on the device is not yet measured) and is still
+ *     inside the StickS3's own 10 s authentication deadline (ADR 0001 §6).
+ *     A frame that is not a valid next handshake step is ignored, not
+ *     fatal; only the session failing (bad proof, no common version) is.
  *   - Request: one at a time; no response within req_timeout_ms
- *     (default 5 s) reports BL_CL_EVT_REQUEST_TIMEOUT once and frees the
- *     slot. The session stays up.
+ *     (default 10 s: the StickS3 answers a Wi-Fi scan only after the scan
+ *     has run) reports BL_CL_EVT_REQUEST_TIMEOUT once and frees the slot.
+ *     The session stays up.
  * SPDX-License-Identifier: MIT
  */
 #pragma once
@@ -29,8 +34,8 @@
 extern "C" {
 #endif
 
-#define BL_CLIENT_HS_TIMEOUT_MS 3000u
-#define BL_CLIENT_REQ_TIMEOUT_MS 5000u
+#define BL_CLIENT_HS_TIMEOUT_MS 5000u
+#define BL_CLIENT_REQ_TIMEOUT_MS 10000u
 /* Largest handshake frame: header + HELLO_ACK payload (81) + MAC = 109. */
 #define BL_CLIENT_HS_FRAME_MAX 128u
 

@@ -29,7 +29,7 @@ verified from what was not.
 
 | Check | Result |
 |---|---|
-| Host C core + Flipper event parser, ASan+UBSan | 1718 checks, 0 failed |
+| Host C core + Flipper event parser, ASan+UBSan | 1775 checks, 0 failed |
 | ESP32 bridge core on host (incl. Flipper client ↔ bridge), ASan+UBSan | 188 checks, 0 failed |
 | cppcheck (core C + bridge C++) | clean |
 | Python ref + C↔Python interop + wrapper check | 13 tests OK |
@@ -90,6 +90,9 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
+- **Timeouts are estimates** (handshake 5 s, request 10 s): the Flipper's
+  X25519 time and Bruce's Wi-Fi scan time are unmeasured. If Connect over BLE
+  loops between `authenticating...` and `BLE advertising`, measure first.
 - **No link encryption and a public key.** GATT is open and unpaired; frames
   are authenticated but readable on air (M4.6). Both builds use the demo key
   (M5.3), so the bridge refuses all active ops (`STATUS` shows `demo:1`).

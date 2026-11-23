@@ -55,16 +55,18 @@ BruceLink core tests
 [textbuf]      7 tests  ok   (bounded builder: truncation, exact fit, zero/NULL
                               capacity, long input, newline injection, LONG_MIN)
 
-[client]      10 tests  ok   (handshake + request, HELLO fits 128 B, wrong key,
-                              handshake timeout once / across tick wrap,
-                              request timeout + busy, events keep a request
-                              pending, link-down wipes keys, frames before a
-                              link ignored, UUID string/byte forms agree)
-[gatt-evt]     7 tests  ok   (Flipper BLE event parser: RX data, subscribe /
+[client]      12 tests  ok   (handshake + request, HELLO fits 128 B, wrong key,
+                              stray handshake frames ignored, handshake
+                              timeout once / across tick wrap, request timeout
+                              + busy, events keep a request pending, link-down
+                              wipes keys, frames before a link ignored, UUID
+                              string/byte forms agree, chunk size per MTU)
+[gatt-evt]     9 tests  ok   (Flipper BLE event parser: RX data, subscribe /
                               unsubscribe, MTU + disconnect pass-through,
-                              foreign events, offset writes, malformed, fuzz)
+                              connection complete, foreign events, offset
+                              writes, malformed, fuzz; subscription guard)
 
-1718 checks, 0 failed           exit 0
+1775 checks, 0 failed           exit 0
 ```
 (1517 after the first review round; 1527 after the second; `[client]` and
 `[gatt-evt]` added with the Flipper BLE profile. `bl_gatt_evt.c` is Flipper
@@ -159,7 +161,7 @@ Build success only at that point.
 
 Rebuilt clean with the BLE profile and the `bl_client`-based app: 16 units,
 APPCHK pass (every firmware symbol the profile uses is exported at API 87.1),
-`dist/brucelink.fap` 29492 bytes. **This build has not run on a Flipper**; the
+`dist/brucelink.fap` 30132 bytes. **This build has not run on a Flipper**; the
 loopback hardware result below is for the build before it.
 
 ## ESP32-S3 bridge — cross-compile + link
@@ -174,6 +176,31 @@ Flash: [==        ]  17.1% (used 571936 bytes from 3342336 bytes)
 `BruceLinkPeerGuard.cpp`, the single-owner transport and `bl_textbuf.c`.)
 Compiles the bridge core + NimBLE central transport + shared core with a
 **stub** backend. Not the Bruce firmware, not flashed, not run.
+
+## Independent review of the Flipper BLE profile (2026-11-23)
+
+A separate reviewer checked the never-run firmware-facing code against the
+pinned Momentum, ST (`stm32wb_copro`) and NimBLE-Arduino sources. No crash or
+functional break was found from source; event layouts, handle offsets,
+lifecycle assertions, threading, the TX callback and interop were confirmed.
+Findings and outcome:
+
+| Finding | Outcome |
+|---|---|
+| A central that connects but never subscribes holds the only link | Fixed: connection event parsed, dropped after 5 s (`t_gatt_connection_complete`, `t_sub_guard`) |
+| StickS3 chunk size not capped at 244 if a larger MTU is negotiated | Fixed: one shared rule (`t_ble_chunk_for_mtu`) |
+| Any handshake receive error was terminal (≈40 s recovery from one stray frame) | Fixed; test failed on the old code (10 checks) (`t_client_stray_handshake_frame_ignored`) |
+| 3 s handshake budget unmeasured against X25519 on the Flipper | Raised to 5 s; request timeout raised to 10 s; **to be measured on hardware** |
+| Advertisement exactly 31 bytes, rejection is silent | Name shortened to `BL` (3 bytes of margin) |
+| Firmware reloads the default profile on SD remount | Transport detects it, reports link down, stops touching the radio |
+| Link state sampled in two places (possible flush after HELLO) | One sampling point |
+| RX queue (8) too small for a full frame at the default MTU | 32 |
+| Connect blocked the UI for seconds before the screen changed | Screen first, transport start on the next tick |
+| Status screens did not say the link is unencrypted | Added |
+| Session role comment inverted | Fixed |
+| Not changed | `rx_dropped` not shown in the UI; StickS3 ignores a failed GATT write (the request then times out); a central may still start pairing (stock firmware behaviour) |
+
+What only hardware can answer is listed in `docs/HARDWARE_TESTING.md` §5.
 
 ## Hardware results
 
