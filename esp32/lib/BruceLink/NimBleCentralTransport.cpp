@@ -5,6 +5,8 @@
 #include "NimBleCentralTransport.h"
 
 #include <esp32-hal-log.h> // log_e
+#include <esp_heap_caps.h>
+#include <freertos/idf_additions.h> // xQueueCreateWithCaps
 
 #include <functional>
 #include <string.h>
@@ -23,7 +25,11 @@ void NimBleCentralTransport::begin(
     BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend) {
     bridge_ = bridge;
     backend_ = backend;
-    chunks_ = xQueueCreate(kEventQueueDepth, sizeof(ChunkEvent));
+    // ~4 kB of chunk storage: keep it out of internal RAM when there is
+    // PSRAM (only tasks touch this queue, never an ISR).
+    chunks_ = xQueueCreateWithCaps(kEventQueueDepth, sizeof(ChunkEvent), MALLOC_CAP_SPIRAM);
+    chunks_with_caps_ = chunks_ != nullptr;
+    if(chunks_ == nullptr) chunks_ = xQueueCreate(kEventQueueDepth, sizeof(ChunkEvent));
     NimBLEDevice::init("BruceLink");
     NimBLEDevice::setMTU(247); // request a larger ATT MTU for throughput
     bridge_->begin(psk, backend_, &NimBleCentralTransport::txTrampoline, this, usableMtu(23));
@@ -44,6 +50,11 @@ size_t NimBleCentralTransport::addrId(const NimBLEAddress& a, uint8_t out[PeerCo
 void NimBleCentralTransport::startScan(uint32_t duration_s) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(this, false);
+    // Callback only: by default NimBLE keeps every advertiser it has ever
+    // seen (no upper bound), in internal RAM, for as long as the scan
+    // object lives. This scan runs whenever no Flipper is linked, and
+    // internal RAM is what Wi-Fi needs next to BLE (hardware, 2026-11-23).
+    scan->setMaxResults(0);
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
@@ -206,7 +217,8 @@ void NimBleCentralTransport::end() {
     pending_mtu_ = 0;
     portEXIT_CRITICAL(&lock_);
     if(chunks_ != nullptr) {
-        vQueueDelete(chunks_);
+        if(chunks_with_caps_) vQueueDeleteWithCaps(chunks_);
+        else vQueueDelete(chunks_);
         chunks_ = nullptr;
     }
 }

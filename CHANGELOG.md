@@ -32,6 +32,9 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
   started only when at least 80 kB internal RAM and a 16 kB block are free;
   otherwise the request is refused with the figures and the link survives.
   Wi-Fi scan over BLE therefore does not work yet on the StickS3 (M5.5).
+- BLE scan on the StickS3 no longer stores every advertiser it sees (NimBLE
+  keeps them all by default, without limit, in internal RAM), and the chunk
+  queue lives in PSRAM. Both free internal RAM, which is what Wi-Fi needs.
 - The StickS3's Wi-Fi scan is bounded (120 ms per channel, 7 s overall); the
   module and the scan log memory figures at each step on the serial port;
   Device Info shows internal heap and the largest DMA block; failed GATT

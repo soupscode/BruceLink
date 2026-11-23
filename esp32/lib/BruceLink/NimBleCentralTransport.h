@@ -96,6 +96,7 @@ private:
     NimBLERemoteCharacteristic* rx_; // we write here
     NimBLERemoteCharacteristic* tx_; // we subscribe here
     QueueHandle_t chunks_;
+    bool chunks_with_caps_ = false; /* created with xQueueCreateWithCaps */
 
     /* --- shared with NimBLE callbacks: guarded by lock_ --- */
     portMUX_TYPE lock_;

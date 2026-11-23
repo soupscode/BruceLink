@@ -376,6 +376,12 @@ task was not blocked in the scan, as first read; it was starved. Bruce's own
 15 kB block check (`radioHasMemForWifi`) passed, so it is not a sufficient
 guard here.
 
+Measured by the owner with BLE up and the Flipper linked (Device Info on
+`72d9efc`): **internal heap 47,979 bytes free** (PSRAM 8,384,524), down from
+135,083 at the menu. BLE plus BruceLink therefore cost about 87 kB of internal
+RAM, and Wi-Fi start did not fit in the remaining 48 kB. What Wi-Fi start
+costs on this build has not been measured yet.
+
 Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
 bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at
 once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this
