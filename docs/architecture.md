@@ -14,16 +14,16 @@ It reuses Bruce's existing functions; it does not reimplement them.
 │   │ menu/info/scan/.. │ │                                        │ └──────────┬─────────────┘ │
 │   ├───────────────────┤ │                                        │ ┌──────────▼─────────────┐ │
 │   │ BlTransport       │ │   Flipper = BLE peripheral             │ │ BruceLinkBridge (core) │ │
-│   │  loopback | BLE*  │ │   StickS3 = BLE central                │ │  session + safety +    │ │
+│   │  BLE              │ │   StickS3 = BLE central                │ │  session + safety +    │ │
 │   ├───────────────────┤ │                                        │ │  capture + dispatch    │ │
 │   │ shared core (C99) │ │   Flipper = session initiator          │ ├──────────┬─────────────┤ │
 │   │ session/frame/..  │ │   StickS3 = session responder          │ │ shared core (C99)      │ │
 │   └───────────────────┘ │                                        │ ├──────────▼─────────────┤ │
 └─────────────────────────┘                                        │ │ BruceBackend (glue)    │ │
                                                                     │ │  → Bruce sniffer/scan/ │ │
-   * BLE transport: implemented, not yet run on a radio;           │ │    TX via existing     │ │
-     the loopback transport runs the real protocol                 │ │    Bruce functions     │ │
-     against an in-process mock peripheral.                        │ └────────────────────────┘ │
+                                                                    │ │    TX via existing     │ │
+                                                                    │ │    Bruce functions     │ │
+                                                                    │ └────────────────────────┘ │
                                                                     └──────────────────────────┘
 ```
 
@@ -49,10 +49,11 @@ the host builds it for tests.
 
 A native ViewDispatcher app: a main menu, a scrollable text view (device info /
 capabilities / results), and a settings list. Protocol traffic runs through a
-`BlTransport` abstraction. Two transports: a **loopback** (an in-process mock
-StickS3 that runs the real session + answers requests, so the app is usable
-without hardware) and a **BLE** transport (a FAP-owned GATT peripheral profile,
-ADR 0001; not yet run on a radio), chosen in Settings. The 50 ms ViewDispatcher
+`BlTransport` abstraction; the one transport is **BLE** (a FAP-owned GATT
+peripheral profile, ADR 0001; run on hardware). Until v0.2 there was also a
+loopback transport, an in-process mock StickS3 for running the app without
+hardware; it was removed once the real link worked (git history: `5fdc650`).
+Connect needs a pairing (ADR 0005). The 50 ms ViewDispatcher
 tick polls the transport on the app thread and feeds frames to `bl_client`, the
 shared-core state machine that owns the handshake, the one outstanding request
 and their timeouts. A transport reports a link id that changes with every new

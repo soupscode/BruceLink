@@ -45,9 +45,10 @@ nothing in the board config rules it out.
 
 ## Notes
 
-1. Exercised end-to-end through the **loopback** transport + shared protocol core
-   (`bl_transport_loopback.c`) and the bridge core; the radio call itself is a
-   stub until hardware.
+1. Exercised end-to-end in host tests through the shared protocol core and the
+   bridge core (Flipper client ↔ bridge, `tests/c/test_bridge.cpp`); until v0.2
+   also on a Flipper through the app's loopback mock (since removed). The radio
+   call itself is a stub until hardware.
 2. Bridge dispatches `CMD_REQ`→`BruceBackend::wifiScan`; the real Bruce call
    lives in the Bruce glue (`esp32/src/modules/brucelink/`) and is unverified.
 3. `bl_capture` session manager + mock backend fully simulated (lifecycle, gated

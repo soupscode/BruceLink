@@ -47,9 +47,10 @@ C = Flipper (session central/initiator), P = StickS3 (session peripheral). Keys:
 HKDF-SHA256 over `X25519(eph_C,eph_P) ‖ PSK`, salted by both nonces; separate
 c2p/p2c keys. Replay prevented by the strictly increasing `seq`.
 
-The PSK comes from pairing (below). Only the Flipper's built-in loopback mock
-still uses the public demo key (`bl_demo_key.h`); a bridge holding it refuses
-every active op.
+The PSK comes from pairing (below). The public demo key (`bl_demo_key.h`) is
+used as a key only by host tests and the ESP32 compile check. The StickS3 knows
+it only to refuse it: its key store rejects it, and a bridge holding it refuses
+every active op. The Flipper app does not contain it.
 
 ## Pairing
 

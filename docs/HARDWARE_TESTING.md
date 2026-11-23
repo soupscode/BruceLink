@@ -32,22 +32,26 @@ scripts/hil/build_all.sh
 Locally, install the real Flipper toolchain (`ufbt update` with network access)
 instead of the xPack substitute; confirm the FAP still passes APPCHK.
 
-## 3. Flipper app on device (loopback first)
+## 3. Flipper app on device
 
 1. `cd flipper/brucelink && ufbt launch` (installs + runs over USB).
-2. In BruceLink: **Settings → Transport: Loopback** (the default), then
-   **Connect** → expect `loopback (built-in mock)` / `connected` / `DEMO KEY
-   (mock): not secure`, then **Device Info** showing the mock text ("BruceLink mock…").
-3. **Capabilities** and **Wi-Fi Scan** should render the mock replies.
-4. Back out; confirm the app exits cleanly (no hang, no leak warning).
+2. Unpaired, the menu starts with **Pair**. **Connect** must say
+   `Not paired with a StickS3. Use Pair first.`; **Device Info** must say
+   `not connected`.
+3. Back out; confirm the app exits cleanly (no hang, no leak warning).
 
-This validates the UI, tick-driven polling, session handshake and
-request/response on real Flipper hardware **without** the StickS3.
+The app is BLE-only since v0.3. Until v0.2 it also had a loopback transport (a
+mock StickS3 inside the app, with the public demo key); that is how the UI was
+first run on a Flipper (2026-11-23). It is in git history (`5fdc650`).
 
 ### 3b. Flipper BLE profile alone (no StickS3 needed)
 
 Checks the part of the BLE transport that needs only a Flipper and a phone.
-1. **Settings → Transport: BLE**, then **Connect**. Expect `BLE advertising` /
+Passed on v0.2 (2026-11-23, `TEST_RESULTS.md`). Since v0.3 **Connect** needs a
+pairing, so run it after step 4b, or use **Pair** for steps 1–3 (it advertises
+the same service; a subscribed scanner then receives a `PAIR_COMMIT`, and the
+5-second drop in step 4 does not apply: pairing waits up to 90 s).
+1. **Connect**. Expect `BLE advertising` /
    `waiting for StickS3`. The Flipper's own Bluetooth link to the phone app
    drops while BruceLink holds the radio; that is expected.
 2. On a phone, open a BLE scanner (nRF Connect or similar). Expect a device
@@ -73,11 +77,16 @@ Checks the part of the BLE transport that needs only a Flipper and a phone.
    the BruceLink repo. Build env `m5stack-sticks3` (`pio run -e m5stack-sticks3`)
    and flash (`-t upload`). See `esp32/src/modules/brucelink/PATCH.md` for what
    the installer changes and what this build can and cannot do.
-3. On the StickS3: **Config → Advanced → Toggle BruceLink**. Unpaired, expect
-   `BruceLink: not paired. Use BruceLink pairing first` (pair in step 4b).
-   Once paired, expect `BruceLink ON > looking for Flipper (not encrypted)`.
+3. On the StickS3, **BruceLink** is the first item of the main menu (before
+   Wi-Fi), with a two-device icon whose dots are filled while it is on. Open
+   it: the title line says `BruceLink OFF | not paired`. **Turn on** must say
+   `BruceLink: not paired. Pair with Flipper first` (pair in step 4b).
+   Once paired, **Turn on** says `BruceLink ON > looking for Flipper (not
+   encrypted)` and the title shows `BruceLink ON | <Flipper name> XXXX`.
    - `BLE in use`: turn off Bruce's BLE API (or whichever BLE feature is on).
-   - Toggle it off and on a few times; no crash, no reboot.
+   - Turn it off and on a few times; no crash, no reboot.
+   - Config → Advanced must no longer have BruceLink entries (an older install
+     put them there; the installer removes them).
 4. With BruceLink on, check the rest of Bruce still works (menus, a Wi-Fi scan
    from Bruce's own menu). Starting another Bruce BLE feature while BruceLink
    is on is expected to misbehave: turn BruceLink off first.
@@ -89,21 +98,22 @@ across StickS3 updates, flash only `firmware.bin` at `0x10000`; the merged
 image at `0x0` erases NVS and with it the pairing.
 
 1. Flipper: **Pair**. Expect the instructions screen; the Flipper advertises.
-2. StickS3: **Config → Advanced → BruceLink pairing → Pair with Flipper**.
+2. StickS3: **BruceLink → Pair with Flipper**.
    Within a few seconds both show a 6-digit code; the Flipper also shows the
    StickS3's name and vibrates.
 3. Check the codes match. Answer **Yes** on both, in either order.
 4. Expect `Paired with <name>, key XXXX` on both, with the **same key id**. The
    StickS3 then starts BruceLink in normal mode; on the Flipper press Back,
-   then **Connect** (Transport is now BLE): `connected` within a few seconds,
-   status `Key XXXX, not encrypted`.
+   then **Connect**: `connected` within a few seconds, status `Key XXXX, not
+   encrypted`.
 5. Refusal: pair again and answer **No** on one side. Both must report it and
    keep the old pairing (Connect still works with it).
 6. Wrong peer: on a StickS3 that is not in pairing mode, the Flipper's Pair
    screen just keeps waiting; nothing is stored.
 7. Persistence: reboot both; **Connect** works without pairing again. Then
-   **Forget pairing** on the Flipper: Connect says `Not paired`. Forget on the
-   StickS3 too: Toggle BruceLink says `not paired`.
+   **Forget pairing** on the Flipper: Connect says `Not paired` and **Pair**
+   moves to the top of the menu. **Forget pairing** on the StickS3 too:
+   **Turn on** says `not paired`.
 8. Copy `apps_data/brucelink/pairing.key` to another Flipper (if you have
    one): it must report the pairing as from another Flipper, not use it.
 9. Record the StickS3 serial lines `[BruceLink] module: ... stack-left N`
@@ -112,8 +122,8 @@ image at `0x0` erases NVS and with it the pairing.
 
 ## 5. BLE link (implements ADR 0001)
 
-Needs the StickS3 build from step 4 with BruceLink toggled on, and the Flipper
-app on **Transport: BLE** → **Connect**, both paired (step 4b). Order does not
+Needs the StickS3 build from step 4 with BruceLink turned on, and the Flipper
+app on **Connect**, both paired (step 4b). Order does not
 matter: the StickS3 keeps scanning, the Flipper keeps advertising.
 - Verify advertising of the 128-bit service + name `BL`. If nothing shows up,
   look for `set_discoverable failed` in the Flipper log (`ufbt cli` → `log`).

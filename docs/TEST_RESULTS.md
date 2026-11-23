@@ -297,6 +297,33 @@ are exported at API 87.1); ESP32 compile check OK; Bruce 1.17 + BruceLink for
 **Not run on hardware.** Not host-testable: the Flipper key file (secure
 enclave), both pairing screens, the StickS3 NVS store.
 
+## BLE-only Flipper app, BruceLink on Bruce's main menu (2026-11-23)
+
+Owner's request: drop the loopback transport, and put BruceLink where it is
+easy to reach on the StickS3 instead of under Config → Advanced.
+
+```
+$ make -C tests/c test cppcheck            2137 + 266 checks, 0 failed; cppcheck clean
+$ python3 -m unittest discover -s tests    22 tests OK
+  test_install_into_bruce: 8 tests (main_menu.h include + member and the
+  main_menu.cpp entry, each inside a LITE_VERSION guard, BruceLink first
+  before Wi-Fi; idempotent; uninstall restores all three files; CRLF kept;
+  upgrade removes the old Config → Advanced entries; a missing anchor in one
+  file writes nothing to any file; a tree without ConfigMenu.cpp installs)
+```
+
+- Flipper FAP v0.3: builds, APPCHK pass, 42,212 bytes (was 45,616). The demo
+  key's bytes no longer occur in the `.fap`.
+- ESP32 compile check: SUCCESS (RAM 10.2 %, Flash 17.2 %).
+- Bruce 1.17 + BruceLink for `m5stack-sticks3`: installer run on the existing
+  tree (old Config → Advanced install), which it upgraded; build SUCCESS
+  (RAM 40.8 %, Flash 56.9 %), no BruceLink warnings; `BruceLinkMenu` is linked
+  into `firmware.elf`; installed sources byte-identical to the repo.
+- The menu icon was checked from a desktop rendering of the same geometry, not
+  on the device.
+
+**Not run on hardware.**
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)

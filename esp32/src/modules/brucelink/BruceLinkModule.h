@@ -2,11 +2,11 @@
  * BruceLink module for Bruce 1.17: run the bridge from Bruce's menu.
  *
  * Lives in the Bruce tree at src/modules/brucelink/ (installed by
- * tools/install_into_bruce.py). Two menu entries under Config > Advanced:
- *   - "Toggle BruceLink", modelled on Bruce's own "Toggle BLE API": starts
- *     the bridge with the stored pairing key, or stops it;
- *   - "BruceLink pairing": pair with a Flipper (ADR 0005) or forget the
- *     pairing.
+ * tools/install_into_bruce.py). "BruceLink" is an item on Bruce's main menu
+ * (BruceLinkMenu.h); it opens bruceLinkMenu():
+ *   - "Turn on" / "Turn off": starts the bridge with the stored pairing
+ *     key, or stops it (modelled on Bruce's own "Toggle BLE API");
+ *   - "Pair with Flipper" (ADR 0005) and "Forget pairing".
  *
  * While running, a dedicated task owns the bridge and the NimBLE central
  * transport: it scans for a Flipper advertising the BruceLink service,
@@ -39,6 +39,5 @@ bool moduleLinked();
 
 } // namespace brucelink
 
-/* Menu entry points (Config > Advanced). */
-void toggleBruceLink();
-void bruceLinkPairingMenu();
+/* BruceLink's submenu (main menu > BruceLink). Returns on Esc or "Main Menu". */
+void bruceLinkMenu();

@@ -36,12 +36,6 @@ typedef enum {
     BlEvtForgetNo,
 } BlCustomEvent;
 
-typedef enum {
-    BlTransportLoopback,
-    BlTransportBle,
-    BlTransportCount,
-} BlTransportKind;
-
 /* What the text view is currently showing, so asynchronous updates
  * (link changes, responses, timeouts) land on the right screen. */
 typedef enum {
@@ -60,11 +54,9 @@ typedef struct {
     Submenu* submenu;
     Widget* widget;
     VariableItemList* settings;
-    VariableItem* transport_item;
     Widget* pair_widget;
 
-    BlTransport* transport; /* NULL until Connect */
-    BlTransportKind transport_kind; /* chosen in Settings */
+    BlTransport* transport; /* BLE; NULL until Connect or Pair */
     bl_client_t client; /* session initiator state machine */
     uint32_t link_id; /* last transport link id seen (0 = none) */
     bool connect_pending; /* Connect pressed: start the transport on the next tick */

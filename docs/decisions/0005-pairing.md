@@ -75,13 +75,15 @@ pairing; flashing only the app (`firmware.bin` at 0x10000) keeps it.
 
 ### On the devices
 
-- Flipper: **Pair** in the main menu (BLE), then **Forget pairing**. Connect
-  over BLE requires a pairing. Loopback keeps the demo key; it is an in-process
-  mock with nothing to protect.
-- StickS3: **Config → Advanced → BruceLink pairing** (Pair with Flipper / Forget
-  pairing). **Toggle BruceLink** requires a pairing; the demo key is no longer
-  used on the device. After a successful pairing BruceLink starts in normal mode
-  with the new key.
+- Flipper: **Pair** (first in the menu until paired), then **Pair again** /
+  **Forget pairing**. Connect requires a pairing. The app is BLE-only and
+  contains no demo key (its loopback mock, the last user of the demo key on the
+  Flipper, was removed in v0.3).
+- StickS3: **BruceLink** on Bruce's main menu (first item) → **Pair with
+  Flipper** / **Forget pairing** / **Turn on**. Turning on requires a pairing;
+  the demo key is not used on the device. After a successful pairing BruceLink
+  starts in normal mode with the new key. (First version: two entries under
+  Config → Advanced; moved to the main menu on the owner's request.)
 
 ## Consequences
 

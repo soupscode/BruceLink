@@ -5,16 +5,15 @@
  * connection status / device info / capabilities / results, and a
  * settings list. All protocol logic lives in the host-tested shared core:
  * bl_client drives the handshake, the single outstanding request and
- * their timeouts; a BlTransport (BLE to a StickS3, or the built-in
- * loopback mock) carries the frames. This file only connects those to the
- * screen, from the ViewDispatcher tick on the app thread.
+ * their timeouts; the BLE transport carries the frames to and from the
+ * StickS3. This file only connects those to the screen, from the
+ * ViewDispatcher tick on the app thread.
  * SPDX-License-Identifier: MIT
  */
 #include "brucelink_i.h"
 
 #include "../../shared/brucelink_core/src/bl_capability.h"
 #include "../../shared/brucelink_core/src/bl_crypto.h"
-#include "../../shared/brucelink_core/src/bl_demo_key.h"
 
 #include <furi_hal_random.h>
 #include <furi_hal_version.h>
@@ -33,8 +32,6 @@ typedef enum {
     MenuSettings,
     MenuAbout,
 } MenuIndex;
-
-static const char* const TRANSPORT_NAMES[BlTransportCount] = {"Loopback", "BLE"};
 
 static void bl_rng(void* ctx, uint8_t* buf, size_t len) {
     UNUSED(ctx);
@@ -73,15 +70,9 @@ static void bl_refresh_connection(BruceLinkApp* app) {
     diag[0] = 0;
     if(app->transport->api->diag)
         app->transport->api->diag(app->transport, diag, sizeof(app->shown_diag));
-    char key[40];
-    if(app->transport_kind == BlTransportBle) {
-        snprintf(key, sizeof(key), "Key %02X%02X, not encrypted", app->key_id[0], app->key_id[1]);
-    } else {
-        snprintf(key, sizeof(key), "DEMO KEY (mock): not secure");
-    }
     snprintf(
-        app->text, sizeof(app->text), "%s\n%s\n\n%s%s%s", app->shown_status,
-        bl_client_state_text(app), key, diag[0] ? "\n\n" : "", diag);
+        app->text, sizeof(app->text), "%s\n%s\n\nKey %02X%02X, not encrypted%s%s", app->shown_status,
+        bl_client_state_text(app), app->key_id[0], app->key_id[1], diag[0] ? "\n\n" : "", diag);
     bl_show_text(app, "Connection", app->text);
 }
 
@@ -97,11 +88,11 @@ static void bl_stop_transport(BruceLinkApp* app) {
     bl_client_link_down(&app->client);
 }
 
-/* (Re)start the transport chosen in Settings. The handshake begins by
- * itself, from the tick, as soon as a link appears. */
+/* (Re)start the BLE transport. The handshake begins by itself, from the
+ * tick, as soon as a link appears. */
 static void bl_connect(BruceLinkApp* app) {
     bl_stop_transport(app);
-    if(app->transport_kind == BlTransportBle && !app->paired) {
+    if(!app->paired) {
         bl_show_text(
             app, "Connection",
             app->key_state == BlKeyfileForeign ?
@@ -109,13 +100,9 @@ static void bl_connect(BruceLinkApp* app) {
                 "Not paired with a StickS3.\nUse Pair first.");
         return;
     }
-    /* A real StickS3 only accepts the paired key; the built-in mock uses
-     * the public demo key. */
-    bl_client_init(
-        &app->client, app->transport_kind == BlTransportBle ? app->psk : BRUCELINK_DEMO_PSK, bl_rng,
-        NULL);
-    app->transport = (app->transport_kind == BlTransportBle) ? bl_transport_ble_alloc() :
-                                                             bl_transport_loopback_alloc();
+    /* The StickS3 only accepts the key from pairing (ADR 0005). */
+    bl_client_init(&app->client, app->psk, bl_rng, NULL);
+    app->transport = bl_transport_ble_alloc();
     if(!app->transport->api->start(app->transport)) {
         bl_stop_transport(app);
         if(app->screen == BlScreenConnection)
@@ -358,7 +345,7 @@ static void bl_pair_draw(BruceLinkApp* app) {
     } else {
         snprintf(
             app->text, sizeof(app->text),
-            "%s%s%sOn the StickS3:\nConfig > Advanced >\nBruceLink pairing >\nPair with Flipper\n\nBack: stop",
+            "%s%s%sOn the StickS3:\nBruceLink (main menu) >\nPair with Flipper\n\nBack: stop",
             app->pair_last_failure ? "Last try: " : "",
             app->pair_last_failure ? app->pair_last_failure : "",
             app->pair_last_failure ? "\n\n" : "");
@@ -437,10 +424,6 @@ static void bl_pair_keep(BruceLinkApp* app) {
     app->pair_done = true;
     app->key_state = BlKeyfileOk;
     bl_secure_zero(psk, sizeof(psk));
-    /* Pairing is a BLE thing: make BLE the transport for Connect. */
-    app->transport_kind = BlTransportBle;
-    variable_item_set_current_value_index(app->transport_item, BlTransportBle);
-    variable_item_set_current_value_text(app->transport_item, TRANSPORT_NAMES[BlTransportBle]);
 }
 
 static void bl_build_menu(BruceLinkApp* app);
@@ -556,6 +539,8 @@ static bool bl_custom_event_cb(void* ctx, uint32_t event) {
         app->paired = false;
         app->key_state = BlKeyfileNone;
         bl_stop_transport(app);
+        bl_secure_zero(&app->client, sizeof(app->client)); /* its copy of the key */
+        bl_client_init(&app->client, NULL, bl_rng, NULL);
         bl_build_menu(app);
         app->screen = BlScreenNone;
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
@@ -587,8 +572,7 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         app->screen = BlScreenConnection;
         if(app->transport != NULL && app->link_id != 0) {
             /* Already linked: show the status (and counters) instead of
-             * tearing a working link down. To restart, change Transport
-             * in Settings or leave the app. */
+             * tearing a working link down. To restart, leave the app. */
             bl_refresh_connection(app);
         } else {
             bl_show_text(app, "Connection", "starting...");
@@ -628,9 +612,8 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         bl_show_text(
             app, "BruceLink",
             "Remote for a StickS3 running\nBruce, over an authenticated\nBLE link.\n\n"
-            "Pair once (Pair, and on the\nStickS3: BruceLink pairing).\nThe key is stored encrypted\nwith this Flipper's own key.\n\n"
+            "Pair once (Pair, and on the\nStickS3: BruceLink > Pair\nwith Flipper). The key is\nstored encrypted with this\nFlipper's own key.\n\n"
             "Not yet: link encryption.\nFrames are authenticated\nbut readable over the air.\n\n"
-            "Loopback mode uses a public\ndemo key: not secure.\n\n"
             "github.com/soupscode/BruceLink");
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
@@ -648,17 +631,6 @@ static uint32_t bl_back_to_menu_cb(void* ctx) {
     return BlViewMenu;
 }
 
-static void bl_transport_changed_cb(VariableItem* item) {
-    BruceLinkApp* app = variable_item_get_context(item);
-    uint8_t idx = variable_item_get_current_value_index(item);
-    if(idx >= BlTransportCount) idx = 0;
-    variable_item_set_current_value_text(item, TRANSPORT_NAMES[idx]);
-    if((BlTransportKind)idx != app->transport_kind) {
-        app->transport_kind = (BlTransportKind)idx;
-        bl_stop_transport(app); /* takes effect on the next Connect */
-    }
-}
-
 static void bl_active_toggle_cb(VariableItem* item) {
     BruceLinkApp* app = variable_item_get_context(item);
     uint8_t idx = variable_item_get_current_value_index(item);
@@ -671,12 +643,14 @@ static void bl_active_toggle_cb(VariableItem* item) {
 static void bl_build_menu(BruceLinkApp* app) {
     submenu_reset(app->submenu);
     submenu_set_header(app->submenu, "BruceLink");
+    /* Nothing works before pairing, so that is what comes first. */
+    if(!app->paired) submenu_add_item(app->submenu, "Pair", MenuPair, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Connect", MenuConnect, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Device Info", MenuDeviceInfo, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Wi-Fi Scan", MenuWifiScan, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Capabilities", MenuCapabilities, bl_submenu_cb, app);
-    submenu_add_item(app->submenu, app->paired ? "Pair again" : "Pair", MenuPair, bl_submenu_cb, app);
     if(app->paired) {
+        submenu_add_item(app->submenu, "Pair again", MenuPair, bl_submenu_cb, app);
         submenu_add_item(app->submenu, "Forget pairing", MenuForget, bl_submenu_cb, app);
     }
     submenu_add_item(app->submenu, "Settings", MenuSettings, bl_submenu_cb, app);
@@ -685,13 +659,7 @@ static void bl_build_menu(BruceLinkApp* app) {
 
 static void bl_build_settings(BruceLinkApp* app) {
     variable_item_list_reset(app->settings);
-    VariableItem* it = variable_item_list_add(
-        app->settings, "Transport", BlTransportCount, bl_transport_changed_cb, app);
-    variable_item_set_current_value_index(it, (uint8_t)app->transport_kind);
-    variable_item_set_current_value_text(it, TRANSPORT_NAMES[app->transport_kind]);
-    app->transport_item = it;
-
-    it = variable_item_list_add(app->settings, "Active ops", 2, bl_active_toggle_cb, app);
+    VariableItem* it = variable_item_list_add(app->settings, "Active ops", 2, bl_active_toggle_cb, app);
     variable_item_set_current_value_index(it, 0);
     variable_item_set_current_value_text(it, "Disabled");
 }
@@ -701,9 +669,7 @@ static BruceLinkApp* bl_app_alloc(void) {
     memset(app, 0, sizeof(*app));
     app->key_state = bl_keyfile_load(app->psk, app->key_id, app->peer);
     app->paired = app->key_state == BlKeyfileOk;
-    /* With a pairing, the real StickS3 is what Connect is for. */
-    app->transport_kind = app->paired ? BlTransportBle : BlTransportLoopback;
-    bl_client_init(&app->client, BRUCELINK_DEMO_PSK, bl_rng, NULL);
+    bl_client_init(&app->client, NULL, bl_rng, NULL); /* keyed by bl_connect */
 
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
@@ -746,6 +712,7 @@ static void bl_app_free(BruceLinkApp* app) {
     bl_pair_wipe(&app->pair);
     bl_secure_zero(app->psk, sizeof(app->psk));
     bl_client_link_down(&app->client);
+    bl_secure_zero(&app->client, sizeof(app->client)); /* its copy of the key */
 
     view_dispatcher_remove_view(app->view_dispatcher, BlViewMenu);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewText);

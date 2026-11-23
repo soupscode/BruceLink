@@ -18,7 +18,7 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M3.4 | Ping, device ID, status, errors | 🟡 | Works on loopback + bridge; needs air |
 | M3.5 | App-side timeouts + handshake recovery | 🟡 | Handshake 5 s → drop link and re-link; request 10 s → slot freed, session stays up; stray handshake frames ignored. Host-tested (`bl_client`, client↔bridge); UI path needs a device run |
 | M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
-| M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
+| M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | v0.2 ran on a Flipper (loopback, then BLE); v0.3 is BLE-only (loopback removed), builds, not yet run |
 | M4.2 | **Flipper BLE peripheral profile** | 🟡 linked with the StickS3 on hardware (owner-reported: `connected`, Device Info OK) | Implemented; builds (APPCHK); event parser + client host-tested. Acceptance: advertise → connect → subscribe → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
 | M4.5 | Pin the paired Flipper's BLE address on the StickS3 (after M5.3) | ⬜ | After first authenticated session, prefer/only accept that address; unpin from Bruce menu. Closes the address-rotating DoS residual (ADR 0001 §6) |
 | M4.3 | Reconnection / connection recovery | 🟡 | Re-handshake on every new link, old keys wiped (host-tested); verify on HW |
@@ -30,7 +30,7 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M5.5 | **Fit Wi-Fi next to BLE on the StickS3** | 🟡 scan works on hardware (four runs, no leak, owner-reported); guard headroom 1.8 kB; capture path to do | A Wi-Fi scan requested over the BLE link returns networks. Measured: 133 kB internal free at the menu, 62 kB with BLE up and linked (after savings). ADR 0004: reduced, transient Wi-Fi start; measured peak 35.7 kB, returned networks over the air. Still needed: widen the 1.8 kB guard headroom (smaller bridge task stack first; ADR 0004), and the same path for capture (M5.2); then trim (bridge task stack, queue, NimBLE/Wi-Fi configuration) until it fits with margin. Every Wi-Fi feature depends on this |
 | M5.6 | Re-enabling BruceLink without a reboot | ⬜ | After BruceLink off (and Bruce's Wi-Fi used) the largest DMA block stays ~32 kB and Bruce's 48 kB BLE guard refuses. Find what fragments the heap (module now logs memory on stop) |
 | M5.4 | BLE ownership inside Bruce | ⬜ | Starting another Bruce BLE feature while BruceLink is on is refused or stops BruceLink cleanly (today only BruceLink's own start checks) |
-| M5.3 | Pairing (key agreement with a comparison code) | 🟡 implemented, host-tested, builds on both devices; **not yet run on hardware** | ADR 0005. Flipper: Pair / Forget pairing, key encrypted with the device-unique key. StickS3: BruceLink pairing menu, key in NVS. Demo key only in the Flipper's loopback mock |
+| M5.3 | Pairing (key agreement with a comparison code) | 🟡 implemented, host-tested, builds on both devices; **not yet run on hardware** | ADR 0005. Flipper: Pair / Forget pairing, key encrypted with the device-unique key. StickS3: BruceLink item on Bruce's main menu (Turn on/off, Pair with Flipper, Forget pairing), key in NVS. No demo key in the FAP |
 | M6 | HIL infrastructure | 🟡 | Scripts written + syntax-checked; run on HW |
 
 ## Phase 2 — Capture & research capability expansion

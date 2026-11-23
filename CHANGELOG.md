@@ -13,16 +13,23 @@ Builds on both devices; host-tested where it can be; **not yet run on hardware**
   match with probability 1 in a million per attempt.
   - Flipper: **Pair** / **Forget pairing** in the main menu. The key file is
     encrypted with the Flipper's device-unique key (like the stock U2F app).
-  - StickS3: **Config → Advanced → BruceLink pairing**. The key is kept in NVS,
-    as Bruce keeps its U2F secrets.
+  - StickS3: **BruceLink → Pair with Flipper**. The key is kept in NVS, as
+    Bruce keeps its U2F secrets.
 - `bl_pair` (shared core) with 13 host tests, five bridge pairing-mode tests,
   and an independent Python recomputation of every derived value.
-- Installer adds the second menu entry and upgrades an older install in place.
+- **BruceLink on Bruce's main menu** (first item, before Wi-Fi), with its own
+  icon and one submenu: Turn on / off, Pair with Flipper, Forget pairing, and
+  the state and key id in the title line. The installer patches
+  `main_menu.{h,cpp}` and removes the Config → Advanced entries of an older
+  install.
 
 ### Changed
-- **Real devices no longer use the public demo key.** Connect over BLE and
-  Toggle BruceLink require a pairing. The demo key remains only in the
-  Flipper's in-process loopback mock.
+- **Real devices no longer use the public demo key.** Connect and turning
+  BruceLink on require a pairing.
+- **The Flipper app is BLE-only (v0.3).** The loopback transport (a mock
+  StickS3 inside the app, with the demo key) and the Transport setting are
+  gone; the app contains no demo key. Until paired, **Pair** is the first menu
+  item.
 - Status screens say "Key XXXX, not encrypted" instead of "DEMO KEY".
 - StickS3 bridge task stack 12 kB → 10 kB (measured peak use 4.3 kB): 2 kB more
   internal RAM next to Wi-Fi (ADR 0004 headroom).

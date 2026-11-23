@@ -2,12 +2,13 @@
  * BruceLink Flipper app — transport abstraction.
  *
  * The app talks to the protocol core through this interface, so the UI
- * and session logic are independent of whether frames travel over BLE or
- * an in-process loopback. A transport delivers and accepts whole protocol
- * frames; fragmentation is its own concern (bl_reasm).
+ * and session logic do not depend on how frames travel. A transport
+ * delivers and accepts whole protocol frames; fragmentation is its own
+ * concern (bl_reasm). The only one is BLE; an in-process loopback mock
+ * existed until v0.3 (see git history).
  *
  * Lifecycle: start() brings the transport up (BLE: start the GATT profile
- * and advertise; loopback: nothing to wait for). A *link* then comes and
+ * and advertise). A *link* then comes and
  * goes on its own: link_id() is 0 while no peer can receive, and a
  * different non-zero value for every new link, so a drop-and-reconnect
  * between two polls is never mistaken for the same link. All calls are
@@ -55,9 +56,6 @@ struct BlTransport {
     void* impl;
 };
 
-/* In-process loopback: a mock StickS3 running the real protocol, so the
- * app is exercisable without hardware. */
-BlTransport* bl_transport_loopback_alloc(void);
 /* BLE: the Flipper as a GATT peripheral for the StickS3 (ADR 0001). */
 BlTransport* bl_transport_ble_alloc(void);
 

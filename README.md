@@ -19,8 +19,8 @@ does not reimplement them.
   session manager, a pcap writer, and a remote-operation safety gate.
 - **1434** host assertions under AddressSanitizer + UBSan, cppcheck clean, and a
   C↔Python wire-interop check.
-- The **Flipper app** compiles for Momentum `mntm-012` (and runs end-to-end
-  against an in-process mock over a loopback transport).
+- The **Flipper app** (BLE only) compiles for Momentum `mntm-012`; what has run
+  on hardware is listed in [`docs/STATUS.md`](docs/STATUS.md).
 - The **ESP32-S3 bridge** + NimBLE 2.5.1 central compiles and links for the
   target.
 

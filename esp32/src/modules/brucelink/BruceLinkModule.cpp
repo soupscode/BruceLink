@@ -334,10 +334,7 @@ static bool runPairing() {
     return stored;
 }
 
-} // namespace brucelink
-
-void toggleBruceLink() {
-    using namespace brucelink;
+static void toggleModule() {
     if(moduleRunning()) {
         if(moduleStop()) displayInfo("BruceLink OFF", true);
         else displayError("BruceLink is still stopping, try again", true);
@@ -348,51 +345,63 @@ void toggleBruceLink() {
         // Paired key, but frames are authenticated, not encrypted (M4.6).
         displayInfo("BruceLink ON > looking for Flipper (not encrypted)", true);
         break;
-    case kModuleNotPaired:
-        displayError("BruceLink: not paired. Use BruceLink pairing first", true);
-        break;
+    case kModuleNotPaired: displayError("BruceLink: not paired. Pair with Flipper first", true); break;
     case kModuleBleBusy: displayError("BruceLink: BLE in use, turn the other BLE feature off", true); break;
     case kModuleNoMemory: displayError("BruceLink: not enough memory for BLE", true); break;
     default: break;
     }
 }
 
-void bruceLinkPairingMenu() {
-    using namespace brucelink;
-    char peer[BL_PAIR_NAME_MAX + 1];
-    uint8_t kid[BL_PAIR_KEY_ID_LEN];
-    const bool paired = keyStoreInfo(peer, kid);
-    char status[48];
+static void pairWithFlipper(bool paired) {
     if(paired) {
-        snprintf(status, sizeof(status), "Paired: %s %02X%02X", peer[0] ? peer : "Flipper", kid[0], kid[1]);
-    } else {
-        snprintf(status, sizeof(status), "Not paired");
+        tft.fillScreen(bruceConfig.bgColor);
+        if(displayMessage("Replace the current\npairing?", "No", nullptr, "Yes", bruceConfig.priColor) != 1) {
+            return;
+        }
     }
+    runPairing();
+}
 
-    std::vector<Option> options;
-    options.push_back({"Pair with Flipper", [=]() {
-                           if(paired) {
-                               tft.fillScreen(bruceConfig.bgColor);
-                               if(displayMessage("Replace the current\npairing?", "No", nullptr, "Yes",
-                                                 bruceConfig.priColor) != 1) {
-                                   return;
-                               }
-                           }
-                           runPairing();
-                       }});
-    if(paired) {
-        options.push_back({"Forget pairing", [=]() {
-                               tft.fillScreen(bruceConfig.bgColor);
-                               if(displayMessage("Forget the pairing?\nThe Flipper will need\nto pair again.",
-                                                 "No", nullptr, "Yes", TFT_RED) != 1) {
-                                   return;
-                               }
-                               if(moduleRunning()) moduleStop();
-                               keyStoreForget();
-                               displayInfo("Pairing forgotten", true);
-                           }});
+static void forgetPairing() {
+    tft.fillScreen(bruceConfig.bgColor);
+    if(displayMessage("Forget the pairing?\nThe Flipper will need\nto pair again.", "No", nullptr, "Yes",
+                      TFT_RED) != 1) {
+        return;
     }
-    options.push_back({"Back", []() {}});
-    loopOptions(options, MENU_TYPE_SUBMENU, status);
+    if(moduleRunning()) moduleStop();
+    keyStoreForget();
+    displayInfo("Pairing forgotten", true);
+}
+
+} // namespace brucelink
+
+void bruceLinkMenu() {
+    using namespace brucelink;
+    int index = 0;
+    while(!returnToMenu) {
+        char peer[BL_PAIR_NAME_MAX + 1];
+        uint8_t kid[BL_PAIR_KEY_ID_LEN];
+        const bool paired = keyStoreInfo(peer, kid);
+        const bool running = moduleRunning();
+        // Title line: on/off and which Flipper (the key id, never the key).
+        char status[48];
+        if(paired) {
+            snprintf(status, sizeof(status), "BruceLink %s | %s %02X%02X", running ? "ON" : "OFF",
+                     peer[0] ? peer : "Flipper", kid[0], kid[1]);
+        } else {
+            snprintf(status, sizeof(status), "BruceLink %s | not paired", running ? "ON" : "OFF");
+        }
+
+        // Rebuilt on every pass: the entries depend on the state above.
+        std::vector<Option> opts;
+        opts.push_back({running ? "Turn off" : "Turn on", []() { toggleModule(); }});
+        opts.push_back({paired ? "Pair again" : "Pair with Flipper", [paired]() { pairWithFlipper(paired); }});
+        if(paired) opts.push_back({"Forget pairing", []() { forgetPairing(); }});
+        opts.push_back({"Main Menu", []() { returnToMenu = true; }});
+        if(index >= (int)opts.size()) index = (int)opts.size() - 1;
+
+        index = loopOptions(opts, MENU_TYPE_SUBMENU, status, index);
+        if(index < 0) break; // Esc
+    }
 }
 #endif // !LITE_VERSION
