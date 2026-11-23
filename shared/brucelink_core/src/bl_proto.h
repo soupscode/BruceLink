@@ -59,6 +59,13 @@ typedef enum {
     BL_MSG_PONG = 0x06,
     BL_MSG_BYE = 0x07, /* graceful session teardown */
 
+    /* --- pairing (bl_pair; zero MAC, no session) --- */
+    BL_MSG_PAIR_COMMIT = 0x08, /* I->R: commitment to the initiator's key */
+    BL_MSG_PAIR_KEY = 0x09, /* R->I: responder's key + nonce + name */
+    BL_MSG_PAIR_REVEAL = 0x0A, /* I->R: initiator's key + nonce */
+    BL_MSG_PAIR_CONFIRM = 0x0B, /* both: key confirmation after the user accepts */
+    BL_MSG_PAIR_ABORT = 0x0C, /* both: rejected / cancelled / timed out */
+
     /* --- info --- */
     BL_MSG_DEVICE_INFO_REQ = 0x10,
     BL_MSG_DEVICE_INFO = 0x11,

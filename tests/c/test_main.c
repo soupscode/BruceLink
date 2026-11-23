@@ -11,6 +11,7 @@ void run_integration_tests(void);
 void run_textbuf_tests(void);
 void run_client_tests(void);
 void run_gatt_evt_tests(void);
+void run_pair_tests(void);
 
 int main(void) {
     printf("BruceLink core tests\n");
@@ -28,6 +29,8 @@ int main(void) {
     run_client_tests();
     printf("[gatt-evt]\n");
     run_gatt_evt_tests();
+    printf("[pair]\n");
+    run_pair_tests();
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

@@ -151,3 +151,57 @@ def crc32(data: bytes) -> int:
         for _ in range(8):
             crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
     return crc ^ 0xFFFFFFFF
+
+
+# --- Pairing derivations (ADR 0005) ---------------------------------------
+# Written from the ADR, not from bl_pair.c, so the interop test checks the
+# C code against the specification. X25519 itself is covered by the C
+# RFC 7748 vectors; the test feeds in the shared secret the C side found.
+
+PAIR_VERSION = 1
+PAIR_CODE_MOD = 1_000_000
+MSG_PAIR_COMMIT = 0x08
+MSG_PAIR_KEY = 0x09
+MSG_PAIR_REVEAL = 0x0A
+MSG_PAIR_CONFIRM = 0x0B
+
+
+def _h(*parts: bytes) -> bytes:
+    return hashlib.sha256(b"".join(parts)).digest()
+
+
+def pair_commitment(pk_i: bytes, n_i: bytes) -> bytes:
+    return _h(b"BLpair1 commit", bytes((PAIR_VERSION,)), pk_i, n_i)
+
+
+def pair_transcript(name_i: bytes, pk_i: bytes, n_i: bytes,
+                    name_r: bytes, pk_r: bytes, n_r: bytes) -> bytes:
+    return _h(b"BLpair1 transcript", bytes((PAIR_VERSION, len(name_i))), name_i, pk_i, n_i,
+              bytes((len(name_r),)), name_r, pk_r, n_r)
+
+
+def pair_code(transcript: bytes) -> int:
+    return int.from_bytes(_h(b"BLpair1 code", transcript)[:4], "little") % PAIR_CODE_MOD
+
+
+def _hkdf(salt: bytes, ikm: bytes, info: bytes, length: int) -> bytes:
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    out, block, i = b"", b"", 1
+    while len(out) < length:
+        block = hmac.new(prk, block + info + bytes((i,)), hashlib.sha256).digest()
+        out += block
+        i += 1
+    return out[:length]
+
+
+def pair_psk(shared: bytes, n_i: bytes, n_r: bytes, transcript: bytes) -> bytes:
+    return _hkdf(n_i + n_r, shared, b"BLpair1 psk" + transcript, 32)
+
+
+def pair_confirm(psk: bytes, transcript: bytes, initiator: bool) -> bytes:
+    label = b"BLpair1 confirm I" if initiator else b"BLpair1 confirm R"
+    return hmac.new(psk, label + transcript, hashlib.sha256).digest()
+
+
+def pair_key_id(psk: bytes) -> bytes:
+    return _h(b"BLpair1 key id", psk)[:2]

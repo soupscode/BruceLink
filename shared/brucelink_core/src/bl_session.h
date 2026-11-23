@@ -33,8 +33,8 @@ extern "C" {
 #endif
 
 typedef enum {
-    BL_ROLE_CENTRAL = 0, /* ESP32-S3 / Bruce bridge initiates */
-    BL_ROLE_PERIPHERAL = 1, /* Flipper responds */
+    BL_ROLE_CENTRAL = 0, /* session initiator: the Flipper (sends HELLO) */
+    BL_ROLE_PERIPHERAL = 1, /* session responder: the StickS3 */
 } bl_role_t;
 
 typedef enum {

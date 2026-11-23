@@ -57,6 +57,11 @@ const char* bl_msg_type_str(uint8_t t) {
     case BL_MSG_HELLO_ACK: return "HELLO_ACK";
     case BL_MSG_AUTH: return "AUTH";
     case BL_MSG_AUTH_OK: return "AUTH_OK";
+    case BL_MSG_PAIR_COMMIT: return "PAIR_COMMIT";
+    case BL_MSG_PAIR_KEY: return "PAIR_KEY";
+    case BL_MSG_PAIR_REVEAL: return "PAIR_REVEAL";
+    case BL_MSG_PAIR_CONFIRM: return "PAIR_CONFIRM";
+    case BL_MSG_PAIR_ABORT: return "PAIR_ABORT";
     case BL_MSG_PING: return "PING";
     case BL_MSG_PONG: return "PONG";
     case BL_MSG_BYE: return "BYE";
