@@ -10,7 +10,7 @@
  * in the hardware session.
  * SPDX-License-Identifier: MIT
  */
-#include "bridge/NimBleCentralTransport.h"
+#include "NimBleCentralTransport.h"
 
 #include <Arduino.h>
 #include <esp_random.h>

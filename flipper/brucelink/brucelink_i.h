@@ -4,7 +4,7 @@
  */
 #pragma once
 
-#include "brucelink_core/src/bl_session.h"
+#include "../../shared/brucelink_core/src/bl_session.h"
 #include "transport/bl_transport.h"
 
 #include <furi.h>

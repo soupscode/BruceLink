@@ -10,7 +10,7 @@
  */
 #pragma once
 
-#include "../brucelink_core/src/bl_types.h"
+#include "../../../shared/brucelink_core/src/bl_types.h"
 
 #ifdef __cplusplus
 extern "C" {

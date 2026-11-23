@@ -13,8 +13,8 @@
 #include "bl_transport.h"
 
 #include "../brucelink_i.h" /* BL_HS_FRAME_MAX */
-#include "../brucelink_core/src/bl_capability.h"
-#include "../brucelink_core/src/bl_session.h"
+#include "../../../shared/brucelink_core/src/bl_capability.h"
+#include "../../../shared/brucelink_core/src/bl_session.h"
 
 #include <furi.h>
 #include <furi_hal_random.h>

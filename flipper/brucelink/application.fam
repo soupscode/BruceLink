@@ -12,9 +12,9 @@ App(
     fap_description="Native remote for a StickS3 running Bruce (authenticated BLE bridge).",
     fap_author="BruceLink contributors",
     # fbt globs each entry recursively, so one pattern gathers the app
-    # sources plus the shared core under brucelink_core/ (a symlink to
-    # ../../shared/brucelink_core/src, so the device and host build the
-    # identical protocol code). Listing the core separately would double
-    # it in the link.
+    # sources plus core/*.c: generated one-line wrappers that #include the
+    # shared protocol core (../../shared/brucelink_core/src), so the device
+    # and the host build identical protocol code. No symlinks (they break on
+    # Windows checkouts). Regenerate with tools/gen_wrappers.py.
     sources=["*.c"],
 )

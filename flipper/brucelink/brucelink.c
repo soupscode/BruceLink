@@ -12,7 +12,7 @@
  */
 #include "brucelink_i.h"
 
-#include "brucelink_core/src/bl_capability.h"
+#include "../../shared/brucelink_core/src/bl_capability.h"
 
 #include <furi_hal_random.h>
 #include <stdio.h>
