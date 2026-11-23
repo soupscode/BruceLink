@@ -440,8 +440,8 @@ list was shown on the Flipper. Serial log:
 | Internal RAM after release | ~55 kB vs 61.6 kB before: about 6.5 kB not returned. Consistent with the default event loop (task + queue) created on first use and kept; to be confirmed by a second scan |
 | Bridge task stack | 7,948 bytes of 12,288 never used |
 
-Not yet known: whether repeated scans leak (one scan only), and why the link
-went down 9 s after the scan finished (owner action or a real drop).
+The link going down 9 s after the scan was the owner leaving the Flipper app,
+not a drop. Not yet known: whether repeated scans leak (one scan only).
 
 Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
 bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at

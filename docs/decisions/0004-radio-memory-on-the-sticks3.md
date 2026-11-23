@@ -60,7 +60,8 @@ together: its BLE features call `wifiDisconnect()` first.
 | Scan finished (lowest point) | 25,911 | 16,372 |
 | Driver released | ~55,000 | 31,732 |
 
-Peak cost 35,728 bytes, scan 4.8 s with BLE active. The 52 kB threshold leaves
+Peak cost 35,728 bytes, scan 4.8 s with BLE active. The link stayed up through
+the scan (it went down 9 s later when the owner left the Flipper app). The 52 kB threshold leaves
 about 16 kB above that cost, and the host test now pins the threshold to the
 measured cost plus at least 12 kB. About 6.5 kB was not returned after release,
 which matches the default event loop created on first use; a second scan will
