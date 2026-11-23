@@ -4,7 +4,7 @@
  */
 #pragma once
 
-#include "../../shared/brucelink_core/src/bl_session.h"
+#include "../../shared/brucelink_core/src/bl_client.h"
 #include "transport/bl_transport.h"
 
 #include <furi.h>
@@ -17,11 +17,6 @@
 
 #define BL_TEXT_MAX 512
 
-/* Largest handshake frame: header + HELLO_ACK payload (81) + MAC = 109.
- * Handshake paths use this instead of BL_MAX_MSG (540) to keep the
- * X25519 call chain's stack footprint small. */
-#define BL_HS_FRAME_MAX 128
-
 typedef enum {
     BlViewMenu,
     BlViewText,
@@ -31,7 +26,17 @@ typedef enum {
 typedef enum {
     BlTransportLoopback,
     BlTransportBle,
+    BlTransportCount,
 } BlTransportKind;
+
+/* What the text view is currently showing, so asynchronous updates
+ * (link changes, responses, timeouts) land on the right screen. */
+typedef enum {
+    BlScreenNone,
+    BlScreenConnection,
+    BlScreenRequest, /* waiting for / showing a response */
+    BlScreenStatic, /* About */
+} BlScreen;
 
 typedef struct {
     Gui* gui;
@@ -41,20 +46,17 @@ typedef struct {
     Widget* widget;
     VariableItemList* settings;
 
-    BlTransport* transport;
-    BlTransportKind transport_kind;
-    bl_session_t session; /* central */
-    bool have_session;
+    BlTransport* transport; /* NULL until Connect */
+    BlTransportKind transport_kind; /* chosen in Settings */
+    bl_client_t client; /* session initiator state machine */
+    uint32_t link_id; /* last transport link id seen (0 = none) */
     bool active_ops_enabled; /* operator opt-in for active ops (default off) */
 
     /* All protocol work runs on the app thread via the ViewDispatcher
      * tick event (never in a FuriTimer callback: the timer service task
      * has a 1 KB stack). No locking needed. */
 
+    BlScreen screen;
+    const char* req_title; /* title of the request being shown */
     char text[BL_TEXT_MAX]; /* scrollable text view contents */
-    char status[64];
 } BruceLinkApp;
-
-/* defined in brucelink.c */
-void bl_app_set_text(BruceLinkApp* app, const char* title, const char* body);
-void bl_app_show_view(BruceLinkApp* app, BlViewId id);

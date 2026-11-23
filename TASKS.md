@@ -16,16 +16,18 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M3.2 | Fragmentation + COBS | ✅ | 540 B over MTU 23/244; resync |
 | M3.3 | Simulated transport + fault injection | ✅ | bulk/corrupt/drop/dup tests |
 | M3.4 | Ping, device ID, status, errors | 🟡 | Works on loopback + bridge; needs air |
-| M3.5 | App-side request timeouts + cancel | ⬜ | Request times out in N ms; UI recovers |
+| M3.5 | App-side timeouts + handshake recovery | 🟡 | Handshake 3 s → drop link and re-link; request 5 s → slot freed, session stays up. Host-tested (`bl_client`, client↔bridge); UI path needs a device run |
 | M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
 | M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
-| M4.2 | **Flipper BLE peripheral profile** | ⬜ **next** | Advertise → connect → pair → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
+| M4.2 | **Flipper BLE peripheral profile** | 🟡 **next: run on HW** | Implemented; builds (APPCHK); event parser + client host-tested. Acceptance: advertise → connect → subscribe → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
 | M4.5 | Pin the paired Flipper's BLE address on the StickS3 | ⬜ | After first authenticated session, prefer/only accept that address; unpin from Bruce menu. Closes the address-rotating DoS residual (ADR 0001 §6) |
-| M4.3 | Reconnection / connection recovery | ⬜ | Re-handshake after drop; no stale keys |
+| M4.3 | Reconnection / connection recovery | 🟡 | Re-handshake on every new link, old keys wiped (host-tested); verify on HW |
+| M4.6 | Link confidentiality | ⬜ | Session-layer AEAD (keys already derived); payloads unreadable on air; covers BLE + UART. Until then frames are authenticated but **not encrypted** (ADR 0001 amendment) |
+| M4.7 | Match replies to requests | ⬜ | A reply arriving after its request timed out is not shown as the answer to the next one (needs a request id or type check) |
 | M4.4 | BLE discovery screen | ⬜ | Lists nearby BruceLink bridges |
 | M5.1 | BruceBackendImpl compiled in Bruce tree | ⬜ | Builds in Bruce `1.17` m5stack-sticks3 |
 | M5.2 | Bruce headless sniffer hooks (patch) | ⬜ | `PATCH.md` applied; start/stop/status work |
-| M5.3 | Pairing-key provisioning | ⬜ | Key in `/brucelink.json`; setup flow |
+| M5.3 | Pairing-key provisioning | ⬜ | Key in `/brucelink.json`; setup flow. **Until then both builds use the public demo key (`bl_demo_key.h`): no security against anyone who has the source** |
 | M6 | HIL infrastructure | 🟡 | Scripts written + syntax-checked; run on HW |
 
 ## Phase 2 — Capture & research capability expansion
@@ -55,7 +57,7 @@ Phase 1 BLE; does not interrupt foundation work.
 
 ## Milestone priority changes from the scope amendment
 
-None to Phase 1 ordering: **the BLE peripheral profile (M4.2) remains the top
-priority.** Phase 2 items reuse the shared core already built (registry,
+None to Phase 1 ordering: **the BLE link (M4.2) remains the top priority** —
+now implemented and waiting for its first run on hardware. Phase 2 items reuse the shared core already built (registry,
 capture manager, pcap, gate are done host-side), so they cost little now and
 are sequenced after BLE works on hardware.

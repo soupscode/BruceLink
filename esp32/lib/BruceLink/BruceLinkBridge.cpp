@@ -6,6 +6,7 @@
 
 extern "C" {
 #include "bl_crypto.h"
+#include "bl_demo_key.h"
 #include "bl_textbuf.h"
 }
 
@@ -57,7 +58,7 @@ static uint16_t boundedTextLen(const char* buf, size_t reported, size_t cap) {
 }
 
 BruceLinkBridge::BruceLinkBridge()
-    : have_psk_(false), backend_(nullptr), tx_(nullptr), tx_ctx_(nullptr), mtu_(20),
+    : have_psk_(false), demo_key_(false), backend_(nullptr), tx_(nullptr), tx_ctx_(nullptr), mtu_(20),
       link_up_(false), link_up_ms_(0) {
     memset(psk_, 0, sizeof(psk_));
     memset(&session_, 0, sizeof(session_));
@@ -86,6 +87,10 @@ void BruceLinkBridge::begin(
      * and bl_session_close() wipes its copy on every disconnect. */
     memcpy(psk_, psk, BL_KEY_LEN);
     have_psk_ = true;
+    /* The demo key is published: a session made with it authenticates
+     * nobody. Such a bridge serves passive requests for bring-up but never
+     * transmits on a remote request (see handleCommand / handleActiveOp). */
+    demo_key_ = memcmp(psk_, BRUCELINK_DEMO_PSK, BL_KEY_LEN) == 0;
     bl_safety_init(&safety_);
     /* Unconditionally valid; attach a backend only if the build has one. */
     bl_capture_init(&capture_, nullptr, nullptr);
@@ -203,6 +208,10 @@ void BruceLinkBridge::handleCommand(const bl_frame_t* f) {
 
     if(cap_id == kCtrlEnableActive) {
         bool on = arglen >= 1 && args[0] != 0;
+        if(on && demo_key_) {
+            sendError(BL_ERR_NOT_AUTHORIZED); /* no real key, no transmission */
+            return;
+        }
         if(bl_safety_enable_active(&safety_, on) != BL_OK) {
             sendError(BL_ERR_ESTOPPED);
             return;
@@ -258,7 +267,7 @@ void BruceLinkBridge::handleActiveOp(
         sendError(BL_ERR_ESTOPPED);
         return;
     }
-    if(!safety_.active_enabled) {
+    if(demo_key_ || !safety_.active_enabled) {
         sendError(BL_ERR_NOT_AUTHORIZED);
         return;
     }
@@ -370,6 +379,8 @@ void BruceLinkBridge::sendStatus() {
     bl_tb_int(&tb, bl_safety_is_estopped(&safety_) ? 1 : 0);
     bl_tb_str(&tb, " active:");
     bl_tb_int(&tb, bl_safety_active_ready(&safety_) ? 1 : 0);
+    bl_tb_str(&tb, " demo:");
+    bl_tb_int(&tb, demo_key_ ? 1 : 0);
     sendText(BL_MSG_STATUS, buf, tb.len);
 }
 

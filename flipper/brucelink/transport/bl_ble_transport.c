@@ -1,64 +1,456 @@
 /*
- * BruceLink Flipper app — BLE transport (hardware-dependent stub).
+ * BruceLink Flipper app — BLE transport (GATT peripheral for the StickS3).
  *
- * NOT YET IMPLEMENTED against hardware. The design, from the Momentum
- * mntm-012 source audit (docs/decisions/0001-ble-transport.md):
+ * STATUS: compiles against the Momentum mntm-012 SDK; NOT yet run on
+ * hardware. Everything radio-facing here needs the bring-up procedure in
+ * docs/HARDWARE_TESTING.md step 5. The portable parts are host-tested:
+ * event parsing (bl_gatt_evt), fragmentation (bl_reasm) and the session
+ * client (bl_client).
  *
- *   - The Flipper is a BLE peripheral; the StickS3 (NimBLE) is the
- *     central. The light copro stack is peripheral-only, so this is the
- *     only workable role split.
- *   - Define a FAP-owned FuriHalBleProfileTemplate with one custom
- *     128-bit service: an RX characteristic (WRITE / WRITE_NO_RSP with
- *     GATT_NOTIFY_ATTRIBUTE_WRITE) and a TX characteristic (NOTIFY),
- *     each <= 244 bytes, following the in-tree BadKB ext-profile
- *     pattern (applications/.../ble_hid_ext_profile.c).
- *   - Start: bt_disconnect, delay 200ms, bt_keys_storage_set_storage_path
- *     (APP_DATA ".brucelink.keys"), bt_profile_start, furi_hal_bt_
- *     start_advertising, bt_set_status_changed_callback. Exit: restore
- *     the default profile (see hid.c), unregister the GATT event handler.
- *   - GapConfig: own MAC + own name; GapPairingNone with ENCRY (not
- *     AUTHEN) permissions, the ESP32 starting Just Works pairing so the
- *     Connected event fires.
- *   - Frames are fragmented to the negotiated MTU with bl_reasm; the
- *     GATT write/notify boundary carries one chunk.
+ * Design (ADR 0001, verified against Momentum mntm-012 source):
+ *   - The Flipper is the peripheral; the StickS3 (NimBLE) is the central.
+ *   - A FAP-owned FuriHalBleProfileTemplate with one custom 128-bit
+ *     service: RX (central writes) and TX (we notify), <= 244 bytes each.
+ *     The stock serial profile is not reusable: the bt service hijacks it
+ *     for RPC.
+ *   - No BLE-level pairing: GapPairingNone, no bonding, open attribute
+ *     permissions. All authentication and integrity come from the
+ *     BruceLink session (bl_session). NOTE: frames are authenticated but
+ *     not encrypted; payloads are readable over the air (TASKS M4.6).
+ *   - "Link up" is the central enabling TX notifications. It does not
+ *     depend on the firmware's Connected status, which only fires after
+ *     pairing. The app starts the handshake at that moment (the StickS3
+ *     drops links that are not authenticated within 10 s).
  *
- * Until a hardware session implements and verifies this, connect()
- * fails cleanly and the app falls back to the loopback transport.
+ * Threading:
+ *   - ble_evt() runs on the BLE stack's event thread (about 1.3 KB of
+ *     stack). It only parses, copies one chunk into a queue via a
+ *     preallocated item, flips a few word-sized flags, and returns.
+ *   - profile start/stop run on the bt service thread while the app
+ *     thread is blocked inside bt_profile_start / _restore_default.
+ *   - everything else runs on the app thread.
  * SPDX-License-Identifier: MIT
  */
 #include "bl_transport.h"
 
+#include "../../../shared/brucelink_core/src/bl_reasm.h"
+#include "../../../shared/brucelink_core/src/bl_uuid.h"
+#include "bl_gatt_evt.h"
+
+#include <ble/core/ble_defs.h>
+#include <bt/bt_service/bt.h>
 #include <furi.h>
+#include <furi_ble/event_dispatcher.h>
+#include <furi_ble/gatt.h>
+#include <furi_ble/profile_interface.h>
+#include <furi_hal_bt.h>
+#include <furi_hal_version.h>
+#include <storage/storage.h>
+#include <string.h>
 
-static bool ble_connect(BlTransport* t) {
-    UNUSED(t);
-    FURI_LOG_W("BruceLink", "BLE transport not yet implemented (hardware session)");
-    return false;
+#define TAG "BruceLinkBle"
+
+#define BLE_KEYS_PATH APP_DATA_PATH(".brucelink.keys")
+#define BLE_RX_QUEUE_DEPTH 8
+/* service + RX (decl, value) + TX (decl, value, CCCD) = 6; small margin */
+#define BLE_MAX_ATTR_RECORDS 8
+/* 0x09 = AD_TYPE_COMPLETE_LOCAL_NAME. Keep the name <= 5 chars: with the
+ * 128-bit service UUID (18 bytes), flags (3) and an optional TX-power
+ * field (3), that is all a 31-byte advertisement leaves. */
+#define BLE_ADV_NAME "\x09" "BLink"
+
+typedef struct {
+    uint16_t len;
+    uint8_t data[BL_BLE_CHUNK_MAX];
+} BleChunk;
+
+/* Passed as `source` to ble_gatt_characteristic_update for TX. */
+typedef struct {
+    const uint8_t* ptr;
+    uint16_t len;
+} BleTxRef;
+
+typedef struct Ble Ble;
+
+typedef struct {
+    FuriHalBleProfileBase base; /* must be first */
+    Ble* ble;
+} BleProfile;
+
+struct Ble {
+    Bt* bt;
+    FuriHalBleProfileBase* profile;
+    bool started;
+
+    /* GATT objects: written on the bt service thread during start/stop */
+    uint16_t svc_handle;
+    BleGattCharacteristicInstance rx_char;
+    BleGattCharacteristicInstance tx_char;
+    GapSvcEventHandler* handler;
+    volatile bool svc_ready;
+
+    /* BLE event thread -> app thread */
+    FuriMessageQueue* rxq;
+    BleChunk scratch; /* event thread only; keeps 246 bytes off its stack */
+    volatile bool subscribed;
+    volatile uint32_t link_seq; /* bumped on every new subscription */
+    volatile uint16_t mtu; /* negotiated ATT MTU; 0 = not yet known */
+    volatile uint32_t rx_dropped;
+
+    /* app thread only */
+    bl_reasm_t reasm;
+    uint32_t seen_link;
+};
+
+/* ------------------------------------------------------------ GATT */
+
+static const Service_UUID_t ble_svc_uuid = {.Service_UUID_128 = BL_UUID_SERVICE_LE};
+
+/* TX value comes from the BleTxRef handed to ble_gatt_characteristic_update.
+ * With data == NULL the firmware is asking for the maximum length. */
+static bool ble_tx_data_cb(const void* context, const uint8_t** data, uint16_t* data_len) {
+    if(data == NULL) {
+        *data_len = BL_BLE_CHUNK_MAX;
+        return false;
+    }
+    const BleTxRef* ref = context;
+    *data = ref ? ref->ptr : NULL;
+    *data_len = ref ? ref->len : 0;
+    return false; /* nothing for the firmware to free */
 }
-static void ble_disconnect(BlTransport* t) {
-    UNUSED(t);
+
+static const BleGattCharacteristicParams ble_rx_params = {
+    .name = "BruceLink RX",
+    .data_prop_type = FlipperGattCharacteristicDataFixed,
+    .data.fixed.length = BL_BLE_CHUNK_MAX,
+    .uuid.Char_UUID_128 = BL_UUID_RX_LE,
+    .uuid_type = UUID_TYPE_128,
+    .char_properties = CHAR_PROP_WRITE | CHAR_PROP_WRITE_WITHOUT_RESP,
+    .security_permissions = ATTR_PERMISSION_NONE,
+    .gatt_evt_mask = GATT_NOTIFY_ATTRIBUTE_WRITE,
+    .is_variable = CHAR_VALUE_LEN_VARIABLE,
+};
+
+static const BleGattCharacteristicParams ble_tx_params = {
+    .name = "BruceLink TX",
+    .data_prop_type = FlipperGattCharacteristicDataCallback,
+    .data.callback.fn = ble_tx_data_cb,
+    .data.callback.context = NULL,
+    .uuid.Char_UUID_128 = BL_UUID_TX_LE,
+    .uuid_type = UUID_TYPE_128,
+    .char_properties = CHAR_PROP_NOTIFY,
+    .security_permissions = ATTR_PERMISSION_NONE,
+    .gatt_evt_mask = GATT_DONT_NOTIFY_EVENTS,
+    .is_variable = CHAR_VALUE_LEN_VARIABLE,
+};
+
+/* BLE event thread. Must stay tiny: no logging, no blocking, no big locals. */
+static BleEventAckStatus ble_evt(void* event, void* context) {
+    Ble* ble = context;
+    if(!ble->svc_ready) return BleEventNotAck;
+
+    const uint8_t* pckt = event;
+    bl_gatt_evt_t e;
+    /* pckt[2] is the controller's own parameter length */
+    bool consumed = bl_gatt_evt_parse(
+        pckt, 3u + (size_t)pckt[2], ble->rx_char.handle, ble->tx_char.handle, &e);
+
+    switch(e.kind) {
+    case BL_GATT_EVT_RX_DATA:
+        if(e.len > 0 && e.len <= BL_BLE_CHUNK_MAX) {
+            ble->scratch.len = e.len;
+            memcpy(ble->scratch.data, e.data, e.len);
+            if(furi_message_queue_put(ble->rxq, &ble->scratch, 0) != FuriStatusOk) {
+                ble->rx_dropped++; /* reassembly will fail; peer re-requests */
+            }
+        }
+        break;
+    case BL_GATT_EVT_SUBSCRIBED:
+        ble->link_seq++;
+        ble->subscribed = true;
+        break;
+    case BL_GATT_EVT_UNSUBSCRIBED:
+        ble->subscribed = false;
+        break;
+    case BL_GATT_EVT_MTU:
+        ble->mtu = e.mtu;
+        break;
+    case BL_GATT_EVT_DISCONNECTED:
+        ble->subscribed = false;
+        ble->mtu = 0;
+        break;
+    default:
+        break;
+    }
+    return consumed ? BleEventAckFlowEnable : BleEventNotAck;
 }
-static int ble_send(BlTransport* t, const uint8_t* f, size_t n) {
-    UNUSED(t);
-    UNUSED(f);
-    UNUSED(n);
-    return BL_E_STATE;
+
+/* --------------------------------------------- profile (bt thread) */
+
+static const FuriHalBleProfileTemplate ble_profile_template;
+
+/* Remove everything ble_profile_start() added. bt service thread. */
+static void ble_gatt_teardown(Ble* ble) {
+    ble->svc_ready = false;
+    ble->subscribed = false;
+    /* The dispatcher asserts its handler list is empty on reset, so this
+     * must be unregistered here. */
+    if(ble->handler) {
+        ble_event_dispatcher_unregister_svc_handler(ble->handler);
+        ble->handler = NULL;
+    }
+    /* _delete also frees the descriptor copy _init made, so it is called
+     * even for a characteristic the stack refused to add. */
+    if(ble->rx_char.characteristic) {
+        ble_gatt_characteristic_delete(ble->svc_handle, &ble->rx_char);
+    }
+    if(ble->tx_char.characteristic) {
+        ble_gatt_characteristic_delete(ble->svc_handle, &ble->tx_char);
+    }
+    ble_gatt_service_delete(ble->svc_handle);
+    memset(&ble->rx_char, 0, sizeof(ble->rx_char));
+    memset(&ble->tx_char, 0, sizeof(ble->tx_char));
+    ble->svc_handle = 0;
 }
+
+static FuriHalBleProfileBase* ble_profile_start(FuriHalBleProfileParams params) {
+    Ble* ble = params;
+    furi_check(ble);
+
+    ble->svc_ready = false;
+    ble->svc_handle = 0;
+    memset(&ble->rx_char, 0, sizeof(ble->rx_char));
+    memset(&ble->tx_char, 0, sizeof(ble->tx_char));
+
+    if(!ble_gatt_service_add(
+           UUID_TYPE_128, &ble_svc_uuid, PRIMARY_SERVICE, BLE_MAX_ATTR_RECORDS, &ble->svc_handle)) {
+        FURI_LOG_E(TAG, "service add failed");
+        return NULL;
+    }
+    ble->handler = ble_event_dispatcher_register_svc_handler(ble_evt, ble);
+    ble_gatt_characteristic_init(ble->svc_handle, &ble_rx_params, &ble->rx_char);
+    ble_gatt_characteristic_init(ble->svc_handle, &ble_tx_params, &ble->tx_char);
+    /* _init only logs a failure. Attribute handles are never 0, and events
+     * are matched on these handles, so refuse to run without both. */
+    if(ble->rx_char.handle == 0 || ble->tx_char.handle == 0) {
+        FURI_LOG_E(TAG, "characteristic add failed");
+        ble_gatt_teardown(ble);
+        return NULL;
+    }
+
+    BleProfile* profile = malloc(sizeof(BleProfile));
+    profile->base.config = &ble_profile_template;
+    profile->ble = ble;
+    ble->svc_ready = true;
+    return &profile->base;
+}
+
+static void ble_profile_stop(FuriHalBleProfileBase* base) {
+    furi_check(base);
+    furi_check(base->config == &ble_profile_template);
+    BleProfile* profile = (BleProfile*)base;
+    ble_gatt_teardown(profile->ble);
+    free(profile);
+}
+
+static void ble_profile_get_gap_config(GapConfig* config, FuriHalBleProfileParams params) {
+    UNUSED(params);
+    furi_check(config);
+    memset(config, 0, sizeof(GapConfig));
+
+    static const uint8_t uuid[16] = BL_UUID_SERVICE_LE;
+    config->adv_service.UUID_Type = UUID_TYPE_128;
+    memcpy(config->adv_service.Service_UUID_128, uuid, sizeof(uuid));
+
+    config->appearance_char = 0x0000;
+    config->bonding_mode = false;
+    config->pairing_method = GapPairingNone;
+
+    /* Own address, distinct from the Flipper's default and HID profiles,
+     * so a phone's cached GATT table for those is never applied to us. */
+    memcpy(config->mac_address, furi_hal_version_get_ble_mac(), sizeof(config->mac_address));
+    config->mac_address[2] = (uint8_t)(config->mac_address[2] + 2);
+
+    strlcpy(config->adv_name, BLE_ADV_NAME, sizeof(config->adv_name));
+
+    /* 7.5 ms .. 45 ms, as the stock serial profile requests */
+    config->conn_param.conn_int_min = 0x06;
+    config->conn_param.conn_int_max = 0x24;
+    config->conn_param.slave_latency = 0;
+    config->conn_param.supervisor_timeout = 0;
+}
+
+static const FuriHalBleProfileTemplate ble_profile_template = {
+    .start = ble_profile_start,
+    .stop = ble_profile_stop,
+    .get_gap_config = ble_profile_get_gap_config,
+};
+
+/* ------------------------------------------- transport (app thread) */
+
+static void ble_flush_rx(Ble* ble) {
+    BleChunk c;
+    while(furi_message_queue_get(ble->rxq, &c, 0) == FuriStatusOk) {
+    }
+    bl_reasm_init(&ble->reasm);
+}
+
+/* Give the radio back to the firmware's default profile. */
+static void ble_restore_default(Ble* ble) {
+    bt_disconnect(ble->bt);
+    furi_delay_ms(200); /* let core 2 settle, as the stock HID app does */
+    bt_keys_storage_set_default_path(ble->bt);
+    if(!bt_profile_restore_default(ble->bt)) {
+        FURI_LOG_E(TAG, "failed to restore the default BLE profile");
+    }
+    ble->profile = NULL;
+}
+
+static bool ble_start(BlTransport* t) {
+    Ble* ble = t->impl;
+    if(ble->started) return true;
+
+    ble->subscribed = false;
+    ble->mtu = 0;
+    ble_flush_rx(ble);
+
+    /* Same sequence as the stock HID app: drop the phone link, use our own
+     * key file so the phone bond is untouched, then switch profiles. */
+    bt_disconnect(ble->bt);
+    furi_delay_ms(200);
+    bt_keys_storage_set_storage_path(ble->bt, BLE_KEYS_PATH);
+    ble->profile = bt_profile_start(ble->bt, &ble_profile_template, ble);
+    if(ble->profile == NULL) {
+        FURI_LOG_E(TAG, "profile start failed");
+        ble_restore_default(ble);
+        return false;
+    }
+    furi_hal_bt_start_advertising();
+    ble->started = true;
+    return true;
+}
+
+static void ble_stop(BlTransport* t) {
+    Ble* ble = t->impl;
+    if(!ble->started) return;
+    ble->started = false;
+    ble_restore_default(ble); /* runs ble_profile_stop on the bt thread */
+    ble->subscribed = false;
+    ble_flush_rx(ble);
+}
+
+static uint32_t ble_link_id(BlTransport* t) {
+    Ble* ble = t->impl;
+    if(!ble->started || !ble->subscribed) return 0;
+    uint32_t seq = ble->link_seq;
+    return seq ? seq : 1; /* 0 is reserved for "down" */
+}
+
+static void ble_drop_link(BlTransport* t) {
+    Ble* ble = t->impl;
+    if(!ble->started) return;
+    ble->subscribed = false;
+    /* bt_disconnect() terminates the link by *stopping advertising*
+     * (gap_stop_advertising clears the firmware's auto-restart flag), and
+     * returns once the radio is idle. Start advertising again or the
+     * StickS3 could never find us after a failed handshake. */
+    bt_disconnect(ble->bt);
+    furi_hal_bt_start_advertising();
+}
+
+static size_t ble_chunk_size(const Ble* ble) {
+    uint16_t mtu = ble->mtu;
+    if(mtu < 23) return BL_BLE_CHUNK_DEFAULT; /* not negotiated yet */
+    size_t n = (size_t)mtu - 3u; /* ATT notification header */
+    return n > BL_BLE_CHUNK_MAX ? BL_BLE_CHUNK_MAX : n;
+}
+
+static int ble_send(BlTransport* t, const uint8_t* frame, size_t len) {
+    Ble* ble = t->impl;
+    if(!ble->started || !ble->subscribed) return BL_E_STATE;
+    const size_t chunk_cap = ble_chunk_size(ble);
+    uint8_t chunk[BL_BLE_CHUNK_MAX];
+    unsigned i = 0;
+    int done = 0;
+    while(!done) {
+        size_t clen = 0;
+        done = bl_frag_chunk(frame, len, chunk_cap, i++, chunk, sizeof(chunk), &clen);
+        if(done < 0) return done;
+        BleTxRef ref = {.ptr = chunk, .len = (uint16_t)clen};
+        /* NB: this firmware call returns TRUE ON FAILURE. It already
+         * retries internally while the stack's TX pool is full. */
+        if(ble_gatt_characteristic_update(ble->svc_handle, &ble->tx_char, &ref)) {
+            return BL_E_NO_RESOURCE;
+        }
+    }
+    return BL_OK;
+}
+
 static void ble_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
-    UNUSED(t);
-    UNUSED(cb);
-    UNUSED(ctx);
-}
-static bool ble_is_connected(BlTransport* t) {
-    UNUSED(t);
-    return false;
+    Ble* ble = t->impl;
+    if(!ble->started) return;
+
+    /* A new link: anything queued or half-assembled belongs to the old one
+     * (a peer sends nothing until we have sent HELLO). */
+    uint32_t link = ble_link_id(t);
+    if(link != ble->seen_link) {
+        ble->seen_link = link;
+        ble_flush_rx(ble);
+    }
+
+    /* Self-heal: while this transport is running the radio must be either
+     * advertising or connected. A peer-initiated disconnect re-advertises
+     * by itself; this covers every other way of ending up idle. */
+    if(!ble->subscribed && !furi_hal_bt_is_active()) {
+        furi_hal_bt_start_advertising();
+    }
+
+    BleChunk c;
+    while(furi_message_queue_get(ble->rxq, &c, 0) == FuriStatusOk) {
+        const uint8_t* frame = NULL;
+        size_t flen = 0;
+        if(bl_reasm_push(&ble->reasm, c.data, c.len, &frame, &flen) == BL_OK && frame != NULL) {
+            cb(frame, flen, ctx);
+        }
+    }
 }
 
-const BlTransportApi BL_BLE_TRANSPORT_API = {
-    .name = "BLE (hardware)",
-    .connect = ble_connect,
-    .disconnect = ble_disconnect,
+static const char* ble_status(BlTransport* t) {
+    Ble* ble = t->impl;
+    if(!ble->started) return "BLE off";
+    return ble->subscribed ? "BLE linked" : "BLE advertising";
+}
+
+static void ble_free(BlTransport* t) {
+    if(!t) return;
+    Ble* ble = t->impl;
+    ble_stop(t);
+    furi_message_queue_free(ble->rxq);
+    furi_record_close(RECORD_BT);
+    free(ble);
+    free(t);
+}
+
+static const BlTransportApi BLE_API = {
+    .name = "BLE",
+    .start = ble_start,
+    .stop = ble_stop,
+    .link_id = ble_link_id,
+    .drop_link = ble_drop_link,
     .send = ble_send,
     .poll = ble_poll,
-    .is_connected = ble_is_connected,
+    .status = ble_status,
+    .free = ble_free,
 };
+
+BlTransport* bl_transport_ble_alloc(void) {
+    BlTransport* t = malloc(sizeof(BlTransport));
+    Ble* ble = malloc(sizeof(Ble));
+    memset(ble, 0, sizeof(*ble));
+    ble->bt = furi_record_open(RECORD_BT);
+    ble->rxq = furi_message_queue_alloc(BLE_RX_QUEUE_DEPTH, sizeof(BleChunk));
+    bl_reasm_init(&ble->reasm);
+    t->api = &BLE_API;
+    t->impl = ble;
+    return t;
+}

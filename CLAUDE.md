@@ -19,7 +19,8 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
 ## Layout
 
 - `shared/brucelink_core/` — portable C99 protocol core (used by FAP + bridge + tests).
-- `flipper/brucelink/` — FAP; `core/` holds generated wrappers that `#include` the shared core
+- `flipper/brucelink/` — FAP; `transport/` has the loopback mock and the BLE profile
+  (`bl_gatt_evt` is its portable, host-tested event parser); `core/` holds generated wrappers that `#include` the shared core
   (no symlinks: they break Windows checkouts). After adding/removing a core or bridge source
   file run `python3 tools/gen_wrappers.py`; `tests/test_wrappers.py` fails if they're stale.
 - `esp32/lib/BruceLink/` — bridge core + NimBLE transport (portable / NimBLE only).
@@ -60,6 +61,9 @@ scripts/hil/build_all.sh                     # everything
 - Never broadcast an active op. Never expose unauthenticated control or
   unrestricted command execution. Bound all payloads (≤ 512 B).
 - Never store the pairing key in `bruce.conf` (Bruce prints it to serial).
+- Until M5.3 both builds use the public demo key (`bl_demo_key.h`) and until M4.6
+  frames are authenticated but not encrypted. Say so wherever status is reported.
+  A bridge holding the demo key refuses every active op; do not weaken that.
 - Active-RF testing only in owned/authorized, isolated lab environments.
 
 ## Testing rule

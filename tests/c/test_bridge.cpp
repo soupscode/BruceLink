@@ -19,8 +19,11 @@
 #include "BruceLinkPeerGuard.h"
 
 extern "C" {
+#include "bl_client.h"
+#include "bl_demo_key.h"
 #include "bl_reasm.h"
 #include "bl_textbuf.h"
+#include "bl_uuid.h"
 }
 
 #include "bl_test.h"
@@ -660,6 +663,221 @@ static void t_peer_cooldown() {
     CHECK(w.blocked(longid, sizeof(longid), 10));
 }
 
+/* ------------------------------------------- client <-> bridge (e2e) */
+
+/* The Flipper's session client (bl_client) against the real bridge core,
+ * through fragmentation in both directions: the two halves that meet for
+ * the first time over the air. `drop_to_client` loses the bridge's next
+ * reply, as a missed notification would. */
+struct Link {
+    Harness h;
+    bl_client_t cl;
+    uint32_t rng = 0xF11B;
+    uint32_t now = 500;
+    size_t flipper_chunk = BL_BLE_CHUNK_DEFAULT; /* Flipper -> StickS3 */
+    bool drop_to_client = false;
+    std::vector<Msg> msgs; /* authenticated messages the client surfaced */
+
+    Link() {
+        memcpy(h.psk, BRUCELINK_DEMO_PSK, BL_KEY_LEN); /* what both builds ship */
+        h.begin();
+        bl_client_init(&cl, BRUCELINK_DEMO_PSK, central_rng, &rng);
+    }
+    void toBridge(const uint8_t* f, size_t n) {
+        unsigned i = 0;
+        int done = 0;
+        while(!done) {
+            uint8_t c[BL_BLE_CHUNK_MAX];
+            size_t cl_len = 0;
+            done = bl_frag_chunk(f, n, flipper_chunk, i++, c, sizeof(c), &cl_len);
+            if(done < 0) return;
+            h.bridge.onChunk(c, cl_len);
+        }
+    }
+    /* Deliver everything the bridge sent; the client's handshake replies
+     * go straight back, until both sides fall silent. */
+    void pump() {
+        for(int guard = 0; guard < 8; guard++) {
+            auto frames = h.drain();
+            if(drop_to_client) {
+                drop_to_client = false;
+                frames.clear();
+            }
+            if(frames.empty()) return;
+            for(auto& fr : frames) {
+                uint8_t reply[BL_CLIENT_HS_FRAME_MAX];
+                size_t rl = 0;
+                bl_frame_t m;
+                bool have = false;
+                (void)bl_client_rx(&cl, fr.data(), fr.size(), reply, sizeof(reply), &rl, &m, &have);
+                if(have) msgs.push_back(Msg{m.type, std::vector<uint8_t>(m.payload, m.payload + m.payload_len)});
+                if(rl) toBridge(reply, rl);
+            }
+        }
+    }
+    /* A new BLE link: bridge sees the connection, Flipper sees the
+     * subscription and sends HELLO. */
+    void linkUp() {
+        h.bridge.onConnect();
+        uint8_t hello[BL_CLIENT_HS_FRAME_MAX];
+        int n = bl_client_link_up(&cl, now, hello, sizeof(hello));
+        if(n > 0) toBridge(hello, (size_t)n);
+        pump();
+    }
+    void linkDown() {
+        h.bridge.onDisconnect();
+        bl_client_link_down(&cl);
+        h.chunks.clear();
+    }
+    int request(uint8_t type, const uint8_t* pl = nullptr, uint16_t len = 0) {
+        uint8_t out[BL_MAX_MSG];
+        int n = bl_client_request(&cl, type, pl, len, now, out, sizeof(out));
+        if(n > 0) {
+            toBridge(out, (size_t)n);
+            pump();
+        }
+        return n;
+    }
+};
+
+static void t_e2e_client_handshake_and_requests() {
+    Link l;
+    l.linkUp();
+    CHECK(bl_client_ready(&l.cl));
+    CHECK(l.h.bridge.established());
+    CHECK(!l.h.bridge.needsDisconnect());
+
+    CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_DEVICE_INFO);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].text() == "mock-dev");
+
+    const uint8_t cap[2] = {(uint8_t)(BL_CAP_WIFI_SCAN & 0xFF), (uint8_t)(BL_CAP_WIFI_SCAN >> 8)};
+    CHECK(l.request(BL_MSG_CMD_REQ, cap, sizeof(cap)) > 0);
+    CHECK(l.msgs.size() == 2 && l.msgs[1].type == BL_MSG_CMD_RESP);
+    CHECK(l.msgs.size() == 2 && contains(l.msgs[1].text(), "Home"));
+
+    /* the capability list is the largest reply: multi-chunk both ways */
+    CHECK(l.request(BL_MSG_CAPS_REQ) > 0);
+    CHECK(l.msgs.size() == 3 && l.msgs[2].type == BL_MSG_CAPS);
+    CHECK(l.msgs.size() == 3 &&
+          bl_caps_validate(l.msgs[2].payload.data(), l.msgs[2].payload.size()) >= 0);
+    CHECK_EQ_INT(bl_client_tick(&l.cl, l.now + 60000), BL_CL_EVT_NONE); /* nothing pending */
+}
+
+/* M3.5: a lost handshake frame is recovered by restarting the link. The
+ * client gives up (3 s) well before the bridge would drop the peer (10 s),
+ * so the Flipper is never the one put on the bridge's cooldown list. */
+static void t_e2e_lost_handshake_frame_recovers_by_relink() {
+    Link l;
+    l.drop_to_client = true; /* HELLO_ACK never arrives */
+    l.linkUp();
+    CHECK(!bl_client_ready(&l.cl));
+    CHECK_EQ_INT(bl_client_tick(&l.cl, l.now + BL_CLIENT_HS_TIMEOUT_MS - 1), BL_CL_EVT_NONE);
+    l.now += BL_CLIENT_HS_TIMEOUT_MS;
+    l.h.be.now += BL_CLIENT_HS_TIMEOUT_MS;
+    CHECK_EQ_INT(bl_client_tick(&l.cl, l.now), BL_CL_EVT_HANDSHAKE_TIMEOUT);
+    CHECK(!l.h.bridge.needsDisconnect()); /* bridge deadline not reached */
+    CHECK(BL_CLIENT_HS_TIMEOUT_MS < brucelink::kAuthTimeoutMs);
+
+    l.linkDown(); /* app: drop_link; both ends see the disconnect */
+    l.linkUp(); /* StickS3 reconnects */
+    CHECK(bl_client_ready(&l.cl));
+    CHECK(l.h.bridge.established());
+    CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_DEVICE_INFO);
+}
+
+/* M3.5: a lost reply frees the request slot after the timeout and leaves
+ * the session usable (sequence numbers stay in step). */
+static void t_e2e_lost_reply_times_out_session_survives() {
+    Link l;
+    l.linkUp();
+    CHECK(bl_client_ready(&l.cl));
+    l.drop_to_client = true;
+    CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0);
+    CHECK(l.msgs.empty());
+    CHECK_EQ_INT(l.request(BL_MSG_CAPS_REQ), BL_E_BUSY); /* one at a time */
+    l.now += BL_CLIENT_REQ_TIMEOUT_MS;
+    CHECK_EQ_INT(bl_client_tick(&l.cl, l.now), BL_CL_EVT_REQUEST_TIMEOUT);
+    CHECK(bl_client_ready(&l.cl));
+    CHECK(l.request(BL_MSG_PING, (const uint8_t*)"k", 1) > 0);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_PONG);
+}
+
+/* A Flipper holding a different key: it learns so from the handshake, and
+ * the bridge asks its transport to drop (and cool down) the peer. */
+static void t_e2e_wrong_key_reported_on_both_ends() {
+    Link l;
+    uint8_t other[BL_KEY_LEN];
+    memset(other, 0x42, sizeof(other));
+    bl_client_init(&l.cl, other, central_rng, &l.rng);
+    l.linkUp();
+    CHECK(!bl_client_ready(&l.cl));
+    CHECK(!l.h.bridge.established());
+    CHECK_EQ_INT(l.cl.state, BL_CL_FAILED);
+    CHECK_EQ_INT(l.cl.last_error, BL_E_AUTH);
+    CHECK_EQ_INT(l.request(BL_MSG_DEVICE_INFO_REQ), BL_E_STATE);
+    l.h.be.now += brucelink::kAuthTimeoutMs;
+    CHECK(l.h.bridge.needsDisconnect());
+}
+
+/* Link loss mid-request: nothing left pending, and a new link works. */
+static void t_e2e_link_loss_mid_request() {
+    Link l;
+    l.linkUp();
+    l.drop_to_client = true;
+    CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0);
+    l.linkDown();
+    CHECK_EQ_INT(bl_client_tick(&l.cl, l.now + 60000), BL_CL_EVT_NONE);
+    CHECK_EQ_INT(l.request(BL_MSG_PING), BL_E_STATE);
+    l.linkUp();
+    CHECK(bl_client_ready(&l.cl));
+    CHECK(l.request(BL_MSG_PING, (const uint8_t*)"k", 1) > 0);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_PONG);
+}
+
+/* The demo key is published, so a session made with it proves nothing
+ * about who is on the other end. A bridge provisioned with it must never
+ * transmit on a remote request: enabling active ops is refused, an active
+ * op is refused, and nothing reaches the backend. Passive requests work. */
+static void t_demo_key_never_enables_active_ops() {
+    Link l;
+    l.linkUp();
+    CHECK(bl_client_ready(&l.cl));
+    const uint8_t enable[3] = {(uint8_t)(brucelink::kCtrlEnableActive & 0xFF),
+                               (uint8_t)(brucelink::kCtrlEnableActive >> 8), 1};
+    CHECK(l.request(BL_MSG_CMD_REQ, enable, sizeof(enable)) > 0);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_ERROR);
+    CHECK(l.msgs.size() == 1 && l.msgs[0].err() == BL_ERR_NOT_AUTHORIZED);
+
+    std::vector<uint8_t> deauth = {(uint8_t)(BL_CAP_DEAUTH & 0xFF),
+                                   (uint8_t)(BL_CAP_DEAUTH >> 8)};
+    auto args = activeArgs();
+    deauth.insert(deauth.end(), args.begin(), args.end());
+    CHECK(l.request(BL_MSG_CMD_REQ, deauth.data(), (uint16_t)deauth.size()) > 0);
+    CHECK(l.msgs.size() == 2 && l.msgs[1].type == BL_MSG_ERROR);
+    CHECK(l.msgs.size() == 2 && l.msgs[1].err() == BL_ERR_NOT_AUTHORIZED);
+    CHECK_EQ_INT(l.h.be.active_calls, 0);
+    CHECK_EQ_INT(l.h.be.total_sent, 0);
+
+    CHECK(l.request(BL_MSG_STATUS_REQ) > 0);
+    CHECK(l.msgs.size() == 3 && contains(l.msgs[2].text(), "active:0"));
+    CHECK(l.msgs.size() == 3 && contains(l.msgs[2].text(), "demo:1"));
+    CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0); /* passive still served */
+    CHECK(l.msgs.size() == 4 && l.msgs[3].type == BL_MSG_DEVICE_INFO);
+}
+
+/* ...and a bridge with its own key is unaffected. */
+static void t_real_key_reports_not_demo() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    CHECK(contains(h.status(), "demo:0"));
+    auto r = h.cmd(brucelink::kCtrlEnableActive, {1});
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+    CHECK(contains(h.status(), "active:1"));
+}
+
 int main() {
     printf("BruceLink bridge tests (host)\n[bridge]\n");
     RUN(t_pr1_reconnect_preserves_psk);
@@ -685,6 +903,14 @@ int main() {
     RUN(t_codex2_unprovisioned_drops_immediately);
     RUN(t_codex2_auth_deadline_wraps);
     RUN(t_peer_cooldown);
+    printf("[client-bridge]\n");
+    RUN(t_e2e_client_handshake_and_requests);
+    RUN(t_e2e_lost_handshake_frame_recovers_by_relink);
+    RUN(t_e2e_lost_reply_times_out_session_survives);
+    RUN(t_e2e_wrong_key_reported_on_both_ends);
+    RUN(t_e2e_link_loss_mid_request);
+    RUN(t_demo_key_never_enables_active_ops);
+    RUN(t_real_key_reports_not_demo);
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

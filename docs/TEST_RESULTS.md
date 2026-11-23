@@ -55,9 +55,20 @@ BruceLink core tests
 [textbuf]      7 tests  ok   (bounded builder: truncation, exact fit, zero/NULL
                               capacity, long input, newline injection, LONG_MIN)
 
-1527 checks, 0 failed           exit 0
+[client]      10 tests  ok   (handshake + request, HELLO fits 128 B, wrong key,
+                              handshake timeout once / across tick wrap,
+                              request timeout + busy, events keep a request
+                              pending, link-down wipes keys, frames before a
+                              link ignored, UUID string/byte forms agree)
+[gatt-evt]     7 tests  ok   (Flipper BLE event parser: RX data, subscribe /
+                              unsubscribe, MTU + disconnect pass-through,
+                              foreign events, offset writes, malformed, fuzz)
+
+1718 checks, 0 failed           exit 0
 ```
-(1517 after the first review round; +`t_safety_window_survives_enable_and_reset`.)
+(1517 after the first review round; 1527 after the second; `[client]` and
+`[gatt-evt]` added with the Flipper BLE profile. `bl_gatt_evt.c` is Flipper
+app source compiled for the host with the strict core flags.)
 
 ## ESP32 bridge core — host tests (new)
 
@@ -77,8 +88,17 @@ $ ./bl_bridge_tests                 (built by `make test`)
                               proof, silent peer, stalled handshake, established
                               link kept, unprovisioned bridge, millis() wrap,
                               per-peer cooldown table)
-128 checks, 0 failed            exit 0
+[client-bridge] 7 tests ok   (the Flipper's bl_client against the real bridge
+                              core, fragmented both ways: handshake + three
+                              request types, lost HELLO_ACK -> timeout ->
+                              re-link, lost reply -> timeout, session kept,
+                              wrong key seen by both ends, link loss
+                              mid-request, demo key never enables active ops,
+                              real key unaffected)
+188 checks, 0 failed            exit 0
 ```
+The demo-key test was written first and failed against the previous bridge
+(9 failed checks: "enable" accepted, 16 frames reached the mock backend).
 
 ### PR #1 second Codex review (`9f89c4d`) — reproduced, fixed, regression-tested
 
@@ -135,7 +155,12 @@ Re-verified with a clean build after the PR #1 fixes (14 units incl.
 `bl_textbuf.c`). The ARM build caught one portability bug the host build could
 not: an enum-range check that is tautological with Flipper's unsigned short
 enums (`-Werror=type-limits`); fixed with a single unsigned bound check.
-Build success only. The app has **not** been run on a Flipper.
+Build success only at that point.
+
+Rebuilt clean with the BLE profile and the `bl_client`-based app: 16 units,
+APPCHK pass (every firmware symbol the profile uses is exported at API 87.1),
+`dist/brucelink.fap` 29492 bytes. **This build has not run on a Flipper**; the
+loopback hardware result below is for the build before it.
 
 ## ESP32-S3 bridge — cross-compile + link
 
@@ -164,13 +189,15 @@ First run of any BruceLink code on a device. Built and launched locally with
 
 Scope of this result: the app's UI, tick-driven polling, the authenticated
 handshake (X25519 on the Flipper's CPU) and request/response, all against the
-**in-process mock**. No radio, no StickS3. Not individually confirmed: each of
-the five test screens, and the Flipper's exact Momentum version.
+**in-process mock**. No radio, no StickS3. The owner later confirmed all five
+screens (Connect, Device Info, Capabilities, Wi-Fi Scan, clean exit) showed the
+expected content. Not confirmed: the Flipper's exact Momentum version.
 
 ## Not yet tested (requires the local hardware session)
 
-- BLE advertising, Just-Works pairing, MTU negotiation, notify throughput.
-- FAP over BLE on a Flipper (loopback has run; see Hardware results).
+- The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,
+  re-advertising after a dropped link, handing the radio back on exit.
+- The current app build on a Flipper at all (loopback ran on the previous one).
 - BruceBackendImpl compiled inside the Bruce tree; the Bruce patch.
 - On-air Wi-Fi scan, sniffer/EAPOL capture to LittleFS, pcap transfer.
 - Active-op forwarding and the safety gate under real transmission.

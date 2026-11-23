@@ -1,6 +1,7 @@
 # LOCAL_HANDOFF — read this first in the local hardware session
 
-Written by the cloud session on 2026-11-23, branch `dev/foundation-v1`.
+Written by the cloud session on 2026-11-23; last updated on branch
+`feat/flipper-ble-profile` (Flipper BLE profile + timeouts).
 The cloud session had **no hardware**. Everything below separates what was
 verified from what was not.
 
@@ -13,8 +14,10 @@ verified from what was not.
   remote-operation safety gate, pcap writer + CRC-32.
 - **Flipper FAP** (`flipper/brucelink`): native ViewDispatcher UI (Connect,
   Device Info, Wi-Fi Scan, Capabilities, Settings, About), a transport
-  abstraction, a working **loopback** transport (mock StickS3 running the real
-  protocol), and a **BLE transport stub**.
+  abstraction, a **loopback** transport (mock StickS3 running the real
+  protocol) and a **BLE** transport (FAP-owned GATT peripheral profile),
+  selectable in Settings. The session, the single outstanding request and
+  their timeouts are driven by `bl_client` in the shared core.
 - **ESP32 bridge** (`esp32/lib/BruceLink`): portable bridge core + NimBLE
   central transport.
 - **Bruce glue** (`esp32/src/modules/brucelink`): `BruceBackendImpl`, headless
@@ -26,10 +29,10 @@ verified from what was not.
 
 | Check | Result |
 |---|---|
-| Host C core, ASan+UBSan | 1527 checks, 0 failed |
-| ESP32 bridge core on host, ASan+UBSan | 128 checks, 0 failed |
+| Host C core + Flipper event parser, ASan+UBSan | 1718 checks, 0 failed |
+| ESP32 bridge core on host (incl. Flipper client ↔ bridge), ASan+UBSan | 188 checks, 0 failed |
 | cppcheck (core C + bridge C++) | clean |
-| Python ref + C↔Python interop | 11 tests OK |
+| Python ref + C↔Python interop + wrapper check | 13 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.1 %) |
 
@@ -41,7 +44,11 @@ Full evidence: `docs/TEST_RESULTS.md`.
 ## 3. What has NOT been tested
 
 The Flipper app has run on a device over its loopback transport only (first run
-found and fixed a stack overflow; `docs/TEST_RESULTS.md`). Still untested: BLE advertising/pairing/MTU/throughput; `BruceBackendImpl` (never
+found and fixed a stack overflow; `docs/TEST_RESULTS.md`), and that was the
+build **before** the BLE transport and the `bl_client` rewrite: the current app
+has not run on a device at all. Still untested: the whole Flipper BLE profile
+(advertising, subscription, MTU, notify, re-advertising after a drop, handing
+the radio back on exit); throughput; `BruceBackendImpl` (never
 compiled in the Bruce tree); the Bruce patch; on-air scan/capture/TX; the safety
 gate under real transmission; BLE+Wi-Fi coexistence; pcap transfer.
 
@@ -78,12 +85,19 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 6. Known failures / risks
 
-- **BLE transport not implemented** on the Flipper (stub returns
-  not-connected). This is the top next task.
+- **The Flipper BLE transport is unproven.** It builds and its portable parts
+  are host-tested, but the firmware-facing code (profile start/stop, event
+  handler, notify) was written against the Momentum source and never executed.
+  Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
+  Flipper and a phone).
+- **No link encryption and a public key.** GATT is open and unpaired; frames
+  are authenticated but readable on air (M4.6). Both builds use the demo key
+  (M5.3), so the bridge refuses all active ops (`STATUS` shows `demo:1`).
 - `BruceBackendImpl.cpp` has **never been compiled** — expect API mismatches
   against the real Bruce headers; fix against Bruce `1.17`.
-- Momentum's `Connected` event only fires after pairing completes — the ESP32
-  must initiate Just-Works pairing (ADR 0001).
+- Momentum's `Connected` event only fires after pairing completes, and there
+  is no pairing: the Flipper detects the link from the TX subscription instead.
+- `bt_disconnect()` stops advertising for good; the transport restarts it.
 - `ble_gatt_characteristic_update` returns **true on failure** (inverted).
 - When implementing the Bruce hook `bruce_brucelink_deauth(target, channel,
   max_frames)`: it **must count frames, not calls** (Bruce's helpers send 3–12
@@ -91,8 +105,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   e-stop by design. Test with `HARDWARE_TESTING.md` step 9.
 - BLE + Wi-Fi-promiscuous coexistence is unmanaged upstream (no `esp_coex`).
 - Full raw pcap is SD-gated on a bare StickS3 (by design, refused).
-- Demo pairing key is compiled into the loopback path only; real key
-  provisioning (`/brucelink.json`) is not implemented.
+- The demo pairing key (`bl_demo_key.h`) is compiled into both devices; real
+  key provisioning (`/brucelink.json`) is not implemented.
+- A reply that arrives after its request timed out is shown as if it answered
+  the next request (no request id yet; M4.7).
 - Observation: during the cloud session the capability flag
   `BL_CAP_F_REQUIRES_AUTH` was found renamed to `BL_CAP_F_ACTIVE_RF` in
   `bl_capability.h` and `tests/c/test_capability.c` (semantics unchanged:
@@ -101,14 +117,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. **Implement the Flipper BLE peripheral profile** (`transport/bl_ble_transport.c`)
-   per ADR 0001; verify advertise → connect → pair → handshake with the StickS3.
-   **Hard requirement:** send `HELLO` as soon as the StickS3 enables TX
-   notifications. The StickS3 drops any link that is not authenticated within
-   10 s and skips that address for 30 s (ADR 0001 §6), so a Flipper that waits
-   for a user action after linking will be dropped. Also consider retransmitting
-   `HELLO` if no `HELLO_ACK` arrives within ~2 s (a lost chunk otherwise costs
-   the full 10 s + 30 s).
+1. **Run the Flipper BLE profile on hardware**: `HARDWARE_TESTING.md` step 3b
+   (Flipper + phone), then step 5 with the StickS3. Fix what breaks.
 2. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
    sniffer hooks (`PATCH.md`).
-3. Run `HARDWARE_TESTING.md` steps 5–9; update the capability matrix HW column.
+3. Key provisioning (M5.3) — required before any active op can be enabled —
+   then link confidentiality (M4.6).
+4. Run `HARDWARE_TESTING.md` steps 5–9; update the capability matrix HW column.

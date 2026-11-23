@@ -25,16 +25,21 @@
 #include "BruceLinkBridge.h"
 #include "BruceLinkPeerGuard.h"
 
+extern "C" {
+#include "bl_uuid.h"
+}
+
 #include <NimBLEDevice.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
 namespace brucelink {
 
-// 128-bit custom profile UUIDs (shared with the Flipper FAP profile).
-#define BRUCELINK_SVC_UUID "a1b20001-7a9c-4b1d-9c2e-5f6a7b8c9d00"
-#define BRUCELINK_RX_UUID "a1b20002-7a9c-4b1d-9c2e-5f6a7b8c9d00" // central -> peripheral (write)
-#define BRUCELINK_TX_UUID "a1b20003-7a9c-4b1d-9c2e-5f6a7b8c9d00" // peripheral -> central (notify)
+// 128-bit custom profile UUIDs: defined once in the shared core (bl_uuid.h)
+// together with the Flipper's byte form, and tested to agree.
+#define BRUCELINK_SVC_UUID BL_UUID_SERVICE_STR
+#define BRUCELINK_RX_UUID BL_UUID_RX_STR // central -> peripheral (write)
+#define BRUCELINK_TX_UUID BL_UUID_TX_STR // peripheral -> central (notify)
 
 class NimBleCentralTransport : public NimBLEScanCallbacks, public NimBLEClientCallbacks {
 public:
@@ -42,7 +47,7 @@ public:
     static const uint32_t kPeerCooldownMs = 30000;
     /* Inbound chunk queue (NimBLE task -> loop). */
     static const size_t kEventQueueDepth = 16;
-    static const size_t kMaxChunk = 256; /* > Flipper's 244-byte updates */
+    static const size_t kMaxChunk = BL_BLE_CHUNK_MAX; /* largest Flipper update */
 
     NimBleCentralTransport();
     // Initialise NimBLE and the bridge; psk is the provisioned pairing key.

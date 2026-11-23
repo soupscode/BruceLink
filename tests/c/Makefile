@@ -33,6 +33,11 @@ BRIDGE_OBJ := $(patsubst $(BRIDGE_DIR)/%.cpp,obj/bridge_%.o,$(BRIDGE_SRC))
 BRIDGE_HDRS := $(BRIDGE_DIR)/BruceLinkBridge.h $(BRIDGE_DIR)/BruceLinkFormat.h \
                $(BRIDGE_DIR)/BruceLinkPeerGuard.h
 
+# Portable parts of the Flipper app that are host-tested here.
+FLIPPER_DIR := ../../flipper/brucelink
+FLIPPER_SRC := $(FLIPPER_DIR)/transport/bl_gatt_evt.c
+FLIPPER_OBJ := obj/flipper_bl_gatt_evt.o
+
 BIN := bl_tests
 BRIDGE_BIN := bl_bridge_tests
 
@@ -45,6 +50,9 @@ obj:
 obj/core_%.o: $(CORE_DIR)/%.c $(HDRS) | obj
 	$(CC) $(CSTD) $(WARN_CORE) $(OPT) $(SAN) $(INC) -c $< -o $@
 
+obj/flipper_bl_gatt_evt.o: $(FLIPPER_SRC) $(FLIPPER_DIR)/transport/bl_gatt_evt.h | obj
+	$(CC) $(CSTD) $(WARN_CORE) $(OPT) $(SAN) -c $< -o $@
+
 obj/test_%.o: %.c $(HDRS) | obj
 	$(CC) $(CSTD) $(WARN_TEST) $(OPT) $(SAN) $(INC) -c $< -o $@
 
@@ -54,8 +62,8 @@ obj/bridge_%.o: $(BRIDGE_DIR)/%.cpp $(HDRS) $(BRIDGE_HDRS) | obj
 obj/cxxtest_bridge.o: test_bridge.cpp $(HDRS) $(BRIDGE_HDRS) | obj
 	$(CXX) $(CXXSTD) $(WARN_CXX) $(OPT) $(SAN) $(INC) -I$(BRIDGE_DIR) -c $< -o $@
 
-$(BIN): $(CORE_OBJ) $(TEST_OBJ)
-	$(CC) $(SAN) $(OPT) $(CORE_OBJ) $(TEST_OBJ) -o $(BIN)
+$(BIN): $(CORE_OBJ) $(TEST_OBJ) $(FLIPPER_OBJ)
+	$(CC) $(SAN) $(OPT) $(CORE_OBJ) $(TEST_OBJ) $(FLIPPER_OBJ) -o $(BIN)
 
 $(BRIDGE_BIN): $(CORE_OBJ) $(BRIDGE_OBJ) obj/cxxtest_bridge.o
 	$(CXX) $(SAN) $(OPT) $^ -o $(BRIDGE_BIN)
@@ -69,7 +77,7 @@ test: $(BIN) $(BRIDGE_BIN)
 cppcheck:
 	cppcheck --std=c99 --enable=warning,style,performance,portability \
 	  --error-exitcode=1 --inline-suppr --quiet \
-	  --suppress=missingIncludeSystem --suppress=unusedFunction $(CORE_DIR)
+	  --suppress=missingIncludeSystem --suppress=unusedFunction $(CORE_DIR) $(FLIPPER_SRC)
 	cppcheck --language=c++ --std=c++17 --enable=warning,performance,portability \
 	  --error-exitcode=1 --inline-suppr --quiet \
 	  --suppress=missingIncludeSystem -I$(CORE_DIR) $(BRIDGE_SRC)

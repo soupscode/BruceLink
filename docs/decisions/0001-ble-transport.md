@@ -1,6 +1,6 @@
 # ADR 0001 — BLE transport: Flipper peripheral, StickS3 central, FAP-owned custom GATT profile
 
-Status: Accepted (design) — hardware-unverified
+Status: Accepted — implemented on both devices (M4.2), hardware-unverified. Amended 2026-11-23: see "Amendment — M4.2 implementation".
 Date: 2026-11-23
 Pinned sources: Momentum `mntm-012` (`e1784e7`), copro submodule `stm32wb_copro` @ `133182d` (Cube 1.20.0, `ble_light` stack); Bruce `1.17` (`2b6ba4d`), NimBLE-Arduino 2.5.1.
 
@@ -35,7 +35,8 @@ upstream capabilities against source rather than assuming them.
 - **Pairing.** `GapPairingNone` ("just works") with `ENCRY` (not `AUTHEN`)
   characteristic permissions suits a headless central. Caveat: the app's
   `Connected` status only fires on `ACI_GAP_PAIRING_COMPLETE`, so the ESP32
-  should initiate Just-Works pairing (verify on hardware).
+  should initiate Just-Works pairing (verify on hardware). *Superseded for
+  bring-up: no BLE pairing at all — see the amendment.*
 - **Key storage isolation.** `bt_keys_storage_set_storage_path(APP_DATA_PATH(
   ".brucelink.keys"))` keeps BruceLink's bonds separate from the phone bond.
   Starting a custom profile disconnects the phone/RPC; on exit the app must
@@ -51,8 +52,8 @@ upstream capabilities against source rather than assuming them.
    - RX `…9d00/0002`: `WRITE | WRITE_NO_RSP`, `GATT_NOTIFY_ATTRIBUTE_WRITE`
      (central → peripheral).
    - TX `…9d00/0003`: `NOTIFY` (peripheral → central).
-   Both variable length, ≤ 244 bytes, `ENCRY` permissions. UUIDs are fixed in
-   `NimBleCentralTransport.h` and the FAP profile.
+   Both variable length, ≤ 244 bytes. UUIDs and chunk limits live in one
+   header shared by both devices (`bl_uuid.h`). Permissions: see the amendment.
 3. **Security role split is independent of the BLE role:** the *session*
    handshake (ADR 0002) is initiated by the Flipper (session "central") once
    the BLE link is up; the ESP32 is the session "peripheral"/responder. BLE
@@ -83,6 +84,47 @@ upstream capabilities against source rather than assuming them.
    `loop()` is the sole owner of the bridge, and the bridge is brought up
    *before* notifications are subscribed so an immediate `HELLO` is never lost.
 
+## Amendment — M4.2 implementation (2026-11-23)
+
+What was built differs from the original decision in one place, and adds
+details that only became clear while writing the Flipper profile.
+
+- **No BLE-level pairing or encryption (bring-up).** The Flipper profile uses
+  `GapPairingNone`, no bonding and `ATTR_PERMISSION_NONE`; the NimBLE central
+  never initiates pairing. The two ends agree, and there is no pairing
+  procedure to fail between a headless central and the Flipper's stack.
+  - Unchanged: every frame is authenticated and replay-protected by the
+    session (ADR 0002). An attacker without the pairing key cannot issue
+    commands, forge replies or replay old ones.
+  - **Lost versus the original decision: confidentiality.** Payloads (device
+    info, scan results, status) are readable by a nearby BLE sniffer. Just
+    Works pairing would only have protected against passive listeners, not an
+    active man-in-the-middle, so it was never the security boundary.
+  - Follow-up **M4.6**: add confidentiality at the session layer (AEAD with the
+    per-direction keys the handshake already derives). That covers every
+    transport, including the planned UART one, which BLE pairing would not.
+- **Link-up is the TX subscription, not the firmware's `Connected` status**
+  (which only fires after pairing). The transport reports a new link each time
+  the central enables notifications, and the app sends `HELLO` in the same
+  tick (decision 6).
+- **Handshake recovery is a link restart, not a retransmit (M3.5).** If the
+  handshake has not completed 3 s after `HELLO`, the Flipper drops the BLE
+  link and advertises again. 3 s is well inside the StickS3's 10 s deadline,
+  and a peer that disconnects itself is not put on the cooldown list, so a
+  lost frame costs one reconnect instead of 10 s + 30 s. Requests time out
+  after 5 s and leave the session up.
+- **Dropping a link from the Flipper stops advertising.** `bt_disconnect()`
+  ends the connection through `gap_stop_advertising()`, which clears the
+  firmware's restart-advertising flag. The transport restarts advertising
+  after every drop and re-checks on each poll.
+- **Own address and key file.** The profile advertises on the Flipper's BLE
+  address with byte 2 + 2 (the HID profile uses + 1), name `BLink` (a 128-bit
+  UUID leaves five characters in a 31-byte advertisement), and points the key
+  store at `.brucelink.keys` so the phone bond is untouched.
+- **Events are parsed by a portable, host-tested parser** (`bl_gatt_evt`):
+  attribute-modified → RX data (value handle = characteristic handle + 1) or
+  subscription (CCCD = handle + 2); MTU response; disconnect.
+
 ## Consequences
 
 - Minimal Momentum change: **none to the core BT stack**; BruceLink is a FAP
@@ -90,8 +132,9 @@ upstream capabilities against source rather than assuming them.
   a library + a small glue module (ADR 0003).
 - The phone BLE/RPC link is unavailable while the BruceLink profile is active
   (single connection handle). Documented for the operator.
-- **Must be hardware-verified:** Just-Works pairing from a NimBLE central;
-  advertising a 128-bit UUID plus a short name within 31 bytes; negotiated MTU
+- **Must be hardware-verified:** an unpaired NimBLE central subscribing and
+  writing; advertising a 128-bit UUID plus a short name within 31 bytes;
+  re-advertising after a Flipper-initiated drop; negotiated MTU
   ≥ 247 and notify throughput; write fragmentation above 245 bytes;
   reconnection after `restore_default` and after the Flipper's core-2 restart.
 - The inverted return value of `ble_gatt_characteristic_update` (true on

@@ -132,6 +132,7 @@ private:
 
     uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */
     bool have_psk_;
+    bool demo_key_; /* provisioned with the public demo key: no active ops */
     bl_session_t session_; /* per-connection; secrets wiped on disconnect */
     bl_safety_t safety_;
     bl_capture_mgr_t capture_;
