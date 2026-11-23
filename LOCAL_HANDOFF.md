@@ -37,6 +37,7 @@ verified from what was not.
 | Python ref + C↔Python interop + wrapper check | 13 tests OK |
 | Flipper FAP build (mntm-012) | APPCHK pass, Target 7 / API 87.1 |
 | ESP32-S3 bridge build (NimBLE 2.5.1) | SUCCESS (RAM 10.1 %, Flash 17.1 %) |
+| Bruce 1.17 + BruceLink, `m5stack-sticks3` (dependency sources from GitHub) | SUCCESS, 4.83 MB merged image, not flashed |
 
 PR #1 review defects were reproduced on `31629db`, fixed, and regression-tested;
 see `docs/TEST_RESULTS.md`.

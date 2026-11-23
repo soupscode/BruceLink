@@ -202,6 +202,63 @@ Findings and outcome:
 
 What only hardware can answer is listed in `docs/HARDWARE_TESTING.md` §5.
 
+## Bruce 1.17 + BruceLink — full firmware build (m5stack-sticks3)
+
+```
+$ git clone Bruce, git checkout 2b6ba4d (1.17), git submodule update --init
+$ python3 tools/install_into_bruce.py <bruce>        (BruceLink 59268b0)
+$ pio run -e m5stack-sticks3
+  |-- BruceLink @ 0.1.0
+  Compiling lib/BruceLink/{BruceLinkBridge,BruceLinkFormat,BruceLinkPeerGuard,NimBleCentralTransport}.cpp, bl_*.c
+  Compiling src/modules/brucelink/{BruceBackendImpl,BruceLinkModule,bruce_brucelink_hooks_unavailable}.cpp
+RAM:   [====      ]  40.7% (used 133236 bytes from 327680 bytes)
+Flash: [======    ]  56.8% (used 4761363 bytes from 8388608 bytes)
+[merge_bin] Success -> Bruce-m5stack-sticks3.bin (4827440 bytes)
+======================== [SUCCESS] ========================
+sha256 eaf88e41b48b359c5cde3a4b1ea38852e448f4aa45a411a76ca12f7461119106
+```
+The app fits Bruce's 0x4E0000 factory partition (93 %). BruceLink's sources
+produced no compiler diagnostics of their own. The menu string, the service
+UUID and the bridge symbols are present in the image. **Build and link only:
+this firmware has not been flashed or run.**
+
+Not a byte-for-byte upstream build. The PlatformIO registry is unreachable from
+the cloud sandbox, so every registry dependency was fetched from its GitHub
+repository instead and given registry-style metadata locally. Bruce pins some
+of these to a version and leaves others floating; floating ones were taken at
+the default branch head on 2026-11-23:
+
+| Library | Version | Commit | Pinned by Bruce? |
+|---|---|---|---|
+| NimBLE-Arduino | 2.5.1 | 5ae2c43 | yes |
+| ArduinoJson | 7.4.2 | 733bc4e | no (floating) |
+| AsyncTCP | 3.6.1 | 0f18137 | no |
+| ESPAsyncWebServer | 3.13.0 | f4169cd | no |
+| Time | 1.6.1 | a18e50d | yes |
+| NTPClient | 3.2.1 | 78d4237 | yes |
+| ESP32Time | 2.0.6 | 56c7cca | yes |
+| ESP8266Audio | 2.4.1 | d6184e0 | `^2.4.1` |
+| ESP8266SAM | 1.1.0 | bb3e255 | `^1.1.0` |
+| TinyGPSPlus | 1.1.0 | 0a20575 | no |
+| FFT | 0.0.1 | b3d44f3 | `^0.0.1` |
+| RF24 | 1.4.11 | 6f3da43 | yes |
+| Adafruit Si4713 Library | 1.2.3 | 43c9ecb | yes |
+| JPEGDecoder | 2.0.0 | bba81c8 | no |
+| AnimatedGIF | 2.2.3 | 17a6a2e | no |
+| PNGdec | 1.1.7 | 7ef2a09 | `^1.1.2` |
+| FastLED | 3.10.3 | 20667c3 | yes |
+| RadioLib | 7.4.0 | b1ed821 | `^7.4.0` |
+| LibSSH-ESP32 | 5.10.0 | 343fce1 | no |
+| M5GFX | 0.3.0 | 28d4794 | no (via M5Unified) |
+| M5Unified | 0.3.0 | 96576a1 | no |
+
+The other workarounds were local to the scratch build and are not in this
+repository: dependency declarations stripped from those copies, two alias
+entries for slash-named Arduino `depends=` lines, and the framework's built-in
+`FFat` library copied in. Bruce's own sources were unchanged apart from what
+the installer does. A local build with the real registry is the reference;
+this one shows the integration compiles, links and fits.
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)
