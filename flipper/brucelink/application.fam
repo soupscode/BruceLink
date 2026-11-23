@@ -3,6 +3,15 @@ App(
     name="BruceLink",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="brucelink_app",
-    stack_size=2048,
-    fap_category="Tools",
+    stack_size=4 * 1024,
+    fap_category="Bluetooth",
+    fap_version="0.2",
+    fap_description="Native remote for a StickS3 running Bruce (authenticated BLE bridge).",
+    fap_author="BruceLink contributors",
+    # fbt globs each entry recursively, so one pattern gathers the app
+    # sources plus the shared core under brucelink_core/ (a symlink to
+    # ../../shared/brucelink_core/src, so the device and host build the
+    # identical protocol code). Listing the core separately would double
+    # it in the link.
+    sources=["*.c"],
 )

@@ -1,28 +1,153 @@
-"""BruceLink experimental transport-independent frame codec."""
+"""BruceLink protocol v1 — Python reference implementation.
+
+A second, independent implementation of the BruceLink wire format used
+to verify byte-for-byte interoperability with the C core
+(shared/brucelink_core). It covers the frame codec + MAC, COBS framing,
+the PCAP headers and CRC32. The authenticated session handshake
+(X25519/HKDF) is exercised by the C known-answer tests against RFC 7748
+and RFC 5869; this module focuses on the wire encodings where
+cross-implementation bugs (endianness, offsets, truncation) live.
+
+SPDX-License-Identifier: MIT
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import struct
+from dataclasses import dataclass
+
 MAGIC = b"BL"
-VERSION = 1
+WIRE_VERSION = 1
+HDR_LEN = 12
+MAC_TAG_LEN = 16
 MAX_PAYLOAD = 512
 
-def crc16(data: bytes) -> int:
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte << 8
+# Header flags
+FLAG_NONE = 0x00
+FLAG_RESPONSE = 0x01
+FLAG_ERROR = 0x02
+FLAG_EVENT = 0x04
+
+
+def mac_tag(key: bytes, hdr_and_payload: bytes) -> bytes:
+    """Truncated HMAC-SHA256 matching bl_frame.c."""
+    return hmac.new(key, hdr_and_payload, hashlib.sha256).digest()[:MAC_TAG_LEN]
+
+
+@dataclass
+class Frame:
+    version: int
+    type: int
+    flags: int
+    seq: int
+    payload: bytes
+
+
+def encode(frame: Frame, key: bytes | None = None) -> bytes:
+    """Encode a frame. With key, append a MAC; without, append zero tag."""
+    if len(frame.payload) > MAX_PAYLOAD:
+        raise ValueError("payload too large")
+    hdr = (
+        MAGIC
+        + bytes((frame.version, frame.type, frame.flags, 0))
+        + struct.pack("<I", frame.seq)
+        + struct.pack("<H", len(frame.payload))
+    )
+    body = hdr + frame.payload
+    tag = mac_tag(key, body) if key is not None else bytes(MAC_TAG_LEN)
+    return body + tag
+
+
+def decode(packet: bytes, key: bytes | None = None) -> Frame:
+    """Decode and validate a frame; verify MAC when key is given."""
+    if len(packet) < HDR_LEN + MAC_TAG_LEN:
+        raise ValueError("short")
+    if packet[0:2] != MAGIC:
+        raise ValueError("bad magic")
+    plen = struct.unpack_from("<H", packet, 10)[0]
+    if plen > MAX_PAYLOAD:
+        raise ValueError("payload too large")
+    if len(packet) != HDR_LEN + plen + MAC_TAG_LEN:
+        raise ValueError("bad length")
+    if key is not None:
+        want = mac_tag(key, packet[: HDR_LEN + plen])
+        got = packet[HDR_LEN + plen :]
+        if not hmac.compare_digest(want, got):
+            raise ValueError("MAC mismatch")
+    return Frame(
+        version=packet[2],
+        type=packet[3],
+        flags=packet[4],
+        seq=struct.unpack_from("<I", packet, 6)[0],
+        payload=packet[HDR_LEN : HDR_LEN + plen],
+    )
+
+
+# --- COBS (matches bl_cobs.c) ---------------------------------------------
+
+
+def cobs_encode(data: bytes) -> bytes:
+    """COBS-encode and append a 0x00 delimiter."""
+    out = bytearray()
+    code_pos = 0
+    out.append(0)  # placeholder for first code
+    code = 1
+    for b in data:
+        if b != 0:
+            out.append(b)
+            code += 1
+            if code != 0xFF:
+                continue
+        out[code_pos] = code
+        code_pos = len(out)
+        out.append(0)
+        code = 1
+    out[code_pos] = code
+    out.append(0)  # delimiter
+    return bytes(out)
+
+
+def cobs_decode(data: bytes) -> bytes:
+    """Decode a COBS frame (without the trailing delimiter)."""
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        code = data[i]
+        if code == 0:
+            raise ValueError("zero code")
+        i += 1
+        if i + (code - 1) > n:
+            raise ValueError("overrun")
+        out += data[i : i + code - 1]
+        i += code - 1
+        if code != 0xFF and i < n:
+            out.append(0)
+    return bytes(out)
+
+
+# --- PCAP + CRC32 (match bl_pcap.c) ---------------------------------------
+
+PCAP_MAGIC = 0xA1B2C3D4
+PCAP_LINKTYPE_IEEE802_11 = 105
+PCAP_DEFAULT_SNAPLEN = 2500
+
+
+def pcap_global_header(snaplen: int = PCAP_DEFAULT_SNAPLEN,
+                       linktype: int = PCAP_LINKTYPE_IEEE802_11) -> bytes:
+    return struct.pack("<IHHiIII", PCAP_MAGIC, 2, 4, 0, 0, snaplen, linktype)
+
+
+def pcap_record_header(ts_sec: int, ts_usec: int, incl: int, orig: int) -> bytes:
+    return struct.pack("<IIII", ts_sec, ts_usec, incl, orig)
+
+
+def crc32(data: bytes) -> int:
+    """CRC-32/ISO-HDLC, matching bl_crc32()."""
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b
         for _ in range(8):
-            crc = (((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)) & 0xFFFF
-    return crc
-
-def encode(kind: int, payload: bytes = b"") -> bytes:
-    if not 0 <= kind <= 255 or len(payload) > MAX_PAYLOAD:
-        raise ValueError("invalid kind or payload length")
-    frame = MAGIC + bytes((VERSION, kind)) + len(payload).to_bytes(2, "little") + payload
-    return frame + crc16(frame).to_bytes(2, "little")
-
-def decode(packet: bytes) -> tuple[int, bytes]:
-    if len(packet) < 8 or packet[:2] != MAGIC or packet[2] != VERSION:
-        raise ValueError("invalid header")
-    length = int.from_bytes(packet[4:6], "little")
-    if length > MAX_PAYLOAD or len(packet) != length + 8:
-        raise ValueError("invalid length")
-    if crc16(packet[:-2]) != int.from_bytes(packet[-2:], "little"):
-        raise ValueError("CRC mismatch")
-    return packet[3], packet[6:-2]
+            crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+    return crc ^ 0xFFFFFFFF

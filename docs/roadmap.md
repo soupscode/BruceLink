@@ -1,11 +1,28 @@
 # Roadmap
 
-M0: protocol codec, tests and repository scaffold.
-M1: pinned Momentum and Bruce toolchains with reproducible builds.
-M2: serial bridge, ping and device status.
-M3: authenticated BLE link and reconnection.
-M4: native menus, Wi-Fi/BLE discovery and result rendering.
-M5: optional packet-monitoring and authorized lab diagnostics.
-M6: HIL regression suite, CI build artifacts and releases.
+Phase 1 (foundation) first; Phase 2 (capture & research) builds on the same core.
+Track detail and acceptance criteria in `TASKS.md`; verified state in `STATUS.md`.
 
-For each milestone, document acceptance criteria and update STATUS.md.
+## Phase 1 — Foundation
+
+- **M0** Repository audit — ✅
+- **M1** Upstream research, pinned revisions, BLE ADR — ✅
+- **M2** Reproducible builds (host, FAP, ESP32) + CI — ✅
+- **M3** Communication foundation: crypto, framing, authenticated session,
+  replay, fragmentation, COBS, simulated transport — ✅ host; ping/status 🟡
+- **M4** Native Flipper app + **BLE peripheral profile** — UI 🟡, BLE ⬜ (next)
+- **M5** Bruce integration (glue compiled in Bruce tree, headless hooks, key
+  provisioning) — ⬜
+- **M6** Hardware testing preparation (HIL scripts, procedures, handoff) — 🟡
+
+## Phase 2 — Capture & research capabilities (scope amendment 2026-11-23)
+
+- Capability registry, capture manager, pcap+CRC, safety gate — ✅ host
+- Command adapter — 🟡
+- Sniffer/EAPOL via Bruce, resumable pcap transfer, transfer-channel decision,
+  coexistence evaluation, capture UI, active-RF forwarding — ⬜ (after BLE on HW)
+
+## Milestone priority
+
+The scope amendment did **not** reorder Phase 1. The Flipper BLE peripheral
+profile (M4.2) is the critical path: nothing on air can be verified without it.
