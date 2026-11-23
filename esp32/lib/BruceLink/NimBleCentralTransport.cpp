@@ -176,6 +176,31 @@ void NimBleCentralTransport::connectPending() {
     if(!tx_->subscribe(true, cb)) dropPeer(false); // likely radio trouble: no penalty
 }
 
+void NimBleCentralTransport::end() {
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    if(scan != nullptr) {
+        scan->stop();
+        scan->setScanCallbacks(nullptr, false);
+    }
+    if(connected_ && bridge_ != nullptr) bridge_->onDisconnect(); // fail-safe first
+    connected_ = false;
+    dropping_ = false;
+    rx_ = nullptr;
+    tx_ = nullptr;
+    peer_id_len_ = 0;
+    client_ = nullptr; // owned by NimBLE; deinit(true) below deletes it
+    NimBLEDevice::deinit(true);
+    portENTER_CRITICAL(&lock_);
+    have_pending_ = false;
+    link_lost_ = false;
+    pending_mtu_ = 0;
+    portEXIT_CRITICAL(&lock_);
+    if(chunks_ != nullptr) {
+        vQueueDelete(chunks_);
+        chunks_ = nullptr;
+    }
+}
+
 void NimBleCentralTransport::loop() {
     // 1. inbound data for the current link
     drainChunks();

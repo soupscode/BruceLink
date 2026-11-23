@@ -56,6 +56,10 @@ public:
     void startScan(uint32_t duration_s = 0);
     // Single owner of the bridge: process events, supervise, connect, poll.
     void loop();
+    // Shut down: stop scanning, drop the peer (the bridge sees a link loss,
+    // so captures stop and active ops halt) and release NimBLE. Call from
+    // the task that runs loop(), or after that task has stopped.
+    void end();
     bool connected() const {
         return connected_;
     }

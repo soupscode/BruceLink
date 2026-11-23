@@ -1,21 +1,49 @@
-# Bruce 1.17 patch plan for BruceLink
+# BruceLink inside Bruce 1.17
 
 BruceLink is a remote frontend; it adds the **minimum** new Bruce code and reuses
-everything else. This is the complete list of changes to a Bruce `1.17` (`2b6ba4d`)
-checkout for the `m5stack-sticks3` env. None of it is verified on hardware yet.
+everything else. Target: a Bruce `1.17` (`2b6ba4d`) checkout, env `m5stack-sticks3`.
+Status of each part (built / run on hardware) is in `docs/STATUS.md`.
 
-## New files (no upstream edits)
+## Installing (what exists today)
 
-- `src/modules/brucelink/BruceBackendImpl.{h,cpp}` — the BruceBackend (this dir).
-- `src/modules/brucelink/bruce_brucelink_hooks.{h,cpp}` — the headless hooks.
-- `src/modules/brucelink/BruceLinkModule.{h,cpp}` — owns the
-  `NimBleCentralTransport` + `BruceLinkBridge`, started/stopped by a menu toggle.
-- `lib/BruceLink/` — the bridge core + NimBLE transport + shared protocol core
-  (this repo's `esp32/lib/BruceLink`). Bruce's `build_src_filter` compiles `src/`
-  automatically; add `lib/BruceLink` via a `lib_deps`/`lib_extra_dirs` entry or by
-  dropping it in Bruce's `lib/`. NimBLE-Arduino 2.5.1 is already a Bruce dep.
+```
+python3 tools/install_into_bruce.py /path/to/bruce-firmware     # from the BruceLink repo
+cd /path/to/bruce-firmware && pio run -e m5stack-sticks3
+```
 
-## Minimal upstream edits
+The installer (idempotent; `--uninstall` reverses it; host-tested) does three things:
+
+- copies `esp32/lib/BruceLink/` + `shared/brucelink_core/src/` to Bruce's
+  `lib/BruceLink/` (bridge core, NimBLE central transport, shared protocol core).
+  NimBLE-Arduino 2.5.1 is already a Bruce dependency.
+- copies this directory's sources to Bruce's `src/modules/brucelink/`
+  (Bruce's `build_src_filter` compiles `src/` automatically):
+  - `BruceLinkModule.{h,cpp}` — start/stop; a task that owns the bridge and transport.
+  - `BruceBackendImpl.{h,cpp}` — the `BruceBackend`: calls Bruce's own functions.
+  - `bruce_brucelink_hooks.h` — the headless hooks BruceLink needs from Bruce.
+  - `bruce_brucelink_hooks_unavailable.cpp` — placeholder hook bodies (below).
+- adds **one line** (plus its include) to `src/core/menu_items/ConfigMenu.cpp`:
+  **Config → Advanced → Toggle BruceLink**, next to Bruce's own "Toggle BLE API",
+  which the module is modelled on.
+
+That is the whole change to Bruce so far: no existing Bruce function is modified.
+
+### What this build does and does not do
+
+- Works without further Bruce changes: device info, Wi-Fi scan, capabilities, status.
+- **Capture and active operations report "not available".** They need the sniffer
+  hooks in the next section, which are not written yet;
+  `bruce_brucelink_hooks_unavailable.cpp` makes every one of them refuse.
+- **Public demo key.** The module starts the bridge with `BRUCELINK_DEMO_PSK`, so
+  the bridge core also refuses every active op on its own (ADR 0003 amendment).
+- One BLE stack, one owner: the toggle refuses to start while another Bruce BLE
+  feature (BLE API, BadBLE, scanners) has NimBLE initialised, and those features
+  will fail or disturb the link if started while BruceLink is on. Turn BruceLink
+  off first.
+- The Wi-Fi scan runs on the bridge task and switches the radio to station mode,
+  as Bruce's own scan does; do not run it while using another Wi-Fi feature.
+
+## Remaining upstream edits (not done: tasks M5.2, M5.3)
 
 1. **Expose a headless sniffer start/stop/status** (`src/modules/wifi/sniffer.cpp`
    / `sniffer.h`). Today `sniffer_setup()` is a blocking UI loop and
@@ -31,9 +59,7 @@ checkout for the `m5stack-sticks3` env. None of it is verified on hardware yet.
    and declare `packet_counter`/`beacon_frames` in `sniffer.h` (today file-scope).
    `bruce_brucelink_*` wrap these 1:1.
 
-2. **Menu entry** to toggle the BruceLink bridge, next to Bruce's own
-   "Toggle BLE API" (`src/core/menu_items/ConfigMenu.cpp:197-201`) or in
-   `OthersMenu`. Calls `BruceLinkModule::start()/stop()`.
+2. ~~Menu entry~~ — done by the installer (above).
 
 3. **Pairing key provisioning.** Store the 32-byte key in `/brucelink.json` on
    LittleFS (NOT `bruce.conf`, which Bruce prints to serial on save —

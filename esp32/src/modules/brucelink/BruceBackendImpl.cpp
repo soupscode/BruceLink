@@ -1,12 +1,11 @@
 /*
  * BruceLink ↔ Bruce glue (Bruce 1.17). Builds only inside the Bruce tree.
- * Status: written against audited Bruce symbols; NOT yet compiled in the
- * Bruce tree or run on hardware. See LOCAL_HANDOFF.md.
+ * Status: see docs/STATUS.md (compile status in the Bruce tree, hardware).
  * SPDX-License-Identifier: MIT
  */
 #include "BruceBackendImpl.h"
 
-#include "../../../lib/BruceLink/BruceLinkFormat.h"
+#include <BruceLinkFormat.h>
 #include "bruce_brucelink_hooks.h" // thin headless hooks added by the BruceLink patch
 
 #include <Arduino.h>
@@ -49,6 +48,7 @@ size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
     // Lines are appended whole or not at all; SSIDs are sanitized.
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
+    WiFi.mode(WIFI_MODE_STA); // as native_wifiScan does: the radio may be off
     int found = WiFi.scanNetworks(false, true);
     if(found < 0) found = 0;
     bl_tb_int(&tb, found);
