@@ -8,7 +8,7 @@ it is not a reimplementation.
 
 - `LOCAL_HANDOFF.md` — what's implemented / tested / not, and the next task.
 - `docs/STATUS.md` — verified status. `TASKS.md` — backlog.
-- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety).
+- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety, radio memory on the StickS3).
 - `docs/CAPABILITY_MATRIX.md` — what Bruce supports vs what BruceLink exposes.
 
 ## Pinned versions
@@ -51,6 +51,9 @@ scripts/hil/build_all.sh                     # everything
   includes Bruce or NimBLE headers.
 - New Bruce features: add a capability (`bl_capability.h`) + a backend method.
   No new transport or message type per tool.
+- On the StickS3 Wi-Fi and BLE share ~133 kB of internal RAM (ADR 0004). Anything that
+  needs Wi-Fi while linked goes through the guard and the reduced, transient driver start
+  in `BruceLinkWifi.cpp`; never call Bruce's or Arduino's full Wi-Fi start from the bridge.
 
 ## Security rules
 

@@ -27,11 +27,14 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
   it took. Pressing Connect while linked now shows the status instead of
   restarting the link.
 
+- **Wi-Fi scan uses a reduced, transient driver start** (ADR 0004): if Wi-Fi
+  is not already up, BruceLink initialises the driver with minimal buffers,
+  scans, and releases it. Not yet run on hardware.
 - **Wi-Fi start guard on the StickS3.** Hardware showed Wi-Fi running out of
   internal RAM next to BLE and taking the bridge down with it. Wi-Fi is now
-  started only when at least 80 kB internal RAM and a 16 kB block are free;
-  otherwise the request is refused with the figures and the link survives.
-  Wi-Fi scan over BLE therefore does not work yet on the StickS3 (M5.5).
+  started only when at least 52 kB internal RAM and a 16 kB block are free;
+  otherwise the request is refused with the figures and the link survives
+  (confirmed on hardware with the earlier 80 kB threshold).
 - BLE scan on the StickS3 no longer stores every advertiser it sees (NimBLE
   keeps them all by default, without limit, in internal RAM), and the chunk
   queue lives in PSRAM. Both free internal RAM, which is what Wi-Fi needs.

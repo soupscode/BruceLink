@@ -6,6 +6,7 @@
 #include "BruceBackendImpl.h"
 
 #include <BruceLinkFormat.h>
+#include "BruceLinkWifi.h"
 #include "bruce_brucelink_hooks.h" // thin headless hooks added by the BruceLink patch
 
 #include <Arduino.h>
@@ -20,11 +21,6 @@ extern bool isCharging(); // boards/m5stack-sticks3/interface.cpp:139
 
 namespace brucelink {
 
-/* The scan must end, one way or the other, inside the Flipper's request
- * timeout (BL_CLIENT_REQ_TIMEOUT_MS, 10 s). ~14 channels at 120 ms is about
- * 1.7 s when the radio is not shared; the timeout covers a shared one. */
-static const uint32_t kWifiScanMsPerChannel = 120;
-static const uint32_t kWifiScanTimeoutMs = 7000;
 
 size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     // Mirrors Bruce's infoCallback (util_commands.cpp:99) fields. Built with
@@ -66,57 +62,11 @@ void logStep(const char* what) {
 }
 
 size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
-    // Same calls as Bruce's native_wifiScan (bjs_interpreter/wifi_js.cpp:76),
-    // bounded in time so the Flipper always gets an answer inside its own
-    // request timeout. Lines are appended whole or not at all; SSIDs are
-    // sanitized.
+    // Lines are appended whole or not at all; SSIDs are sanitized. How Wi-Fi
+    // is brought up next to the BLE link is in BruceLinkWifi.
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
-    logStep("wifi scan: begin");
-    // Wi-Fi is being started next to the live BLE link that carries this
-    // request. If it will not fit, do not touch the driver at all: a failed
-    // esp_wifi_init cannot be undone and takes the BLE link down with it
-    // (seen on hardware; see wifiStartAllowed).
-    const bool wifi_up = WiFi.getMode() != WIFI_MODE_NULL;
-    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    const size_t dma_block = radioLargestDmaBlock();
-    if(!wifiStartAllowed(wifi_up, free_internal, dma_block)) {
-        formatWifiNoMemory(&tb, free_internal, dma_block);
-        logStep("wifi scan: refused, Wi-Fi would not fit next to BLE");
-        return tb.len;
-    }
-    const uint32_t t0 = millis();
-    logStep("wifi scan: starting Wi-Fi (STA)");
-    const bool mode_ok = WiFi.mode(WIFI_MODE_STA); // the radio may be off
-    logStep(mode_ok ? "wifi scan: Wi-Fi up" : "wifi scan: Wi-Fi did NOT start");
-    if(!mode_ok) {
-        bl_tb_str(&tb, "scan failed:\nWi-Fi did not start\n(BLE is on)");
-        return tb.len;
-    }
-    WiFi.setScanTimeout(kWifiScanTimeoutMs);
-    int found = WiFi.scanNetworks(false, true, false, kWifiScanMsPerChannel);
-    const uint32_t took = millis() - t0;
-    logStep("wifi scan: scan returned");
-    Serial.printf("[BruceLink] wifi scan: result %d in %lu ms\n", found, (unsigned long)took);
-    if(found < 0) {
-        // WIFI_SCAN_RUNNING (-1) / WIFI_SCAN_FAILED (-2, includes "timed out")
-        bl_tb_str(&tb, "scan failed (code ");
-        bl_tb_int(&tb, found);
-        bl_tb_str(&tb, ")\nafter ");
-        bl_tb_uint(&tb, took);
-        bl_tb_str(&tb, " ms");
-        WiFi.scanDelete();
-        return tb.len;
-    }
-    bl_tb_int(&tb, found);
-    bl_tb_str(&tb, " networks, ");
-    bl_tb_uint(&tb, took);
-    bl_tb_str(&tb, " ms\n");
-    for(int i = 0; i < found; i++) {
-        if(!formatWifiApLine(&tb, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i))) break;
-    }
-    WiFi.scanDelete();
-    logStep("wifi scan: done");
+    wifiScanInto(&tb);
     return tb.len;
 }
 

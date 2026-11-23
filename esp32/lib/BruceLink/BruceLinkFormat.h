@@ -30,19 +30,24 @@ bool formatWifiApLine(bl_textbuf_t* tb, const char* ssid, int rssi, int channel)
 /*
  * Wi-Fi start guard for a device whose BLE link is the control channel.
  *
- * Measured on the StickS3 (Bruce 1.17, 2026-11-23): with NimBLE up,
- * esp_wifi_init() ran out of internal RAM part-way ("Expected to init 4 rx
- * buffer, actual is 2", ESP_ERR_NO_MEM). The driver could not be torn down
- * again, the scan reply never left the device, and the bridge was dead
- * until reboot. So Wi-Fi is only started when it is very likely to fit;
- * otherwise the request is refused with the numbers, and the link survives.
+ * Measured on the StickS3 (Bruce 1.17, 2026-11-23):
+ *   - with 48 kB of internal RAM free, a full Arduino Wi-Fi start ran out
+ *     part-way through esp_wifi_init ("Expected to init 4 rx buffer, actual
+ *     is 2", ESP_ERR_NO_MEM). The driver could not be torn down again, the
+ *     reply never left the device, and the bridge was dead until reboot;
+ *   - with BLE up and the Flipper linked, about 62 kB is free and the
+ *     largest DMA-capable block is about 32 kB.
+ * So Wi-Fi is only started when it is likely to fit; otherwise the request
+ * is refused with the numbers and the link survives. BruceLink starts the
+ * driver with reduced buffers (BruceLinkWifi.cpp), which costs less than
+ * the start that failed, but that cost has not been measured on hardware
+ * yet: the threshold sits just above the known failure point and below
+ * what is available, and is to be set from measurement.
  *
  * free_internal: free internal (non-PSRAM) heap in bytes.
  * largest_dma:   largest contiguous DMA-capable block in bytes.
- * Both thresholds are estimates until the real cost of Wi-Fi start has been
- * measured on the device (docs/HARDWARE_TESTING.md).
  */
-static const size_t kWifiStartMinFreeInternal = 80u * 1024u;
+static const size_t kWifiStartMinFreeInternal = 52u * 1024u;
 static const size_t kWifiStartMinDmaBlock = 16u * 1024u;
 
 /* True if Wi-Fi may be started. Wi-Fi that is already up costs nothing more. */

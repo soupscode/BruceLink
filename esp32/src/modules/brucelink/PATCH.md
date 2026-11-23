@@ -20,6 +20,8 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does three th
   (Bruce's `build_src_filter` compiles `src/` automatically):
   - `BruceLinkModule.{h,cpp}` — start/stop; a task that owns the bridge and transport.
   - `BruceBackendImpl.{h,cpp}` — the `BruceBackend`: calls Bruce's own functions.
+  - `BruceLinkWifi.{h,cpp}` — Wi-Fi scan next to the live BLE link: a reduced,
+    transient driver start, because Bruce's full start does not fit (ADR 0004).
   - `bruce_brucelink_hooks.h` — the headless hooks BruceLink needs from Bruce.
   - `bruce_brucelink_hooks_unavailable.cpp` — placeholder hook bodies (below).
 - adds **one line** (plus its include) to `src/core/menu_items/ConfigMenu.cpp`:
@@ -40,8 +42,11 @@ That is the whole change to Bruce so far: no existing Bruce function is modified
   feature (BLE API, BadBLE, scanners) has NimBLE initialised, and those features
   will fail or disturb the link if started while BruceLink is on. Turn BruceLink
   off first.
-- The Wi-Fi scan runs on the bridge task and switches the radio to station mode,
-  as Bruce's own scan does; do not run it while using another Wi-Fi feature.
+- The Wi-Fi scan runs on the bridge task. If Bruce has Wi-Fi up it scans through
+  that; otherwise it starts the driver itself for the duration of the scan and
+  releases it. It refuses if one of Bruce's own Wi-Fi tools holds the driver.
+- After BruceLink has been switched off it may refuse to start again until
+  reboot (`not enough memory for BLE`), especially once Bruce's Wi-Fi was used.
 
 ## Remaining upstream edits (not done: tasks M5.2, M5.3)
 

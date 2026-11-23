@@ -894,19 +894,22 @@ static void t_wifi_start_guard() {
     CHECK(!wifiStartAllowed(false, 20u * 1024u, 20u * 1024u));
     /* Wi-Fi that Bruce already brought up needs nothing more */
     CHECK(wifiStartAllowed(true, 0, 0));
-    /* the thresholds must stay above what is known to fail: Bruce's own
-     * 15 kB block check passed on the device and Wi-Fi still did not fit */
+    /* The thresholds must stay above what is known to fail on the device:
+     * Bruce's own 15 kB block check passed and a Wi-Fi start with 47,979
+     * bytes free still ran out of memory. And they must not exceed what
+     * the device has with BLE up and the Flipper linked (61,675 free,
+     * 31,732 block), or no Wi-Fi feature could ever start over the link. */
     CHECK(B > 15u * 1024u);
-    CHECK(F >= 64u * 1024u);
+    CHECK(F > 47979u);
+    CHECK(!wifiStartAllowed(false, 47979u, 31732u));
+    CHECK(wifiStartAllowed(false, 61675u, 31732u));
 
     char buf[160];
     bl_textbuf_t tb;
     bl_tb_init(&tb, buf, sizeof(buf));
-    CHECK(formatWifiNoMemory(&tb, 52u * 1024u + 900u, 20u * 1024u));
+    CHECK(formatWifiNoMemory(&tb, 40u * 1024u + 900u, 20u * 1024u));
     std::string s(buf, tb.len);
-    CHECK(s == "Wi-Fi can't start with BLE on\nfree 52k need 80k\nblock 20k need 16k");
-    /* fits a Flipper text screen line width (21 chars) per line */
-    CHECK(s.find("free 52k need 80k") != std::string::npos);
+    CHECK(s == "Wi-Fi can't start with BLE on\nfree 40k need 52k\nblock 20k need 16k");
     /* atomic: a buffer that cannot hold it gets nothing */
     char tiny[24];
     bl_tb_init(&tb, tiny, sizeof(tiny));

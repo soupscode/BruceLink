@@ -58,6 +58,7 @@ static void bridgeTask(void*) {
 
 ModuleStartResult moduleStart() {
     if(g_task != nullptr) return kModuleAlreadyRunning; // includes "still stopping"
+    logStep("module: start requested");
     // One BLE stack, one owner: Bruce's BLE API, BadBLE, scanners etc. each
     // init/deinit NimBLE themselves.
     if(NimBLEDevice::isInitialized()) return kModuleBleBusy;
@@ -68,7 +69,6 @@ ModuleStartResult moduleStart() {
     // PUBLIC DEMO KEY until key provisioning exists (TASKS M5.3). A bridge
     // holding it serves passive requests only: the bridge core refuses every
     // active op (see BruceLinkBridge::begin).
-    logStep("module: starting BLE");
     g_transport.begin(&g_bridge, BRUCELINK_DEMO_PSK, &g_backend);
     g_transport.startScan(0);
     logStep("module: BLE up, scanning for the Flipper");
@@ -93,6 +93,7 @@ bool moduleStop() {
     // running, so a second task is never started alongside it.
     if(xSemaphoreTake(g_stopped, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
     g_task = nullptr;
+    logStep("module: stopped, BLE released");
     return true;
 }
 

@@ -382,6 +382,37 @@ Measured by the owner with BLE up and the Flipper linked (Device Info on
 RAM, and Wi-Fi start did not fit in the remaining 48 kB. What Wi-Fi start
 costs on this build has not been measured yet.
 
+Third run, StickS3 on `2b604e4` (guard, logging, BLE memory savings), serial
+log from the owner:
+
+```
+[BruceLink] module: starting BLE                       | internal 133247 dma-blk 59380 | stack-left 11432
+[BruceLink] module: BLE up, scanning for the Flipper   | internal  75707 dma-blk 31732 | stack-left 10952
+[BruceLink] module: Flipper linked                     | internal  61735 dma-blk 31732 | stack-left  8396
+[BruceLink] module: link down                          | internal  61675 dma-blk 31732
+[BruceLink] module: Flipper linked                     | internal  61735 dma-blk 31732
+[BruceLink] wifi scan: begin                           | internal  61675 dma-blk 31732 | stack-left  7948
+[BruceLink] wifi scan: refused, Wi-Fi would not fit next to BLE
+INFO: BruceLink OFF
+(Bruce's own WiFi menu: scan)
+[RAM] Low contiguous DMA memory for BLE, attempting to free WiFi...
+[RAM] Still only 31732 bytes DMA block, minimum 49152 needed
+ERR: BruceLink: not enough memory for BLE
+```
+
+| Finding | Evidence |
+|---|---|
+| The guard works: a scan is refused cleanly, the bridge survives and can be switched off | "refused" line, then `BruceLink OFF` without a crash |
+| BLE start costs 57.5 kB of internal RAM; a linked Flipper another 14 kB | 133,247 → 75,707 → 61,735 |
+| The memory savings recovered 13.7 kB with the Flipper linked | 47,979 (`72d9efc`) → 61,675 |
+| The first link dropped after 2 s and re-established 7 s later | "link down" / second "linked"; cause not examined |
+| After switching BruceLink off and using Bruce's Wi-Fi scan, BLE cannot start again until reboot | Bruce's guard: 31,732-byte block, 49,152 needed |
+| Bridge task stack: at least 7.9 kB of 12 kB unused so far | `stack-left` |
+
+Test B was meant to measure what Wi-Fi costs but was run without a reboot in
+between, so it shows the re-enable limit instead. The cost of a Wi-Fi start is
+still unmeasured.
+
 Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
 bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at
 once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this
