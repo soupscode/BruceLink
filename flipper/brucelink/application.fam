@@ -3,7 +3,10 @@ App(
     name="BruceLink",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="brucelink_app",
-    stack_size=4 * 1024,
+    # 8 KB: the X25519 handshake keeps ~1.4 KB of field elements on the
+    # stack and runs under the GUI dispatcher frames; 4 KB overflowed
+    # (BusFault on Connect, first hardware run 2026-11-23).
+    stack_size=8 * 1024,
     fap_category="Bluetooth",
     fap_version="0.2",
     fap_description="Native remote for a StickS3 running Bruce (authenticated BLE bridge).",

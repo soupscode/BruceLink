@@ -12,6 +12,7 @@
  */
 #include "bl_transport.h"
 
+#include "../brucelink_i.h" /* BL_HS_FRAME_MAX */
 #include "../brucelink_core/src/bl_capability.h"
 #include "../brucelink_core/src/bl_session.h"
 
@@ -116,8 +117,9 @@ static int lb_send(BlTransport* t, const uint8_t* frame, size_t len) {
     Loopback* l = t->impl;
     if(!l->connected) return BL_E_STATE;
     if(!bl_session_established(&l->peer)) {
-        /* drive the handshake on the peripheral side */
-        uint8_t out[BL_MAX_MSG];
+        /* drive the handshake on the peripheral side; the AUTH_OK reply
+         * is a sealed frame with no payload, so BL_HS_FRAME_MAX suffices */
+        uint8_t out[BL_HS_FRAME_MAX];
         size_t olen = 0;
         int rc = bl_session_handshake_rx(&l->peer, frame, len, out, sizeof(out), &olen);
         if(rc != BL_OK) return rc;
