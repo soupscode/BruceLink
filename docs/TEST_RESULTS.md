@@ -220,6 +220,20 @@ handshake (X25519 on the Flipper's CPU) and request/response, all against the
 screens (Connect, Device Info, Capabilities, Wi-Fi Scan, clean exit) showed the
 expected content. Not confirmed: the Flipper's exact Momentum version.
 
+### 2026-11-23 — Flipper BLE profile, first run on a radio (owner's Flipper + phone scanner)
+
+Branch `feat/flipper-ble-profile` (the owner's download; presumed `b648d78`),
+Transport: BLE, phone running a BLE scanner. Reported by the owner:
+
+| Observation | Reading |
+|---|---|
+| The scanner finds the service and connects | Profile start, advertising (128-bit UUID + name within 31 bytes) and the GATT service work |
+| The connection lasts about 5 s | Consistent with the subscription guard dropping a central that has not enabled notifications; **not yet confirmed** that notifications were off |
+| The Flipper kept showing `BLE advertising` throughout | Display defect: the Connection screen was redrawn only on link-id or session changes, so `BLE connecting` never appeared. Fixed in the next commit |
+
+Not yet observed: subscription detected (`BLE linked`), `HELLO` notifications,
+re-advertising after the drop, radio handed back on exit.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,

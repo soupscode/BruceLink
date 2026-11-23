@@ -64,9 +64,10 @@ static void bl_refresh_connection(BruceLinkApp* app) {
         bl_show_text(app, "Connection", "not started\nPress Connect.");
         return;
     }
+    app->shown_status = app->transport->api->status(app->transport);
     snprintf(
         app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure",
-        app->transport->api->status(app->transport), bl_client_state_text(app));
+        app->shown_status, bl_client_state_text(app));
     bl_show_text(app, "Connection", app->text);
 }
 
@@ -237,6 +238,13 @@ static void bl_tick(void* ctx) {
                 app, app->req_title ? app->req_title : "BruceLink", "no reply (timed out)");
         break;
     default: break;
+    }
+
+    /* The transport's own state (advertising / connecting / linked) changes
+     * without the link id changing, e.g. when a central connects but has
+     * not subscribed yet. Statuses are string literals: compare pointers. */
+    if(app->screen == BlScreenConnection && t->api->status(t) != app->shown_status) {
+        bl_refresh_connection(app);
     }
 }
 
