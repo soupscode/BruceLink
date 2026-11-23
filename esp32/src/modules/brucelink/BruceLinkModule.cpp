@@ -43,7 +43,9 @@ static volatile bool g_linked = false;
 static void bridgeTask(void*) {
     while(g_run) {
         g_transport.loop();
-        g_linked = g_transport.connected();
+        const bool linked = g_transport.connected();
+        if(linked != g_linked) logStep(linked ? "module: Flipper linked" : "module: link down");
+        g_linked = linked;
         vTaskDelay(kLoopPeriod);
     }
     // Shut down on the task that owns the bridge: the link loss reaches the
@@ -56,6 +58,7 @@ static void bridgeTask(void*) {
 
 ModuleStartResult moduleStart() {
     if(g_task != nullptr) return kModuleAlreadyRunning; // includes "still stopping"
+    logStep("module: start requested");
     // One BLE stack, one owner: Bruce's BLE API, BadBLE, scanners etc. each
     // init/deinit NimBLE themselves.
     if(NimBLEDevice::isInitialized()) return kModuleBleBusy;
@@ -68,6 +71,7 @@ ModuleStartResult moduleStart() {
     // active op (see BruceLinkBridge::begin).
     g_transport.begin(&g_bridge, BRUCELINK_DEMO_PSK, &g_backend);
     g_transport.startScan(0);
+    logStep("module: BLE up, scanning for the Flipper");
 
     g_run = true;
     if(xTaskCreate(bridgeTask, "brucelink", kTaskStackBytes, nullptr, kTaskPriority, &g_task) !=
@@ -89,6 +93,7 @@ bool moduleStop() {
     // running, so a second task is never started alongside it.
     if(xSemaphoreTake(g_stopped, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
     g_task = nullptr;
+    logStep("module: stopped, BLE released");
     return true;
 }
 

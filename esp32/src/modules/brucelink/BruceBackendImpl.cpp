@@ -6,10 +6,12 @@
 #include "BruceBackendImpl.h"
 
 #include <BruceLinkFormat.h>
+#include "BruceLinkWifi.h"
 #include "bruce_brucelink_hooks.h" // thin headless hooks added by the BruceLink patch
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <core/radio_mem.h> // Bruce: radioHasMemForWifi
 #include <globals.h> // Bruce: wifiConnected, wifiIP, sdcardMounted, ...
@@ -18,6 +20,7 @@ extern int getBattery(); // boards/m5stack-sticks3/interface.cpp:114
 extern bool isCharging(); // boards/m5stack-sticks3/interface.cpp:139
 
 namespace brucelink {
+
 
 size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     // Mirrors Bruce's infoCallback (util_commands.cpp:99) fields. Built with
@@ -34,51 +37,36 @@ size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     bl_tb_str(&tb, "\nBatt ");
     bl_tb_int(&tb, getBattery());
     bl_tb_str(&tb, isCharging() ? "% (chg)" : "%");
-    bl_tb_str(&tb, "\nHeap ");
-    bl_tb_uint(&tb, (unsigned long)ESP.getFreeHeap());
+    bl_tb_str(&tb, "\nHeap "); // internal RAM: what the radios compete for
+    bl_tb_uint(&tb, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     bl_tb_str(&tb, "  PSRAM ");
     bl_tb_uint(&tb, (unsigned long)ESP.getFreePsram());
+    bl_tb_str(&tb, "\nDMA blk "); // what gates starting a radio (radio_mem.h)
+    bl_tb_uint(&tb, (unsigned long)radioLargestDmaBlock());
     bl_tb_str(&tb, "\nWi-Fi ");
     bl_tb_str(&tb, wifiConnected ? "up " : "down");
     if(wifiConnected) bl_tb_sanitized(&tb, wifiIP.c_str(), 40);
     return tb.len;
 }
 
+/* One line on the USB serial log per step, with the memory figures that
+ * decide whether a radio can start (see Bruce's core/radio_mem.h). Used to
+ * find where a remote operation stops when it does not come back. */
+void logStep(const char* what) {
+    Serial.printf(
+        "[BruceLink] %s | internal %lu dma-blk %lu psram %lu stack-left %lu | %lu ms\n", what,
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned long)radioLargestDmaBlock(), (unsigned long)ESP.getFreePsram(),
+        (unsigned long)uxTaskGetStackHighWaterMark(nullptr), (unsigned long)millis());
+    Serial.flush();
+}
+
 size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
-    // Same calls as Bruce's native_wifiScan (bjs_interpreter/wifi_js.cpp:76).
-    // Lines are appended whole or not at all; SSIDs are sanitized.
+    // Lines are appended whole or not at all; SSIDs are sanitized. How Wi-Fi
+    // is brought up next to the BLE link is in BruceLinkWifi.
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
-    // Wi-Fi is being started next to a live BLE link. Say why if it cannot
-    // be, instead of reporting an empty neighbourhood.
-    if(!radioHasMemForWifi()) {
-        bl_tb_str(&tb, "scan failed:\nnot enough memory for\nWi-Fi while BLE is on");
-        Serial.println("[BruceLink] wifi scan: not enough memory");
-        return tb.len;
-    }
-    const uint32_t t0 = millis();
-    WiFi.mode(WIFI_MODE_STA); // as native_wifiScan does: the radio may be off
-    int found = WiFi.scanNetworks(false, true);
-    const uint32_t took = millis() - t0;
-    Serial.printf("[BruceLink] wifi scan: result %d in %lu ms\n", found, (unsigned long)took);
-    if(found < 0) {
-        // WIFI_SCAN_RUNNING (-1) / WIFI_SCAN_FAILED (-2)
-        bl_tb_str(&tb, "scan failed (code ");
-        bl_tb_int(&tb, found);
-        bl_tb_str(&tb, ")\nafter ");
-        bl_tb_uint(&tb, took);
-        bl_tb_str(&tb, " ms");
-        WiFi.scanDelete();
-        return tb.len;
-    }
-    bl_tb_int(&tb, found);
-    bl_tb_str(&tb, " networks, ");
-    bl_tb_uint(&tb, took);
-    bl_tb_str(&tb, " ms\n");
-    for(int i = 0; i < found; i++) {
-        if(!formatWifiApLine(&tb, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i))) break;
-    }
-    WiFi.scanDelete();
+    wifiScanInto(&tb);
     return tb.len;
 }
 

@@ -342,8 +342,143 @@ write the link carries and one byte more than the stock serial profile ever
 uses (243). The transport now joins such pieces; the `frag` counter will show
 whether it ever happens.
 
+Second run, both devices on `72d9efc` (owner-reported):
+
+| Observation | Reading |
+|---|---|
+| `requesting...` then `no reply (timed out)` | No complete reply within 10 s |
+| Counters at the timeout: `link 1 mtu 247 rx 3/3 drop 0 bad 0 txf 0`, no `frag`/`odd` line | The link stayed up, the MTU exchange reaches the Flipper (247), and **no reply data arrived at all**. The split-write handling was not involved; that suspicion was wrong |
+| No late text after a further 90 s | The StickS3 never answered, not even with the scan's own 60 s failure |
+| Device Info afterwards also times out | The bridge task is stuck inside the Wi-Fi scan call |
+| Toggling BruceLink off then "crashes the stick" | The stop path waits for a task that cannot finish; what "crash" is exactly (freeze, reboot) is not yet known |
+
+StickS3 serial log of the same sequence (owner, firmware `72d9efc`):
+
+```
+[RAMLOG] stage=first-mainMenu | internal free= 135083 largest= 61428 dma= 61428 | psram free= 8384524
+INFO: BruceLink ON > looking for Flipper (DEMO KEY, not secure)
+E wifi:Expected to init 4 rx buffer, actual is 2
+E wifi_init: Failed to deinit Wi-Fi driver (0x3001)
+E wifi_init: Failed to deinit Wi-Fi (0x3001)
+[E] wifiLowLevelInit(): esp_wifi_init 0x101: ESP_ERR_NO_MEM
+E wifi:Expected to init 4 rx buffer, actual is 0
+[E] wifiLowLevelInit(): esp_wifi_init 0x101: ESP_ERR_NO_MEM
+[BruceLink] wifi scan: result -2 in 55 ms
+```
+
+**Root cause: not enough internal RAM for Wi-Fi next to BLE.** The StickS3 has
+135 kB of internal heap free at the menu (PSRAM does not help: this build's
+radio stacks allocate from internal RAM). With NimBLE up, `esp_wifi_init` runs
+out part-way, cannot be torn down again, and leaves so little internal RAM
+that the BLE stack can no longer send: the "scan failed" reply was produced
+(55 ms) but never left the device, and nothing worked afterwards. The bridge
+task was not blocked in the scan, as first read; it was starved. Bruce's own
+15 kB block check (`radioHasMemForWifi`) passed, so it is not a sufficient
+guard here.
+
+Measured by the owner with BLE up and the Flipper linked (Device Info on
+`72d9efc`): **internal heap 47,979 bytes free** (PSRAM 8,384,524), down from
+135,083 at the menu. BLE plus BruceLink therefore cost about 87 kB of internal
+RAM, and Wi-Fi start did not fit in the remaining 48 kB. What Wi-Fi start
+costs on this build has not been measured yet.
+
+Third run, StickS3 on `2b604e4` (guard, logging, BLE memory savings), serial
+log from the owner:
+
+```
+[BruceLink] module: starting BLE                       | internal 133247 dma-blk 59380 | stack-left 11432
+[BruceLink] module: BLE up, scanning for the Flipper   | internal  75707 dma-blk 31732 | stack-left 10952
+[BruceLink] module: Flipper linked                     | internal  61735 dma-blk 31732 | stack-left  8396
+[BruceLink] module: link down                          | internal  61675 dma-blk 31732
+[BruceLink] module: Flipper linked                     | internal  61735 dma-blk 31732
+[BruceLink] wifi scan: begin                           | internal  61675 dma-blk 31732 | stack-left  7948
+[BruceLink] wifi scan: refused, Wi-Fi would not fit next to BLE
+INFO: BruceLink OFF
+(Bruce's own WiFi menu: scan)
+[RAM] Low contiguous DMA memory for BLE, attempting to free WiFi...
+[RAM] Still only 31732 bytes DMA block, minimum 49152 needed
+ERR: BruceLink: not enough memory for BLE
+```
+
+| Finding | Evidence |
+|---|---|
+| The guard works: a scan is refused cleanly, the bridge survives and can be switched off | "refused" line, then `BruceLink OFF` without a crash |
+| BLE start costs 57.5 kB of internal RAM; a linked Flipper another 14 kB | 133,247 → 75,707 → 61,735 |
+| The memory savings recovered 13.7 kB with the Flipper linked | 47,979 (`72d9efc`) → 61,675 |
+| The first link dropped after 2 s and re-established 7 s later | "link down" / second "linked"; cause not examined |
+| After switching BruceLink off and using Bruce's Wi-Fi scan, BLE cannot start again until reboot | Bruce's guard: 31,732-byte block, 49,152 needed |
+| Bridge task stack: at least 7.9 kB of 12 kB unused so far | `stack-left` |
+
+Test B was meant to measure what Wi-Fi costs but was run without a reboot in
+between, so it shows the re-enable limit instead. The cost of a Wi-Fi start is
+still unmeasured.
+
+Fourth run, StickS3 on `ee58380` (reduced, transient Wi-Fi start, ADR 0004),
+Flipper on `main` (`dbcdac8`). Owner: **"Success from flipper"**: the network
+list was shown on the Flipper. Serial log:
+
+```
+[BruceLink] module: start requested                  | internal 133431 dma-blk 59380 | stack-left 11628 |  52877 ms
+[BruceLink] module: BLE up, scanning for the Flipper | internal  75779 dma-blk 31732 | stack-left 10952 |  52924 ms
+[BruceLink] module: Flipper linked                   | internal  61807 dma-blk 31732 | stack-left  8396 |  56979 ms
+[BruceLink] wifi scan: begin                         | internal  61639 dma-blk 31732 | stack-left  7948 |  63231 ms
+[BruceLink] wifi scan: driver init                   | internal  30651 dma-blk 22516 |                  |  63236 ms
+[BruceLink] wifi scan: radio started                 | internal  28911 dma-blk 20468 |                  |  63239 ms
+[BruceLink] wifi scan: scan finished                 | internal  25911 dma-blk 16372 |                  |  68053 ms
+[BruceLink] wifi scan: driver released               | internal  (garbled in the paste) dma-blk 31732 | 68059 ms
+[BruceLink] module: link down                        | internal  55091 dma-blk 31732 | stack-left  7948 |  77082 ms
+```
+
+| Measurement | Value |
+|---|---|
+| Reduced driver init (incl. the one-time default event loop) | 30,988 bytes internal; DMA block 31,732 → 22,516 |
+| Radio start | 1,740 bytes |
+| Scan | 3,000 bytes |
+| **Peak cost of a scan** | **35,728 bytes internal**; lowest free 25,911; lowest DMA block 16,372 |
+| Scan duration with BLE active | 4.8 s (estimate was ~2 s: the radio is shared) |
+| Request to reply | under 5 s, inside the Flipper's 10 s |
+| Internal RAM after release | ~55 kB vs 61.6 kB before: about 6.5 kB not returned. Consistent with the default event loop (task + queue) created on first use and kept; to be confirmed by a second scan |
+| Bridge task stack | 7,948 bytes of 12,288 never used |
+
+The link going down 9 s after the scan was the owner leaving the Flipper app,
+not a drop.
+
+Fifth run, same session (owner): the Flipper app was opened again, the
+StickS3 relinked by itself (`Flipper linked` at 284 s, BruceLink had kept
+scanning), and Wi-Fi Scan was run three times in a row:
+
+| Scan | Internal at begin | Lowest during scan | After release | Lowest DMA block | Duration |
+|---|---|---|---|---|---|
+| 2 | 55,059 | 25,879 | 55,059 | 16,372 | 4.8 s |
+| 3 | 55,059 | 25,879 | 55,059 | 17,396 | 4.8 s |
+| 4 | 55,059 | 25,319 | 55,059 | 16,372 | 4.8 s |
+
+- **No leak**: every scan returns exactly what it took. The 6.5 kB kept after
+  the first scan is a one-time allocation (the default event loop).
+- **Cost of a repeated scan: 29.7 kB peak** (first scan 35.7 kB).
+- Reconnecting after leaving and reopening the Flipper app works without
+  touching the StickS3.
+- **Guard headroom is thin**: in steady state 55,059 bytes are free against
+  the 53,248-byte (52 kB) threshold, so about 1.8 kB more internal RAM use
+  anywhere in Bruce would make scans refuse (cleanly). See ADR 0004.
+- What the Flipper displayed for these three scans was not separately
+  reported.
+
+Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
+bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at
+once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this
+is the Wi-Fi/BLE coexistence risk listed since the capability audit, now seen
+on hardware.
+
+Response in the next build: Wi-Fi is started only if at least 80 kB of
+internal RAM and a 16 kB DMA block are free (`wifiStartAllowed`, host-tested;
+both numbers are estimates). Otherwise the request is refused with the figures
+and the link survives. That makes the failure clean; it does not make Wi-Fi
+fit. How much has to be saved is not known until the device reports its
+figures with BLE up.
+
 Not yet checked: behaviour when either device goes out of range, the rest of
-Bruce while BruceLink is on, the Flipper app commit used. Both devices use the public demo key and the
+Bruce while BruceLink is on. Both devices use the public demo key and the
 link is unencrypted, so this demonstrates the link, not its security.
 
 ## Not yet tested (requires the local hardware session)

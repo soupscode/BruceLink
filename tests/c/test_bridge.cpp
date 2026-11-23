@@ -878,6 +878,54 @@ static void t_real_key_reports_not_demo() {
     CHECK(contains(h.status(), "active:1"));
 }
 
+/* Hardware finding, 2026-11-23: starting Wi-Fi next to the live BLE link ran
+ * out of internal RAM inside esp_wifi_init and killed the bridge. Wi-Fi is
+ * now only started when it should fit; otherwise the Flipper is told why. */
+static void t_wifi_start_guard() {
+    using namespace brucelink;
+    const size_t F = kWifiStartMinFreeInternal, B = kWifiStartMinDmaBlock;
+    CHECK(wifiStartAllowed(false, F, B)); /* exactly enough */
+    CHECK(wifiStartAllowed(false, 200u * 1024u, 60u * 1024u));
+    CHECK(!wifiStartAllowed(false, F - 1, B)); /* total too small */
+    CHECK(!wifiStartAllowed(false, F, B - 1)); /* too fragmented */
+    CHECK(!wifiStartAllowed(false, 0, 0));
+    /* plenty in total but no usable block, and the reverse */
+    CHECK(!wifiStartAllowed(false, 300u * 1024u, 4u * 1024u));
+    CHECK(!wifiStartAllowed(false, 20u * 1024u, 20u * 1024u));
+    /* Wi-Fi that Bruce already brought up needs nothing more */
+    CHECK(wifiStartAllowed(true, 0, 0));
+    /* The thresholds must stay above what is known to fail on the device:
+     * Bruce's own 15 kB block check passed and a Wi-Fi start with 47,979
+     * bytes free still ran out of memory. And they must not exceed what
+     * the device has with BLE up and the Flipper linked (61,675 free,
+     * 31,732 block), or no Wi-Fi feature could ever start over the link. */
+    CHECK(B > 15u * 1024u);
+    CHECK(F > 47979u);
+    CHECK(!wifiStartAllowed(false, 47979u, 31732u));
+    CHECK(wifiStartAllowed(false, 61675u, 31732u));
+    /* Measured cost of the reduced, transient scan on the device (ee58380):
+     * internal RAM fell from 61,639 to 25,911 at its lowest (35,728 bytes,
+     * including the one-time default event loop); the DMA block from 31,732
+     * to 16,372. The threshold must cover that cost with margin left over
+     * for the BLE stack, which is still sending while the scan runs. */
+    const size_t kMeasuredScanPeak = 61639u - 25911u;
+    CHECK(F >= kMeasuredScanPeak + 12u * 1024u);
+
+    char buf[160];
+    bl_textbuf_t tb;
+    bl_tb_init(&tb, buf, sizeof(buf));
+    CHECK(formatWifiNoMemory(&tb, 40u * 1024u + 900u, 20u * 1024u));
+    std::string s(buf, tb.len);
+    CHECK(s == "Wi-Fi can't start with BLE on\nfree 40k need 52k\nblock 20k need 16k");
+    /* atomic: a buffer that cannot hold it gets nothing */
+    char tiny[24];
+    bl_tb_init(&tb, tiny, sizeof(tiny));
+    bl_tb_str(&tb, "x");
+    CHECK(!formatWifiNoMemory(&tb, 1, 1));
+    CHECK(std::string(tiny, tb.len) == "x");
+    CHECK(!formatWifiNoMemory(nullptr, 1, 1));
+}
+
 int main() {
     printf("BruceLink bridge tests (host)\n[bridge]\n");
     RUN(t_pr1_reconnect_preserves_psk);
@@ -911,6 +959,7 @@ int main() {
     RUN(t_e2e_link_loss_mid_request);
     RUN(t_demo_key_never_enables_active_ops);
     RUN(t_real_key_reports_not_demo);
+    RUN(t_wifi_start_guard);
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

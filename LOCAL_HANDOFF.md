@@ -93,9 +93,18 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Wi-Fi Scan returns nothing on hardware** (2026-11-23). Device Info and
-  Capabilities work. Cause unknown; see `docs/TEST_RESULTS.md` and read the
-  counters on the Flipper's Connection screen after a failed scan.
+- **Wi-Fi does not fit next to BLE on the StickS3** (2026-11-23, serial log in
+  `docs/TEST_RESULTS.md`): with NimBLE up, `esp_wifi_init` fails with
+  `ESP_ERR_NO_MEM`, and the failed init used to leave the bridge dead until
+  reboot. Wi-Fi is now started only when it should fit (`wifiStartAllowed`;
+  the clean refusal is confirmed on hardware), and the scan brings the driver
+  up small and only for its own duration (ADR 0004, `BruceLinkWifi.cpp`).
+  That scan **returned networks on the Flipper** (2026-11-23): four scans,
+  4.8 s each, no leak, peak 35.7 kB on the first and 29.7 kB after. In
+  steady state only 1.8 kB separates free RAM from the guard's threshold. This is the project's
+  main open technical risk (task M5.5): every Wi-Fi feature is meant to be
+  driven over the BLE link. The StickS3 logs memory at each step on USB serial
+  (`python -m serial.tools.miniterm <port> 115200`, lines `[BruceLink] ...`).
 - **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
   eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
   time is unmeasured. If Connect over BLE
@@ -107,6 +116,9 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   flashed**. Expect first-run problems in `BruceLinkModule` (task, NimBLE
   ownership, memory) rather than in the protocol.
 - Capture and active ops are "not available" in this build (placeholder hooks).
+- After switching BruceLink off, it may not start again until the StickS3 is
+  rebooted (`not enough memory for BLE`), in particular once Bruce's own Wi-Fi
+  has been used (M5.6).
 - Momentum's `Connected` event only fires after pairing completes, and there
   is no pairing: the Flipper detects the link from the TX subscription instead.
 - `bt_disconnect()` stops advertising for good; the transport restarts it.
