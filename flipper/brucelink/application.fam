@@ -1,0 +1,8 @@
+App(
+    appid="brucelink",
+    name="BruceLink",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="brucelink_app",
+    stack_size=2048,
+    fap_category="Tools",
+)
