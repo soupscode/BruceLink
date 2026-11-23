@@ -303,6 +303,26 @@ the radio being handed back to the phone app on exit, the `BLE connecting`
 status fix, repeated Connect/Back cycles. Not tested at all: anything with the
 StickS3 (no Bruce-side build exists yet).
 
+### 2026-11-23 — First over-the-air link: Flipper ↔ StickS3 (owner's devices)
+
+StickS3 flashed by the owner with the cloud-built image
+`Bruce-1.17-BruceLink-59268b0-m5stack-sticks3.bin` (sha256 `eaf88e41…9106`,
+see "Bruce 1.17 + BruceLink — full firmware build"); Flipper app on Transport:
+BLE. Reported by the owner: **"looks like it's working well. flipper shows
+connected, device info looks right."**
+
+| Observation | What it shows |
+|---|---|
+| The firmware boots and BruceLink can be toggled on | The Bruce module starts on the device (task, NimBLE init) |
+| Flipper shows `connected` | StickS3 central finds the advertisement, connects, subscribes; chunks flow both ways; the authenticated handshake completes over BLE with both devices running the shared core |
+| Device Info looks right | An authenticated request/response round trip through the bridge and `BruceBackendImpl` |
+
+Not reported / not yet checked: Capabilities and Wi-Fi Scan over the air, how
+long `authenticating...` lasted, the Flipper app commit, toggling BruceLink
+off/on on the StickS3, behaviour when either device goes out of range, the rest
+of Bruce while BruceLink is on. Both devices use the public demo key and the
+link is unencrypted, so this demonstrates the link, not its security.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,

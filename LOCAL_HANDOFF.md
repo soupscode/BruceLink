@@ -125,9 +125,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. Flash the Bruce + BruceLink build (`HARDWARE_TESTING.md` step 4) and bring
-   the link up with the Flipper (step 5). Then implement the headless sniffer
-   hooks (`PATCH.md`, M5.2). The
+1. The link works on hardware (2026-11-23, owner-reported: `connected`, Device
+   Info correct). Finish `HARDWARE_TESTING.md` step 5: Capabilities, Wi-Fi
+   Scan, timings, recovery. Then key provisioning (M5.3), which every active
+   op waits on, and the headless sniffer hooks (`PATCH.md`, M5.2). The
    Flipper profile has passed the phone-scanner check (`HARDWARE_TESTING.md`
    step 3b, owner-reported; see `docs/TEST_RESULTS.md` for what was and was
    not confirmed).

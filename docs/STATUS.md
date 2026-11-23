@@ -26,10 +26,10 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | COBS serial framing | ✅ | round-trip + stream resync after garbage |
 | Simulated transport (fault injection) | ✅ | clean bulk, corruption, dropped fragment, duplicate |
 | C↔Python wire interop | ✅ | frame+MAC, COBS, pcap, CRC32 byte-identical |
-| Ping/pong, device info, status, errors | 🟡 | on loopback + bridge core; not on air |
+| Ping/pong, device info, status, errors | 🟡 | host-tested; device info confirmed over the air (owner-reported) |
 | Timeouts / cancellation (ESTOP) | 🟡 | ESTOP + link-loss path in bridge; app-side handshake/request timeouts host-tested (`bl_client`), UI path not yet run on a device |
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
-| BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; first radio run 2026-11-23 against a phone scanner (owner-reported: advertises, connects, subscription and `HELLO` notifications work). **Not yet run against the StickS3** |
+| BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; run on hardware 2026-11-23 (owner-reported): against a phone scanner, then linked with the StickS3 — handshake completes, Device Info works |
 | Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
 | Pairing key | ⬜ | both builds use the public demo key until M5.3 |
 
@@ -47,8 +47,8 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 compiles and links inside Bruce `1.17` (`m5stack-sticks3`, cloud build with dependency sources fetched from GitHub); **never flashed or run** |
-| Bruce module + menu toggle + installer | 🟡 builds in Bruce; installer host-tested; never run on the StickS3 |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info works over the air (owner-reported)**; Wi-Fi scan not yet reported; capture / active op unavailable (placeholder hooks) |
+| Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |
 
@@ -66,6 +66,9 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 ## Hardware
 
-Only the Flipper app over its loopback (mock) transport has run on a device
-(2026-11-23, the build before the BLE transport and the client rewrite), and
-the BLE profile against a phone BLE scanner (same day, owner-reported). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.
+Owner-reported on 2026-11-23, in order: the Flipper app over its loopback mock;
+the Flipper BLE profile against a phone scanner; and the first real link,
+Flipper ↔ StickS3 (Bruce 1.17 + BruceLink), reaching `connected` with a correct
+Device Info reply. Details and what was not checked: `docs/TEST_RESULTS.md`.
+Everything else (Wi-Fi scan and capabilities over the air, capture, recovery,
+throughput, coexistence) is still pending. See `LOCAL_HANDOFF.md`.
