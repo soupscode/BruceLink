@@ -19,6 +19,12 @@ extern bool isCharging(); // boards/m5stack-sticks3/interface.cpp:139
 
 namespace brucelink {
 
+/* The scan must end, one way or the other, inside the Flipper's request
+ * timeout (BL_CLIENT_REQ_TIMEOUT_MS, 10 s). ~14 channels at 120 ms is about
+ * 1.7 s when the radio is not shared; the timeout covers a shared one. */
+static const uint32_t kWifiScanMsPerChannel = 120;
+static const uint32_t kWifiScanTimeoutMs = 7000;
+
 size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     // Mirrors Bruce's infoCallback (util_commands.cpp:99) fields. Built with
     // the bounded text builder: the returned length is always the text
@@ -38,31 +44,55 @@ size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     bl_tb_uint(&tb, (unsigned long)ESP.getFreeHeap());
     bl_tb_str(&tb, "  PSRAM ");
     bl_tb_uint(&tb, (unsigned long)ESP.getFreePsram());
+    bl_tb_str(&tb, "\nDMA blk "); // what gates starting a radio (radio_mem.h)
+    bl_tb_uint(&tb, (unsigned long)radioLargestDmaBlock());
     bl_tb_str(&tb, "\nWi-Fi ");
     bl_tb_str(&tb, wifiConnected ? "up " : "down");
     if(wifiConnected) bl_tb_sanitized(&tb, wifiIP.c_str(), 40);
     return tb.len;
 }
 
+/* One line on the USB serial log per step, with the memory figures that
+ * decide whether a radio can start (see Bruce's core/radio_mem.h). Used to
+ * find where a remote operation stops when it does not come back. */
+static void logStep(const char* what) {
+    Serial.printf(
+        "[BruceLink] %s | heap %lu dma-blk %lu psram %lu | %lu ms\n", what,
+        (unsigned long)ESP.getFreeHeap(), (unsigned long)radioLargestDmaBlock(),
+        (unsigned long)ESP.getFreePsram(), (unsigned long)millis());
+    Serial.flush();
+}
+
 size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
-    // Same calls as Bruce's native_wifiScan (bjs_interpreter/wifi_js.cpp:76).
-    // Lines are appended whole or not at all; SSIDs are sanitized.
+    // Same calls as Bruce's native_wifiScan (bjs_interpreter/wifi_js.cpp:76),
+    // bounded in time so the Flipper always gets an answer inside its own
+    // request timeout. Lines are appended whole or not at all; SSIDs are
+    // sanitized.
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
+    logStep("wifi scan: begin");
     // Wi-Fi is being started next to a live BLE link. Say why if it cannot
     // be, instead of reporting an empty neighbourhood.
     if(!radioHasMemForWifi()) {
         bl_tb_str(&tb, "scan failed:\nnot enough memory for\nWi-Fi while BLE is on");
-        Serial.println("[BruceLink] wifi scan: not enough memory");
+        logStep("wifi scan: not enough memory");
         return tb.len;
     }
     const uint32_t t0 = millis();
-    WiFi.mode(WIFI_MODE_STA); // as native_wifiScan does: the radio may be off
-    int found = WiFi.scanNetworks(false, true);
+    logStep("wifi scan: starting Wi-Fi (STA)");
+    const bool mode_ok = WiFi.mode(WIFI_MODE_STA); // the radio may be off
+    logStep(mode_ok ? "wifi scan: Wi-Fi up" : "wifi scan: Wi-Fi did NOT start");
+    if(!mode_ok) {
+        bl_tb_str(&tb, "scan failed:\nWi-Fi did not start\n(BLE is on)");
+        return tb.len;
+    }
+    WiFi.setScanTimeout(kWifiScanTimeoutMs);
+    int found = WiFi.scanNetworks(false, true, false, kWifiScanMsPerChannel);
     const uint32_t took = millis() - t0;
+    logStep("wifi scan: scan returned");
     Serial.printf("[BruceLink] wifi scan: result %d in %lu ms\n", found, (unsigned long)took);
     if(found < 0) {
-        // WIFI_SCAN_RUNNING (-1) / WIFI_SCAN_FAILED (-2)
+        // WIFI_SCAN_RUNNING (-1) / WIFI_SCAN_FAILED (-2, includes "timed out")
         bl_tb_str(&tb, "scan failed (code ");
         bl_tb_int(&tb, found);
         bl_tb_str(&tb, ")\nafter ");
@@ -79,6 +109,7 @@ size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
         if(!formatWifiApLine(&tb, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i))) break;
     }
     WiFi.scanDelete();
+    logStep("wifi scan: done");
     return tb.len;
 }
 

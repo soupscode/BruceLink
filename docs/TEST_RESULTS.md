@@ -342,8 +342,26 @@ write the link carries and one byte more than the stock serial profile ever
 uses (243). The transport now joins such pieces; the `frag` counter will show
 whether it ever happens.
 
+Second run, both devices on `72d9efc` (owner-reported):
+
+| Observation | Reading |
+|---|---|
+| `requesting...` then `no reply (timed out)` | No complete reply within 10 s |
+| Counters at the timeout: `link 1 mtu 247 rx 3/3 drop 0 bad 0 txf 0`, no `frag`/`odd` line | The link stayed up, the MTU exchange reaches the Flipper (247), and **no reply data arrived at all**. The split-write handling was not involved; that suspicion was wrong |
+| No late text after a further 90 s | The StickS3 never answered, not even with the scan's own 60 s failure |
+| Device Info afterwards also times out | The bridge task is stuck inside the Wi-Fi scan call |
+| Toggling BruceLink off then "crashes the stick" | The stop path waits for a task that cannot finish; what "crash" is exactly (freeze, reboot) is not yet known |
+
+Conclusion so far: on the StickS3, starting Wi-Fi from the bridge task while
+the BLE link is up does not return. Bruce's own code never runs both radios at
+once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this
+is the Wi-Fi/BLE coexistence risk listed since the capability audit, now seen
+on hardware. Where exactly it stops needs the StickS3 serial log; the next
+build logs every step of the scan with heap and DMA-block figures and bounds
+the scan to 7 s.
+
 Not yet checked: behaviour when either device goes out of range, the rest of
-Bruce while BruceLink is on, the Flipper app commit used. Both devices use the public demo key and the
+Bruce while BruceLink is on. Both devices use the public demo key and the
 link is unencrypted, so this demonstrates the link, not its security.
 
 ## Not yet tested (requires the local hardware session)

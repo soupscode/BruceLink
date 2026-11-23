@@ -27,6 +27,11 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
   it took. Pressing Connect while linked now shows the status instead of
   restarting the link.
 
+- The StickS3's Wi-Fi scan is bounded (120 ms per channel, 7 s overall) and
+  logs every step with memory figures on the serial port; Device Info shows
+  the largest DMA block. (The scan still hangs on hardware; these are for
+  finding out where.)
+
 ### Fixed
 - Wi-Fi scan switched the radio to station mode first, as Bruce's own scan
   does (it failed with the radio off).

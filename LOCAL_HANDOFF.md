@@ -93,9 +93,14 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Wi-Fi Scan returns nothing on hardware** (2026-11-23). Device Info and
-  Capabilities work. Cause unknown; see `docs/TEST_RESULTS.md` and read the
-  counters on the Flipper's Connection screen after a failed scan.
+- **Wi-Fi Scan hangs the StickS3's bridge task** (2026-11-23). Device Info and
+  Capabilities work until a scan is requested; afterwards nothing answers and
+  toggling BruceLink off misbehaves. The Flipper side is fine (counters show
+  no reply data arrived). Starting Wi-Fi next to the live BLE link is the
+  suspect; this is the project's main open technical risk, because every
+  Wi-Fi feature is meant to be driven over that link. Get the StickS3 serial
+  log (`python -m serial.tools.miniterm <port> 115200`): the scan logs each
+  step as `[BruceLink] wifi scan: ...` with heap and DMA-block figures.
 - **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
   eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
   time is unmeasured. If Connect over BLE
