@@ -1,0 +1,61 @@
+# BruceLink — engineering backlog
+
+Owner: TPM. Distinguishes verified (✅) from claimed. Acceptance criteria are
+measurable; "done" requires the Definition of Done in `CLAUDE.md`.
+Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress ·
+⬜ todo · ⛔ blocked.
+
+## Phase 1 — Foundation
+
+| ID | Task | Status | Acceptance criteria |
+|---|---|---|---|
+| M0 | Repository audit | ✅ | Inventory + baseline tests run |
+| M1 | Upstream research, pins, BLE ADR | ✅ | Revisions pinned; ADR 0001–0003 |
+| M2 | Reproducible builds + CI | ✅ | Host/FAP/ESP32 build in CI; real build output |
+| M3.1 | Crypto + frame + session + replay | ✅ | RFC KATs; tamper/replay tests |
+| M3.2 | Fragmentation + COBS | ✅ | 540 B over MTU 23/244; resync |
+| M3.3 | Simulated transport + fault injection | ✅ | bulk/corrupt/drop/dup tests |
+| M3.4 | Ping, device ID, status, errors | 🟡 | Works on loopback + bridge; needs air |
+| M3.5 | App-side request timeouts + cancel | ⬜ | Request times out in N ms; UI recovers |
+| M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
+| M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
+| M4.2 | **Flipper BLE peripheral profile** | ⬜ **next** | Advertise → connect → pair → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
+| M4.5 | Pin the paired Flipper's BLE address on the StickS3 | ⬜ | After first authenticated session, prefer/only accept that address; unpin from Bruce menu. Closes the address-rotating DoS residual (ADR 0001 §6) |
+| M4.3 | Reconnection / connection recovery | ⬜ | Re-handshake after drop; no stale keys |
+| M4.4 | BLE discovery screen | ⬜ | Lists nearby BruceLink bridges |
+| M5.1 | BruceBackendImpl compiled in Bruce tree | ⬜ | Builds in Bruce `1.17` m5stack-sticks3 |
+| M5.2 | Bruce headless sniffer hooks (patch) | ⬜ | `PATCH.md` applied; start/stop/status work |
+| M5.3 | Pairing-key provisioning | ⬜ | Key in `/brucelink.json`; setup flow |
+| M6 | HIL infrastructure | 🟡 | Scripts written + syntax-checked; run on HW |
+
+## Phase 2 — Capture & research capability expansion
+
+Incorporated from the scope amendment (2026-11-23). Lower priority than
+Phase 1 BLE; does not interrupt foundation work.
+
+| ID | Task | Status | Acceptance criteria |
+|---|---|---|---|
+| P2.1 | Capability registry + CAPS | ✅ | Serialize/validate; FAP renders menus |
+| P2.2 | Capture session manager | ✅ | Lifecycle, gating, failure tests (mock) |
+| P2.3 | PCAP writer (linktype 105) + CRC-32 | ✅ | Byte-exact + Python interop |
+| P2.4 | Generalized command adapter (CMD_REQ) | 🟡 | Bridge dispatch; add features via registry |
+| P2.5 | Remote safety gate (connection-level) | ✅ | default-deny/scope/rate/estop/link-loss tests |
+| P2.6 | Sniffer/EAPOL via Bruce (handshake mode) | ⬜ | Handshake pcap on LittleFS on HW |
+| P2.7 | Resumable PCAP transfer + integrity | ⬜ | Resume from offset; CRC verified |
+| P2.8 | Transfer channel decision (BLE/USB/Wi-Fi) | ⬜ | Throughput + coexistence measured on HW |
+| P2.9 | BLE/Wi-Fi coexistence evaluation | ⬜ | Loss/drop numbers recorded |
+| P2.10 | Capture UI on Flipper | ⬜ | Start/stop/status/list screens |
+| P2.11 | Active-RF forwarding (authorized lab) | 🟡 | Gate enforced; forwards to Bruce TX; HW-verified |
+
+## Blockers
+
+- ⛔ All 🟡/HW items: need the local session with physical devices.
+- Toolchain hosts blocked in the cloud sandbox (worked around; see
+  `LOCAL_HANDOFF.md`). Not a blocker locally.
+
+## Milestone priority changes from the scope amendment
+
+None to Phase 1 ordering: **the BLE peripheral profile (M4.2) remains the top
+priority.** Phase 2 items reuse the shared core already built (registry,
+capture manager, pcap, gate are done host-side), so they cost little now and
+are sequenced after BLE works on hardware.

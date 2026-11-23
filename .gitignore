@@ -7,3 +7,15 @@ dist/
 *.fap
 *.bin
 .env
+
+# host test build artifacts
+tests/c/obj/
+tests/c/bl_tests
+tests/c/bl_bridge_tests
+tests/_bl_vectors
+
+# hardware-in-the-loop logs + flash backups
+hil-logs/
+
+# vendored deps fetched by PlatformIO into the compile-check project
+esp32/test_compile/lib/

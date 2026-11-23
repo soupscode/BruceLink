@@ -1,0 +1,106 @@
+# ADR 0001 — BLE transport: Flipper peripheral, StickS3 central, FAP-owned custom GATT profile
+
+Status: Accepted (design) — hardware-unverified
+Date: 2026-11-23
+Pinned sources: Momentum `mntm-012` (`e1784e7`), copro submodule `stm32wb_copro` @ `133182d` (Cube 1.20.0, `ble_light` stack); Bruce `1.17` (`2b6ba4d`), NimBLE-Arduino 2.5.1.
+
+## Context
+
+BruceLink needs a wireless link between a Flipper Zero (Momentum) held by the
+operator and a backpack-mounted M5StickS3 (ESP32-S3) running Bruce. The project
+brief prefers BLE and minimal upstream firmware changes. We verified the actual
+upstream capabilities against source rather than assuming them.
+
+## Findings (verified in source)
+
+- **Flipper is peripheral-only.** Momentum ships the *light* copro stack
+  (`fbt_options.py`: `COPRO_STACK_TYPE="ble_light"`) and initialises GAP with
+  `GAP_PERIPHERAL_ROLE` (`targets/f7/ble_glue/gap.c`). No scan/central API is
+  exported in `targets/f7/api_symbols.csv` (API 87.1). → The **ESP32-S3 must be
+  the BLE central**; nothing prevents a non-phone central connecting.
+- **A FAP can own a custom 128-bit GATT profile.** `ble_gatt_service_add`,
+  `ble_gatt_characteristic_init/_update`, `bt_profile_start`,
+  `bt_profile_restore_default`, `bt_keys_storage_set_storage_path`, and
+  `ble_event_dispatcher_register_svc_handler` are all exported. The in-tree
+  HID/BadKB "ext profile" (`applications/.../ble_hid_ext_profile.c`) is the
+  pattern to copy, including a custom MAC, name, and pairing mode.
+- **Reusing the stock serial profile is wrong for us.** On connect the bt
+  service opens an RPC session and overwrites the serial callback
+  (`bt.c`), its characteristics require `AUTHEN` permissions, and TX is
+  indication-only. A FAP-owned profile avoids all three.
+- **MTU / sizing.** `CFG_BLE_MAX_ATT_MTU` = 414. A FAP characteristic update
+  goes through `aci_gatt_update_char_value` whose length is a `uint8_t`
+  (≤ 249); inbound `Attr_Data` is ≤ 245 per event. → **Keep chunks ≤ 244
+  bytes** and fragment above that (we do, in `bl_reasm`).
+- **Pairing.** `GapPairingNone` ("just works") with `ENCRY` (not `AUTHEN`)
+  characteristic permissions suits a headless central. Caveat: the app's
+  `Connected` status only fires on `ACI_GAP_PAIRING_COMPLETE`, so the ESP32
+  should initiate Just-Works pairing (verify on hardware).
+- **Key storage isolation.** `bt_keys_storage_set_storage_path(APP_DATA_PATH(
+  ".brucelink.keys"))` keeps BruceLink's bonds separate from the phone bond.
+  Starting a custom profile disconnects the phone/RPC; on exit the app must
+  `bt_profile_restore_default()` and unregister its GATT handler (follow
+  `applications/system/hid_app/hid.c` exactly).
+
+## Decision
+
+1. **Roles:** Flipper = BLE **peripheral** advertising a custom 128-bit
+   BruceLink service; StickS3 = BLE **central** (NimBLE) that scans, connects,
+   and subscribes.
+2. **Profile:** one service, two characteristics —
+   - RX `…9d00/0002`: `WRITE | WRITE_NO_RSP`, `GATT_NOTIFY_ATTRIBUTE_WRITE`
+     (central → peripheral).
+   - TX `…9d00/0003`: `NOTIFY` (peripheral → central).
+   Both variable length, ≤ 244 bytes, `ENCRY` permissions. UUIDs are fixed in
+   `NimBleCentralTransport.h` and the FAP profile.
+3. **Security role split is independent of the BLE role:** the *session*
+   handshake (ADR 0002) is initiated by the Flipper (session "central") once
+   the BLE link is up; the ESP32 is the session "peripheral"/responder. BLE
+   pairing (Just Works) protects the link; the session layer provides the
+   actual mutual authentication and replay protection, so we do **not** depend
+   on BLE `AUTHEN`/MITM.
+4. **Fragmentation:** messages > one chunk are split with `bl_reasm`
+   (2-byte fragment header), one chunk per GATT write/notify.
+5. **Transfer path for bulk PCAP (ADR 0003):** not BLE. See that ADR.
+
+6. **Link supervision (added after PR #1 review).** The service UUID is public
+   and the StickS3 connects to whatever advertises it, so a BLE connection is
+   never trusted on its own:
+   - the bridge must reach an authenticated session within **10 s**
+     (`kAuthTimeoutMs`); a forged proof, a version mismatch or an unprovisioned
+     bridge ends the attempt immediately;
+   - on either, the transport disconnects and puts that peer's address on a
+     **30 s cooldown** (`PeerCooldown`), so the scan moves on instead of
+     reconnecting to the same impostor;
+   - **requirement on the Flipper BLE transport:** start the session handshake
+     (send `HELLO`) as soon as the StickS3 enables TX notifications, not on a
+     later user action. Otherwise the deadline drops the real Flipper.
+   - Residual risk: an attacker that rotates its address on every attempt can
+     still *delay* (never hijack) the connection, like any BLE jammer.
+     Mitigation option for later: pin the paired Flipper's address after the
+     first successful session (the FAP profile sets a fixed MAC).
+7. **Threading:** NimBLE callbacks only record events; the application task's
+   `loop()` is the sole owner of the bridge, and the bridge is brought up
+   *before* notifications are subscribed so an immediate `HELLO` is never lost.
+
+## Consequences
+
+- Minimal Momentum change: **none to the core BT stack**; BruceLink is a FAP
+  with its own profile. Minimal Bruce change: a NimBLE central bridge added as
+  a library + a small glue module (ADR 0003).
+- The phone BLE/RPC link is unavailable while the BruceLink profile is active
+  (single connection handle). Documented for the operator.
+- **Must be hardware-verified:** Just-Works pairing from a NimBLE central;
+  advertising a 128-bit UUID plus a short name within 31 bytes; negotiated MTU
+  ≥ 247 and notify throughput; write fragmentation above 245 bytes;
+  reconnection after `restore_default` and after the Flipper's core-2 restart.
+- The inverted return value of `ble_gatt_characteristic_update` (true on
+  failure) and the FAP-defined ST event structs are implementation hazards
+  noted for the Flipper-side profile work.
+
+## Alternatives considered
+
+- **Reuse stock serial/RPC profile** — rejected (RPC hijack, AUTHEN, indicate-only).
+- **Bluetooth Classic SPP** — impossible; ESP32-S3 has no BT Classic.
+- **Wi-Fi link instead of BLE** — heavier and conflicts with Bruce's Wi-Fi
+  radio use; reconsidered only as an optional bulk-transfer channel (ADR 0003).

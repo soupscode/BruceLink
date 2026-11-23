@@ -1,13 +1,51 @@
-name: Protocol tests
+name: CI
 on:
   push:
   pull_request:
+
 jobs:
-  python:
+  core:
+    name: Host core tests + static analysis
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: C core unit + integration tests (ASan + UBSan)
+        run: make -C tests/c clean test
+      - name: Static analysis (cppcheck)
+        run: make -C tests/c cppcheck
+      - name: Python reference + C<->Python interop
+        run: python3 -m unittest discover -s tests -v
+
+  fap:
+    name: Flipper FAP build (best effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # device toolchain fetch may vary; core job gates merges
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python3 -m unittest discover -s tests -v
+      - name: Install ufbt
+        run: pip install ufbt
+      - name: Fetch Momentum mntm-012 SDK
+        run: ufbt update --hw-target=f7 --url=https://github.com/Next-Flip/Momentum-Firmware/releases/download/mntm-012/flipper-z-f7-sdk-mntm-012.zip
+      - name: Build FAP
+        working-directory: flipper/brucelink
+        run: ufbt
+
+  esp32:
+    name: ESP32-S3 bridge build (best effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build bridge compile-check
+        working-directory: esp32/test_compile
+        run: pio run
