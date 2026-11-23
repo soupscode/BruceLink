@@ -150,10 +150,27 @@ Flash: [==        ]  17.1% (used 571936 bytes from 3342336 bytes)
 Compiles the bridge core + NimBLE central transport + shared core with a
 **stub** backend. Not the Bruce firmware, not flashed, not run.
 
+## Hardware results
+
+### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)
+
+First run of any BruceLink code on a device. Built and launched locally with
+`ufbt launch` (real Flipper toolchain, Windows) from `fix/connect-stack-overflow`.
+
+| Build | Result (reported by the owner) |
+|---|---|
+| `f100604` (PR #1 as merged) | **Connect crashed the Flipper: BusFault.** Stack overflow, fixed in `2410767` |
+| `0d8d272` | App launches, Connect works, no crash; reported "works good" |
+
+Scope of this result: the app's UI, tick-driven polling, the authenticated
+handshake (X25519 on the Flipper's CPU) and request/response, all against the
+**in-process mock**. No radio, no StickS3. Not individually confirmed: each of
+the five test screens, and the Flipper's exact Momentum version.
+
 ## Not yet tested (requires the local hardware session)
 
 - BLE advertising, Just-Works pairing, MTU negotiation, notify throughput.
-- FAP running on a Flipper (UI, loopback, then BLE).
+- FAP over BLE on a Flipper (loopback has run; see Hardware results).
 - BruceBackendImpl compiled inside the Bruce tree; the Bruce patch.
 - On-air Wi-Fi scan, sniffer/EAPOL capture to LittleFS, pcap transfer.
 - Active-op forwarding and the safety gate under real transmission.

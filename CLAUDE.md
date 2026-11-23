@@ -19,7 +19,9 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
 ## Layout
 
 - `shared/brucelink_core/` — portable C99 protocol core (used by FAP + bridge + tests).
-- `flipper/brucelink/` — FAP; `brucelink_core/` is a symlink to the shared core.
+- `flipper/brucelink/` — FAP; `core/` holds generated wrappers that `#include` the shared core
+  (no symlinks: they break Windows checkouts). After adding/removing a core or bridge source
+  file run `python3 tools/gen_wrappers.py`; `tests/test_wrappers.py` fails if they're stale.
 - `esp32/lib/BruceLink/` — bridge core + NimBLE transport (portable / NimBLE only).
 - `esp32/src/modules/brucelink/` — Bruce glue (builds only in the Bruce tree) + `PATCH.md`.
 - `esp32/test_compile/` — standalone ESP32-S3 compile check (stub backend).

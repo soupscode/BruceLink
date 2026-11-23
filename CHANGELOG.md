@@ -2,6 +2,18 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — first hardware run fixes (2026-11-23)
+
+### Fixed
+- **BusFault on Connect** (first run on a Flipper): stack overflow. App stack
+  4 KB → 8 KB; protocol polling moved from a FuriTimer callback (1 KB system
+  task stack) to the ViewDispatcher tick on the app thread; handshake buffers
+  trimmed to 128 bytes.
+- **Windows checkouts could not build**: the app reached the shared core
+  through a git symlink. Replaced all three repo symlinks with generated
+  one-line wrapper sources (`tools/gen_wrappers.py`, checked by
+  `tests/test_wrappers.py`). Device builds are byte-identical to before.
+
 ## [Unreleased] — PR #1 second review fixes (2026-11-23)
 
 ### Fixed

@@ -12,7 +12,7 @@
  */
 #include "brucelink_i.h"
 
-#include "brucelink_core/src/bl_capability.h"
+#include "../../shared/brucelink_core/src/bl_capability.h"
 
 #include <furi_hal_random.h>
 #include <stdio.h>
@@ -81,7 +81,7 @@ static void bl_begin_connect(BruceLinkApp* app) {
     }
     bl_session_init(&app->session, BL_ROLE_CENTRAL, DEMO_PSK, bl_rng, NULL);
     app->have_session = true;
-    uint8_t hello[BL_MAX_MSG];
+    uint8_t hello[BL_HS_FRAME_MAX];
     int n = bl_session_start(&app->session, hello, sizeof(hello));
     if(n > 0) {
         bl_set_status(app, "handshaking...");
@@ -127,14 +127,14 @@ static void bl_render_caps(BruceLinkApp* app, const uint8_t* buf, size_t len) {
     bl_app_set_text(app, "Capabilities", app->text);
 }
 
-/* Received-frame handler (called from the poll timer context). */
+/* Received-frame handler (app thread, from the tick event). */
 static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
     BruceLinkApp* app = ctx;
     if(!app->have_session) return;
 
     if(!bl_session_established(&app->session)) {
         /* drive central handshake steps */
-        uint8_t out[BL_MAX_MSG];
+        uint8_t out[BL_HS_FRAME_MAX];
         size_t olen = 0;
         int rc = bl_session_handshake_rx(&app->session, frame, len, out, sizeof(out), &olen);
         if(rc != BL_OK) {
@@ -144,6 +144,7 @@ static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
         if(olen) bl_send_frame(app, out, olen);
         if(bl_session_established(&app->session)) {
             bl_set_status(app, "connected");
+            bl_app_set_text(app, "Connection", "connected\nfetching device info...");
             /* auto-pull device info on connect */
             bl_request(app, BL_MSG_DEVICE_INFO_REQ, NULL, 0);
         }
@@ -184,20 +185,18 @@ static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
     }
 }
 
-static void bl_poll_timer(void* ctx) {
+/* ViewDispatcher tick: runs on the app thread between GUI events. */
+static void bl_tick(void* ctx) {
     BruceLinkApp* app = ctx;
-    furi_mutex_acquire(app->lock, FuriWaitForever);
     if(app->transport && bl_transport_is_connected(app->transport)) {
         bl_transport_poll(app->transport, bl_on_frame, app);
     }
-    furi_mutex_release(app->lock);
 }
 
 /* ----------------------------------------------------------- UI glue */
 
 static void bl_submenu_cb(void* ctx, uint32_t index) {
     BruceLinkApp* app = ctx;
-    furi_mutex_acquire(app->lock, FuriWaitForever);
     switch(index) {
     case MenuConnect:
         bl_begin_connect(app);
@@ -231,7 +230,6 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         break;
     default: break;
     }
-    furi_mutex_release(app->lock);
 }
 
 static uint32_t bl_exit_cb(void* ctx) {
@@ -276,7 +274,6 @@ static void bl_build_settings(BruceLinkApp* app) {
 static BruceLinkApp* bl_app_alloc(void) {
     BruceLinkApp* app = malloc(sizeof(BruceLinkApp));
     memset(app, 0, sizeof(*app));
-    app->lock = furi_mutex_alloc(FuriMutexTypeNormal);
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
     app->view_dispatcher = view_dispatcher_alloc();
@@ -299,14 +296,12 @@ static BruceLinkApp* bl_app_alloc(void) {
     view_dispatcher_add_view(
         app->view_dispatcher, BlViewSettings, variable_item_list_get_view(app->settings));
 
-    app->poll_timer = furi_timer_alloc(bl_poll_timer, FuriTimerTypePeriodic, app);
-    furi_timer_start(app->poll_timer, furi_ms_to_ticks(50));
+    view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
+    view_dispatcher_set_tick_event_callback(app->view_dispatcher, bl_tick, furi_ms_to_ticks(50));
     return app;
 }
 
 static void bl_app_free(BruceLinkApp* app) {
-    furi_timer_stop(app->poll_timer);
-    furi_timer_free(app->poll_timer);
     if(app->transport) {
         bl_transport_disconnect(app->transport);
         bl_transport_loopback_free(app->transport);
@@ -323,7 +318,6 @@ static void bl_app_free(BruceLinkApp* app) {
 
     furi_record_close(RECORD_NOTIFICATION);
     furi_record_close(RECORD_GUI);
-    furi_mutex_free(app->lock);
     free(app);
 }
 

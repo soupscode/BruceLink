@@ -35,7 +35,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| Connection screen / menu / settings / about | 🟡 builds; loopback works in code |
+| Connection screen / menu / settings / about | ✅ runs on a Flipper over loopback (owner-reported, 2026-11-23) |
 | Device info, capabilities, Wi-Fi scan views | 🟡 builds; rendered from protocol replies |
 | BLE discovery screen | ⬜ |
 | Responsive on disconnect / recovery | 🟡 status reporting; auto-reconnect ⬜ |
@@ -62,5 +62,5 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 ## Hardware
 
-**Nothing has been verified on physical hardware.** All hardware-dependent rows
-are pending a local session. See `LOCAL_HANDOFF.md`.
+Only the Flipper app over its loopback (mock) transport has run on a device
+(2026-11-23). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.

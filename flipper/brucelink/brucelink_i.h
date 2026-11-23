@@ -4,7 +4,7 @@
  */
 #pragma once
 
-#include "brucelink_core/src/bl_session.h"
+#include "../../shared/brucelink_core/src/bl_session.h"
 #include "transport/bl_transport.h"
 
 #include <furi.h>
@@ -16,6 +16,11 @@
 #include <notification/notification_messages.h>
 
 #define BL_TEXT_MAX 512
+
+/* Largest handshake frame: header + HELLO_ACK payload (81) + MAC = 109.
+ * Handshake paths use this instead of BL_MAX_MSG (540) to keep the
+ * X25519 call chain's stack footprint small. */
+#define BL_HS_FRAME_MAX 128
 
 typedef enum {
     BlViewMenu,
@@ -42,8 +47,9 @@ typedef struct {
     bool have_session;
     bool active_ops_enabled; /* operator opt-in for active ops (default off) */
 
-    FuriTimer* poll_timer;
-    FuriMutex* lock;
+    /* All protocol work runs on the app thread via the ViewDispatcher
+     * tick event (never in a FuriTimer callback: the timer service task
+     * has a 1 KB stack). No locking needed. */
 
     char text[BL_TEXT_MAX]; /* scrollable text view contents */
     char status[64];

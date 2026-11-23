@@ -9,7 +9,7 @@ to Bruce's own functions.
 - `lib/BruceLink/` — reusable, portable:
   - `BruceLinkBridge.{h,cpp}` — transport/firmware-independent bridge core
     (session + safety gate + capture manager + dispatch). Depends only on the
-    shared protocol core (symlinked at build time) and an abstract
+    shared protocol core (pulled in by include path / generated wrappers) and an abstract
     `BruceBackend`. Unit-testable off-device.
   - `NimBleCentralTransport.{h,cpp}` — NimBLE-Arduino 2.5.1 central: scan,
     connect, discover RX/TX chars, bridge notify↔write.

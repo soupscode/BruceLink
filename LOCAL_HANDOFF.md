@@ -40,8 +40,8 @@ Full evidence: `docs/TEST_RESULTS.md`.
 
 ## 3. What has NOT been tested
 
-**Nothing has run on physical hardware.** Specifically untested: the FAP on a
-Flipper; BLE advertising/pairing/MTU/throughput; `BruceBackendImpl` (never
+The Flipper app has run on a device over its loopback transport only (first run
+found and fixed a stack overflow; `docs/TEST_RESULTS.md`). Still untested: BLE advertising/pairing/MTU/throughput; `BruceBackendImpl` (never
 compiled in the Bruce tree); the Bruce patch; on-air scan/capture/TX; the safety
 gate under real transmission; BLE+Wi-Fi coexistence; pcap transfer.
 
