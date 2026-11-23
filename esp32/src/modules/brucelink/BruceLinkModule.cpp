@@ -55,7 +55,7 @@ static void bridgeTask(void*) {
 }
 
 ModuleStartResult moduleStart() {
-    if(g_task != nullptr) return kModuleAlreadyRunning;
+    if(g_task != nullptr) return kModuleAlreadyRunning; // includes "still stopping"
     // One BLE stack, one owner: Bruce's BLE API, BadBLE, scanners etc. each
     // init/deinit NimBLE themselves.
     if(NimBLEDevice::isInitialized()) return kModuleBleBusy;
@@ -80,12 +80,16 @@ ModuleStartResult moduleStart() {
     return kModuleStarted;
 }
 
-void moduleStop() {
-    if(g_task == nullptr) return;
+bool moduleStop() {
+    if(g_task == nullptr) return true;
     g_run = false;
-    // A Wi-Fi scan or a BLE connect attempt in progress has to finish first.
-    xSemaphoreTake(g_stopped, pdMS_TO_TICKS(15000));
+    // A Wi-Fi scan or a BLE connect attempt in progress has to finish first
+    // (bounded: NimBleCentralTransport::kConnectTimeoutMs, a scan of a few
+    // seconds). If the task still has not exited, it stays registered as
+    // running, so a second task is never started alongside it.
+    if(xSemaphoreTake(g_stopped, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
     g_task = nullptr;
+    return true;
 }
 
 bool moduleRunning() {
@@ -101,8 +105,8 @@ bool moduleLinked() {
 void toggleBruceLink() {
     using namespace brucelink;
     if(moduleRunning()) {
-        moduleStop();
-        displayInfo("BruceLink OFF", true);
+        if(moduleStop()) displayInfo("BruceLink OFF", true);
+        else displayError("BruceLink is still stopping, try again", true);
         return;
     }
     switch(moduleStart()) {

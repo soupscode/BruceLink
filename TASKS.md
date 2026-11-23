@@ -25,8 +25,9 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M4.6 | Link confidentiality | ⬜ | Session-layer AEAD (keys already derived); payloads unreadable on air; covers BLE + UART. Until then frames are authenticated but **not encrypted** (ADR 0001 amendment) |
 | M4.7 | Match replies to requests | ⬜ | A reply arriving after its request timed out is not shown as the answer to the next one (needs a request id or type check) |
 | M4.4 | BLE discovery screen | ⬜ | Lists nearby BruceLink bridges |
-| M5.1 | BruceBackendImpl compiled in Bruce tree | ⬜ | Builds in Bruce `1.17` m5stack-sticks3 |
-| M5.2 | Bruce headless sniffer hooks (patch) | ⬜ | `PATCH.md` applied; start/stop/status work |
+| M5.1 | Bridge builds inside Bruce: module, glue, installer | 🟡 builds + links in Bruce `1.17` m5stack-sticks3 (cloud build, substituted dependency sources); **not flashed** | `tools/install_into_bruce.py` + `pio run -e m5stack-sticks3`; menu toggle starts/stops the bridge on the device; device info + Wi-Fi scan over the air |
+| M5.2 | Bruce headless sniffer hooks (patch) | ⬜ | Replace `bruce_brucelink_hooks_unavailable.cpp` with real hooks in Bruce's sniffer; start/stop/status work. Until then capture and active ops report "not available" |
+| M5.4 | BLE ownership inside Bruce | ⬜ | Starting another Bruce BLE feature while BruceLink is on is refused or stops BruceLink cleanly (today only BruceLink's own start checks) |
 | M5.3 | Pairing-key provisioning | ⬜ | Key in `/brucelink.json`; setup flow. **Until then both builds use the public demo key (`bl_demo_key.h`): no security against anyone who has the source** |
 | M6 | HIL infrastructure | 🟡 | Scripts written + syntax-checked; run on HW |
 

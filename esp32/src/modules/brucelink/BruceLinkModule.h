@@ -25,7 +25,9 @@ enum ModuleStartResult {
 };
 
 ModuleStartResult moduleStart();
-void moduleStop();
+/* False if the bridge task did not stop in time; it is then still running
+ * (or still stopping) and moduleRunning() stays true. */
+bool moduleStop();
 bool moduleRunning();
 /* True while a Flipper is linked (BLE link up; see STATUS for the session). */
 bool moduleLinked();

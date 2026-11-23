@@ -153,6 +153,9 @@ void NimBleCentralTransport::connectPending() {
 
     if(client_ == nullptr) client_ = NimBLEDevice::createClient();
     client_->setClientCallbacks(this, false);
+    // connect() blocks the loop; NimBLE's default is 30 s. A Flipper that
+    // has stopped advertising should not stall supervision or shutdown.
+    client_->setConnectTimeout(kConnectTimeoutMs);
     if(!client_->connect(addr)) return; // radio-level failure: just rescan
 
     peer_id_len_ = addrId(addr, peer_id_);

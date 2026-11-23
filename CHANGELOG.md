@@ -2,6 +2,25 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — Bruce module and installer (2026-11-23)
+
+Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
+
+### Added
+- `BruceLinkModule`: **Config → Advanced → Toggle BruceLink** in Bruce, modelled
+  on Bruce's "Toggle BLE API". A background task owns the bridge and the NimBLE
+  central transport. Refuses to start while another Bruce feature holds BLE.
+- `tools/install_into_bruce.py`: installs the bridge library, the glue and the
+  one menu line into a Bruce 1.17 checkout; idempotent, `--uninstall` reverses.
+- Placeholder headless hooks: capture and active ops report "not available"
+  until the sniffer hooks exist (M5.2). Device info, Wi-Fi scan, capabilities
+  and status work without them.
+- `NimBleCentralTransport::end()` and a 5 s bound on connection attempts.
+
+### Fixed
+- Wi-Fi scan switched the radio to station mode first, as Bruce's own scan
+  does (it failed with the radio off).
+
 ## [Unreleased] — Flipper BLE profile, timeouts (2026-11-23)
 
 Not run on hardware. See `docs/STATUS.md` for what is host-tested versus

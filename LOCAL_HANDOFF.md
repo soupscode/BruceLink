@@ -20,8 +20,10 @@ verified from what was not.
   their timeouts are driven by `bl_client` in the shared core.
 - **ESP32 bridge** (`esp32/lib/BruceLink`): portable bridge core + NimBLE
   central transport.
-- **Bruce glue** (`esp32/src/modules/brucelink`): `BruceBackendImpl`, headless
-  hook declarations, and `PATCH.md` (the Bruce changes).
+- **Bruce glue** (`esp32/src/modules/brucelink`): `BruceLinkModule` (menu
+  toggle + bridge task), `BruceBackendImpl`, headless hook declarations with
+  "not available" placeholder bodies, and `PATCH.md`.
+  `tools/install_into_bruce.py` puts all of it into a Bruce 1.17 checkout.
 - **Python reference** (`shared/brucelink_protocol.py`) for wire interop.
 - **HIL scripts** (`scripts/hil/`), docs, 3 ADRs, capability matrix.
 
@@ -96,8 +98,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 - **No link encryption and a public key.** GATT is open and unpaired; frames
   are authenticated but readable on air (M4.6). Both builds use the demo key
   (M5.3), so the bridge refuses all active ops (`STATUS` shows `demo:1`).
-- `BruceBackendImpl.cpp` has **never been compiled** — expect API mismatches
-  against the real Bruce headers; fix against Bruce `1.17`.
+- The Bruce build with BruceLink **compiles and links but has never been
+  flashed**. Expect first-run problems in `BruceLinkModule` (task, NimBLE
+  ownership, memory) rather than in the protocol.
+- Capture and active ops are "not available" in this build (placeholder hooks).
 - Momentum's `Connected` event only fires after pairing completes, and there
   is no pairing: the Flipper detects the link from the TX subscription instead.
 - `bt_disconnect()` stops advertising for good; the transport restarts it.
@@ -120,8 +124,9 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
-   sniffer hooks (`PATCH.md`), so there is a StickS3 build to link with. The
+1. Flash the Bruce + BruceLink build (`HARDWARE_TESTING.md` step 4) and bring
+   the link up with the Flipper (step 5). Then implement the headless sniffer
+   hooks (`PATCH.md`, M5.2). The
    Flipper profile has passed the phone-scanner check (`HARDWARE_TESTING.md`
    step 3b, owner-reported; see `docs/TEST_RESULTS.md` for what was and was
    not confirmed).

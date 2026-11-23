@@ -47,8 +47,9 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 written vs audited symbols; **not compiled in Bruce tree** |
-| Headless sniffer hooks (Bruce patch) | 📐 declared + patch plan (`PATCH.md`) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 compiles and links inside Bruce `1.17` (`m5stack-sticks3`, cloud build with dependency sources fetched from GitHub); **never flashed or run** |
+| Bruce module + menu toggle + installer | 🟡 builds in Bruce; installer host-tested; never run on the StickS3 |
+| Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |
 
 ## Phase 2 — capture & research capabilities

@@ -48,6 +48,8 @@ public:
     /* Inbound chunk queue (NimBLE task -> loop). */
     static const size_t kEventQueueDepth = 16;
     static const size_t kMaxChunk = BL_BLE_CHUNK_MAX; /* largest Flipper update */
+    /* Upper bound on one blocking connection attempt. */
+    static const uint32_t kConnectTimeoutMs = 5000;
 
     NimBleCentralTransport();
     // Initialise NimBLE and the bridge; psk is the provisioned pairing key.
