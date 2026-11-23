@@ -27,10 +27,15 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
   it took. Pressing Connect while linked now shows the status instead of
   restarting the link.
 
-- The StickS3's Wi-Fi scan is bounded (120 ms per channel, 7 s overall) and
-  logs every step with memory figures on the serial port; Device Info shows
-  the largest DMA block. (The scan still hangs on hardware; these are for
-  finding out where.)
+- **Wi-Fi start guard on the StickS3.** Hardware showed Wi-Fi running out of
+  internal RAM next to BLE and taking the bridge down with it. Wi-Fi is now
+  started only when at least 80 kB internal RAM and a 16 kB block are free;
+  otherwise the request is refused with the figures and the link survives.
+  Wi-Fi scan over BLE therefore does not work yet on the StickS3 (M5.5).
+- The StickS3's Wi-Fi scan is bounded (120 ms per channel, 7 s overall); the
+  module and the scan log memory figures at each step on the serial port;
+  Device Info shows internal heap and the largest DMA block; failed GATT
+  writes are logged.
 
 ### Fixed
 - Wi-Fi scan switched the radio to station mode first, as Bruce's own scan

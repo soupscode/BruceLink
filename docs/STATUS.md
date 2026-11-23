@@ -47,7 +47,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan hangs the bridge task on hardware (open): Wi-Fi does not come up next to the live BLE link**; capture / active op unavailable (placeholder hooks) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan fails on hardware (open): not enough internal RAM for Wi-Fi next to BLE; the request is now refused cleanly instead of killing the bridge (refusal not yet run on hardware)**; capture / active op unavailable (placeholder hooks) |
 | Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |
@@ -62,7 +62,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Generalized command adapter (CMD_REQ) | 🟡 in bridge core |
 | Remote safety gate (connection-level) | ✅ host-tested (incl. frame budget, unicast-only targets) |
 | Resumable PCAP transfer | 📐 |
-| BLE/Wi-Fi coexistence evaluation | 🔴 first data point (2026-11-23): a Wi-Fi scan started while the BLE link is up never returns on the StickS3. Blocks every Wi-Fi feature over BLE until resolved |
+| BLE/Wi-Fi coexistence evaluation | 🔴 2026-11-23: with NimBLE up, `esp_wifi_init` fails with `ESP_ERR_NO_MEM` on the StickS3 (135 kB internal heap at the menu; radios do not use PSRAM in this build). Blocks every Wi-Fi feature over BLE until memory is found |
 
 ## Hardware
 

@@ -93,14 +93,14 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Wi-Fi Scan hangs the StickS3's bridge task** (2026-11-23). Device Info and
-  Capabilities work until a scan is requested; afterwards nothing answers and
-  toggling BruceLink off misbehaves. The Flipper side is fine (counters show
-  no reply data arrived). Starting Wi-Fi next to the live BLE link is the
-  suspect; this is the project's main open technical risk, because every
-  Wi-Fi feature is meant to be driven over that link. Get the StickS3 serial
-  log (`python -m serial.tools.miniterm <port> 115200`): the scan logs each
-  step as `[BruceLink] wifi scan: ...` with heap and DMA-block figures.
+- **Wi-Fi does not fit next to BLE on the StickS3** (2026-11-23, serial log in
+  `docs/TEST_RESULTS.md`): with NimBLE up, `esp_wifi_init` fails with
+  `ESP_ERR_NO_MEM`, and the failed init used to leave the bridge dead until
+  reboot. Wi-Fi is now started only when it should fit (`wifiStartAllowed`),
+  so a scan is refused cleanly with the memory figures. This is the project's
+  main open technical risk (task M5.5): every Wi-Fi feature is meant to be
+  driven over the BLE link. The StickS3 logs memory at each step on USB serial
+  (`python -m serial.tools.miniterm <port> 115200`, lines `[BruceLink] ...`).
 - **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
   eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
   time is unmeasured. If Connect over BLE

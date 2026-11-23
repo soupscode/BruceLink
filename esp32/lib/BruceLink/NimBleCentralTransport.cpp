@@ -4,6 +4,8 @@
  */
 #include "NimBleCentralTransport.h"
 
+#include <esp32-hal-log.h> // log_e
+
 #include <functional>
 #include <string.h>
 
@@ -105,7 +107,12 @@ void NimBleCentralTransport::onNotify(
 void NimBleCentralTransport::txTrampoline(void* ctx, const uint8_t* chunk, size_t len) {
     NimBleCentralTransport* self = static_cast<NimBleCentralTransport*>(ctx);
     if(self->rx_ && self->connected_) {
-        self->rx_->writeValue(chunk, len, false); // write without response
+        // Write without response. A failure here (the BLE stack out of
+        // memory, for one) means the Flipper never sees this frame and its
+        // request times out; make that visible on the serial log.
+        if(!self->rx_->writeValue(chunk, len, false)) {
+            log_e("BruceLink: GATT write of %u bytes failed", (unsigned)len);
+        }
     }
 }
 

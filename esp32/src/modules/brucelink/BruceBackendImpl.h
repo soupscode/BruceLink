@@ -29,4 +29,8 @@ public:
     void randomBytes(uint8_t* out, size_t len) override;
 };
 
+/* One USB-serial log line with the memory figures that decide whether a
+ * radio can start. For finding where a remote operation stops. */
+void logStep(const char* what);
+
 } // namespace brucelink

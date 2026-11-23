@@ -43,7 +43,9 @@ static volatile bool g_linked = false;
 static void bridgeTask(void*) {
     while(g_run) {
         g_transport.loop();
-        g_linked = g_transport.connected();
+        const bool linked = g_transport.connected();
+        if(linked != g_linked) logStep(linked ? "module: Flipper linked" : "module: link down");
+        g_linked = linked;
         vTaskDelay(kLoopPeriod);
     }
     // Shut down on the task that owns the bridge: the link loss reaches the
@@ -66,8 +68,10 @@ ModuleStartResult moduleStart() {
     // PUBLIC DEMO KEY until key provisioning exists (TASKS M5.3). A bridge
     // holding it serves passive requests only: the bridge core refuses every
     // active op (see BruceLinkBridge::begin).
+    logStep("module: starting BLE");
     g_transport.begin(&g_bridge, BRUCELINK_DEMO_PSK, &g_backend);
     g_transport.startScan(0);
+    logStep("module: BLE up, scanning for the Flipper");
 
     g_run = true;
     if(xTaskCreate(bridgeTask, "brucelink", kTaskStackBytes, nullptr, kTaskPriority, &g_task) !=

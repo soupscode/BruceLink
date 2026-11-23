@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <core/radio_mem.h> // Bruce: radioHasMemForWifi
 #include <globals.h> // Bruce: wifiConnected, wifiIP, sdcardMounted, ...
@@ -40,8 +41,8 @@ size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
     bl_tb_str(&tb, "\nBatt ");
     bl_tb_int(&tb, getBattery());
     bl_tb_str(&tb, isCharging() ? "% (chg)" : "%");
-    bl_tb_str(&tb, "\nHeap ");
-    bl_tb_uint(&tb, (unsigned long)ESP.getFreeHeap());
+    bl_tb_str(&tb, "\nHeap "); // internal RAM: what the radios compete for
+    bl_tb_uint(&tb, (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     bl_tb_str(&tb, "  PSRAM ");
     bl_tb_uint(&tb, (unsigned long)ESP.getFreePsram());
     bl_tb_str(&tb, "\nDMA blk "); // what gates starting a radio (radio_mem.h)
@@ -55,11 +56,12 @@ size_t BruceBackendImpl::deviceInfo(char* out, size_t cap) {
 /* One line on the USB serial log per step, with the memory figures that
  * decide whether a radio can start (see Bruce's core/radio_mem.h). Used to
  * find where a remote operation stops when it does not come back. */
-static void logStep(const char* what) {
+void logStep(const char* what) {
     Serial.printf(
-        "[BruceLink] %s | heap %lu dma-blk %lu psram %lu | %lu ms\n", what,
-        (unsigned long)ESP.getFreeHeap(), (unsigned long)radioLargestDmaBlock(),
-        (unsigned long)ESP.getFreePsram(), (unsigned long)millis());
+        "[BruceLink] %s | internal %lu dma-blk %lu psram %lu stack-left %lu | %lu ms\n", what,
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned long)radioLargestDmaBlock(), (unsigned long)ESP.getFreePsram(),
+        (unsigned long)uxTaskGetStackHighWaterMark(nullptr), (unsigned long)millis());
     Serial.flush();
 }
 
@@ -71,11 +73,16 @@ size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
     logStep("wifi scan: begin");
-    // Wi-Fi is being started next to a live BLE link. Say why if it cannot
-    // be, instead of reporting an empty neighbourhood.
-    if(!radioHasMemForWifi()) {
-        bl_tb_str(&tb, "scan failed:\nnot enough memory for\nWi-Fi while BLE is on");
-        logStep("wifi scan: not enough memory");
+    // Wi-Fi is being started next to the live BLE link that carries this
+    // request. If it will not fit, do not touch the driver at all: a failed
+    // esp_wifi_init cannot be undone and takes the BLE link down with it
+    // (seen on hardware; see wifiStartAllowed).
+    const bool wifi_up = WiFi.getMode() != WIFI_MODE_NULL;
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t dma_block = radioLargestDmaBlock();
+    if(!wifiStartAllowed(wifi_up, free_internal, dma_block)) {
+        formatWifiNoMemory(&tb, free_internal, dma_block);
+        logStep("wifi scan: refused, Wi-Fi would not fit next to BLE");
         return tb.len;
     }
     const uint32_t t0 = millis();

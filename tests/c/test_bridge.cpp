@@ -878,6 +878,44 @@ static void t_real_key_reports_not_demo() {
     CHECK(contains(h.status(), "active:1"));
 }
 
+/* Hardware finding, 2026-11-23: starting Wi-Fi next to the live BLE link ran
+ * out of internal RAM inside esp_wifi_init and killed the bridge. Wi-Fi is
+ * now only started when it should fit; otherwise the Flipper is told why. */
+static void t_wifi_start_guard() {
+    using namespace brucelink;
+    const size_t F = kWifiStartMinFreeInternal, B = kWifiStartMinDmaBlock;
+    CHECK(wifiStartAllowed(false, F, B)); /* exactly enough */
+    CHECK(wifiStartAllowed(false, 200u * 1024u, 60u * 1024u));
+    CHECK(!wifiStartAllowed(false, F - 1, B)); /* total too small */
+    CHECK(!wifiStartAllowed(false, F, B - 1)); /* too fragmented */
+    CHECK(!wifiStartAllowed(false, 0, 0));
+    /* plenty in total but no usable block, and the reverse */
+    CHECK(!wifiStartAllowed(false, 300u * 1024u, 4u * 1024u));
+    CHECK(!wifiStartAllowed(false, 20u * 1024u, 20u * 1024u));
+    /* Wi-Fi that Bruce already brought up needs nothing more */
+    CHECK(wifiStartAllowed(true, 0, 0));
+    /* the thresholds must stay above what is known to fail: Bruce's own
+     * 15 kB block check passed on the device and Wi-Fi still did not fit */
+    CHECK(B > 15u * 1024u);
+    CHECK(F >= 64u * 1024u);
+
+    char buf[160];
+    bl_textbuf_t tb;
+    bl_tb_init(&tb, buf, sizeof(buf));
+    CHECK(formatWifiNoMemory(&tb, 52u * 1024u + 900u, 20u * 1024u));
+    std::string s(buf, tb.len);
+    CHECK(s == "Wi-Fi can't start with BLE on\nfree 52k need 80k\nblock 20k need 16k");
+    /* fits a Flipper text screen line width (21 chars) per line */
+    CHECK(s.find("free 52k need 80k") != std::string::npos);
+    /* atomic: a buffer that cannot hold it gets nothing */
+    char tiny[24];
+    bl_tb_init(&tb, tiny, sizeof(tiny));
+    bl_tb_str(&tb, "x");
+    CHECK(!formatWifiNoMemory(&tb, 1, 1));
+    CHECK(std::string(tiny, tb.len) == "x");
+    CHECK(!formatWifiNoMemory(nullptr, 1, 1));
+}
+
 int main() {
     printf("BruceLink bridge tests (host)\n[bridge]\n");
     RUN(t_pr1_reconnect_preserves_psk);
@@ -911,6 +949,7 @@ int main() {
     RUN(t_e2e_link_loss_mid_request);
     RUN(t_demo_key_never_enables_active_ops);
     RUN(t_real_key_reports_not_demo);
+    RUN(t_wifi_start_guard);
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

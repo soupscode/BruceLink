@@ -352,13 +352,42 @@ Second run, both devices on `72d9efc` (owner-reported):
 | Device Info afterwards also times out | The bridge task is stuck inside the Wi-Fi scan call |
 | Toggling BruceLink off then "crashes the stick" | The stop path waits for a task that cannot finish; what "crash" is exactly (freeze, reboot) is not yet known |
 
-Conclusion so far: on the StickS3, starting Wi-Fi from the bridge task while
-the BLE link is up does not return. Bruce's own code never runs both radios at
+StickS3 serial log of the same sequence (owner, firmware `72d9efc`):
+
+```
+[RAMLOG] stage=first-mainMenu | internal free= 135083 largest= 61428 dma= 61428 | psram free= 8384524
+INFO: BruceLink ON > looking for Flipper (DEMO KEY, not secure)
+E wifi:Expected to init 4 rx buffer, actual is 2
+E wifi_init: Failed to deinit Wi-Fi driver (0x3001)
+E wifi_init: Failed to deinit Wi-Fi (0x3001)
+[E] wifiLowLevelInit(): esp_wifi_init 0x101: ESP_ERR_NO_MEM
+E wifi:Expected to init 4 rx buffer, actual is 0
+[E] wifiLowLevelInit(): esp_wifi_init 0x101: ESP_ERR_NO_MEM
+[BruceLink] wifi scan: result -2 in 55 ms
+```
+
+**Root cause: not enough internal RAM for Wi-Fi next to BLE.** The StickS3 has
+135 kB of internal heap free at the menu (PSRAM does not help: this build's
+radio stacks allocate from internal RAM). With NimBLE up, `esp_wifi_init` runs
+out part-way, cannot be torn down again, and leaves so little internal RAM
+that the BLE stack can no longer send: the "scan failed" reply was produced
+(55 ms) but never left the device, and nothing worked afterwards. The bridge
+task was not blocked in the scan, as first read; it was starved. Bruce's own
+15 kB block check (`radioHasMemForWifi`) passed, so it is not a sufficient
+guard here.
+
+Earlier reading, kept for the record: on the StickS3, starting Wi-Fi from the
+bridge task while the BLE link is up does not return. Bruce's own code never runs both radios at
 once (`core/radio_mem.h`; BLE features call `wifiDisconnect()` first), so this
 is the Wi-Fi/BLE coexistence risk listed since the capability audit, now seen
-on hardware. Where exactly it stops needs the StickS3 serial log; the next
-build logs every step of the scan with heap and DMA-block figures and bounds
-the scan to 7 s.
+on hardware.
+
+Response in the next build: Wi-Fi is started only if at least 80 kB of
+internal RAM and a 16 kB DMA block are free (`wifiStartAllowed`, host-tested;
+both numbers are estimates). Otherwise the request is refused with the figures
+and the link survives. That makes the failure clean; it does not make Wi-Fi
+fit. How much has to be saved is not known until the device reports its
+figures with BLE up.
 
 Not yet checked: behaviour when either device goes out of range, the rest of
 Bruce while BruceLink is on. Both devices use the public demo key and the
