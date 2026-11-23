@@ -120,10 +120,12 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. **Run the Flipper BLE profile on hardware**: `HARDWARE_TESTING.md` step 3b
-   (Flipper + phone), then step 5 with the StickS3. Fix what breaks.
-2. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
-   sniffer hooks (`PATCH.md`).
+1. Compile `BruceBackendImpl` inside Bruce `1.17` and implement the headless
+   sniffer hooks (`PATCH.md`), so there is a StickS3 build to link with. The
+   Flipper profile has passed the phone-scanner check (`HARDWARE_TESTING.md`
+   step 3b, owner-reported; see `docs/TEST_RESULTS.md` for what was and was
+   not confirmed).
+2. `HARDWARE_TESTING.md` step 5: the full link with the StickS3.
 3. Key provisioning (M5.3) — required before any active op can be enabled —
    then link confidentiality (M4.6).
 4. Run `HARDWARE_TESTING.md` steps 5–9; update the capability matrix HW column.

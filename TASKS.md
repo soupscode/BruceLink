@@ -19,7 +19,7 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M3.5 | App-side timeouts + handshake recovery | 🟡 | Handshake 5 s → drop link and re-link; request 10 s → slot freed, session stays up; stray handshake frames ignored. Host-tested (`bl_client`, client↔bridge); UI path needs a device run |
 | M3.6 | Serial (UART) transport driver | ⬜ | COBS over `furi_hal_serial` + Arduino `Serial`; HIL ping |
 | M4.1 | FAP UI: menu/info/caps/scan/settings | 🟡 | Builds; runs on Flipper via loopback |
-| M4.2 | **Flipper BLE peripheral profile** | 🟡 **next: run on HW** | Implemented; builds (APPCHK); event parser + client host-tested. Acceptance: advertise → connect → subscribe → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
+| M4.2 | **Flipper BLE peripheral profile** | 🟡 phone-scanner run OK (owner-reported); StickS3 link pending M5.1/M5.2 | Implemented; builds (APPCHK); event parser + client host-tested. Acceptance: advertise → connect → subscribe → handshake on HW; `HELLO` sent on TX subscription (StickS3 10 s auth deadline) |
 | M4.5 | Pin the paired Flipper's BLE address on the StickS3 | ⬜ | After first authenticated session, prefer/only accept that address; unpin from Bruce menu. Closes the address-rotating DoS residual (ADR 0001 §6) |
 | M4.3 | Reconnection / connection recovery | 🟡 | Re-handshake on every new link, old keys wiped (host-tested); verify on HW |
 | M4.6 | Link confidentiality | ⬜ | Session-layer AEAD (keys already derived); payloads unreadable on air; covers BLE + UART. Until then frames are authenticated but **not encrypted** (ADR 0001 amendment) |

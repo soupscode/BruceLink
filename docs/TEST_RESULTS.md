@@ -234,8 +234,17 @@ Transport: BLE, phone running a BLE scanner. Reported by the owner:
 Follow-up: 5 s proved too short to enable notifications by hand in the scanner
 app; the guard timeout was raised to 20 s.
 
-Not yet observed: subscription detected (`BLE linked`), `HELLO` notifications,
-re-advertising after the drop, radio handed back on exit.
+Second attempt, same session, after being given the subscribe steps (connect,
+expand the `a1b20001` service, enable notifications on `a1b20003`, expect
+`BLE linked` / `authenticating...` and hex data on the phone): the owner
+reported **"it all works"**. Taken as: the central's subscription is detected
+and the Flipper sends `HELLO` as notifications. Which commit was on the device
+is not recorded.
+
+Not individually confirmed: re-advertising after the handshake timeout drop,
+the radio being handed back to the phone app on exit, the `BLE connecting`
+status fix, repeated Connect/Back cycles. Not tested at all: anything with the
+StickS3 (no Bruce-side build exists yet).
 
 ## Not yet tested (requires the local hardware session)
 

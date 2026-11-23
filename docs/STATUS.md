@@ -29,7 +29,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Ping/pong, device info, status, errors | 🟡 | on loopback + bridge core; not on air |
 | Timeouts / cancellation (ESTOP) | 🟡 | ESTOP + link-loss path in bridge; app-side handshake/request timeouts host-tested (`bl_client`), UI path not yet run on a device |
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
-| BLE transport (Flipper peripheral profile) | 🟡 | implemented; builds against mntm-012 (APPCHK); event parser, client and client↔bridge host-tested; **never run on a radio** |
+| BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; first radio run 2026-11-23 against a phone scanner (owner-reported: advertises, connects, subscription and `HELLO` notifications work). **Not yet run against the StickS3** |
 | Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
 | Pairing key | ⬜ | both builds use the public demo key until M5.3 |
 
@@ -66,4 +66,5 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 ## Hardware
 
 Only the Flipper app over its loopback (mock) transport has run on a device
-(2026-11-23, the build before the BLE transport and the client rewrite). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.
+(2026-11-23, the build before the BLE transport and the client rewrite), and
+the BLE profile against a phone BLE scanner (same day, owner-reported). Everything involving a radio or the StickS3 is still pending. See `LOCAL_HANDOFF.md`.
