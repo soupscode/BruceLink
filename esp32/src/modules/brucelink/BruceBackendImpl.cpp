@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_random.h>
+#include <core/radio_mem.h> // Bruce: radioHasMemForWifi
 #include <globals.h> // Bruce: wifiConnected, wifiIP, sdcardMounted, ...
 
 extern int getBattery(); // boards/m5stack-sticks3/interface.cpp:114
@@ -48,11 +49,32 @@ size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
     // Lines are appended whole or not at all; SSIDs are sanitized.
     bl_textbuf_t tb;
     bl_tb_init(&tb, out, cap);
+    // Wi-Fi is being started next to a live BLE link. Say why if it cannot
+    // be, instead of reporting an empty neighbourhood.
+    if(!radioHasMemForWifi()) {
+        bl_tb_str(&tb, "scan failed:\nnot enough memory for\nWi-Fi while BLE is on");
+        Serial.println("[BruceLink] wifi scan: not enough memory");
+        return tb.len;
+    }
+    const uint32_t t0 = millis();
     WiFi.mode(WIFI_MODE_STA); // as native_wifiScan does: the radio may be off
     int found = WiFi.scanNetworks(false, true);
-    if(found < 0) found = 0;
+    const uint32_t took = millis() - t0;
+    Serial.printf("[BruceLink] wifi scan: result %d in %lu ms\n", found, (unsigned long)took);
+    if(found < 0) {
+        // WIFI_SCAN_RUNNING (-1) / WIFI_SCAN_FAILED (-2)
+        bl_tb_str(&tb, "scan failed (code ");
+        bl_tb_int(&tb, found);
+        bl_tb_str(&tb, ")\nafter ");
+        bl_tb_uint(&tb, took);
+        bl_tb_str(&tb, " ms");
+        WiFi.scanDelete();
+        return tb.len;
+    }
     bl_tb_int(&tb, found);
-    bl_tb_str(&tb, " networks\n");
+    bl_tb_str(&tb, " networks, ");
+    bl_tb_uint(&tb, took);
+    bl_tb_str(&tb, " ms\n");
     for(int i = 0; i < found; i++) {
         if(!formatWifiApLine(&tb, WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i))) break;
     }

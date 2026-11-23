@@ -17,6 +17,16 @@ Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.
   and status work without them.
 - `NimBleCentralTransport::end()` and a 5 s bound on connection attempts.
 
+- The Flipper joins RX writes that the BLE controller reports in more than one
+  event (`bl_rx_asm_push`). Previously any event with a non-zero Offset field
+  was dropped, which would lose a full-size chunk if the controller splits it.
+  Not yet confirmed as the cause of the Wi-Fi scan defect.
+- Troubleshooting aids after the first hardware run: link counters on the
+  Flipper's Connection screen and in the request-timeout message (chunks,
+  frames, drops, MTU); the StickS3 reports why a Wi-Fi scan failed and how long
+  it took. Pressing Connect while linked now shows the status instead of
+  restarting the link.
+
 ### Fixed
 - Wi-Fi scan switched the radio to station mode first, as Bruce's own scan
   does (it failed with the radio off).

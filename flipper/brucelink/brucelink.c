@@ -65,9 +65,13 @@ static void bl_refresh_connection(BruceLinkApp* app) {
         return;
     }
     app->shown_status = app->transport->api->status(app->transport);
+    char* diag = app->shown_diag;
+    diag[0] = 0;
+    if(app->transport->api->diag)
+        app->transport->api->diag(app->transport, diag, sizeof(app->shown_diag));
     snprintf(
-        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure",
-        app->shown_status, bl_client_state_text(app));
+        app->text, sizeof(app->text), "%s\n%s\n\nDEMO KEY, no encryption:\nnot secure%s%s",
+        app->shown_status, bl_client_state_text(app), diag[0] ? "\n\n" : "", diag);
     bl_show_text(app, "Connection", app->text);
 }
 
@@ -233,9 +237,14 @@ static void bl_tick(void* ctx) {
         bl_refresh_connection(app);
         break;
     case BL_CL_EVT_REQUEST_TIMEOUT:
-        if(app->screen == BlScreenRequest)
-            bl_show_text(
-                app, app->req_title ? app->req_title : "BruceLink", "no reply (timed out)");
+        if(app->screen == BlScreenRequest) {
+            /* Say what the link saw, so a lost reply can be told apart
+             * from a StickS3 that never answered. */
+            char diag[96] = "";
+            if(t->api->diag) t->api->diag(t, diag, sizeof(diag));
+            snprintf(app->text, sizeof(app->text), "no reply (timed out)\n%s", diag);
+            bl_show_text(app, app->req_title ? app->req_title : "BruceLink", app->text);
+        }
         break;
     default: break;
     }
@@ -243,8 +252,14 @@ static void bl_tick(void* ctx) {
     /* The transport's own state (advertising / connecting / linked) changes
      * without the link id changing, e.g. when a central connects but has
      * not subscribed yet. Statuses are string literals: compare pointers. */
-    if(app->screen == BlScreenConnection && t->api->status(t) != app->shown_status) {
-        bl_refresh_connection(app);
+    if(app->screen == BlScreenConnection) {
+        bool changed = t->api->status(t) != app->shown_status;
+        if(!changed && t->api->diag) {
+            char diag[sizeof(app->shown_diag)] = "";
+            t->api->diag(t, diag, sizeof(diag));
+            changed = strcmp(diag, app->shown_diag) != 0;
+        }
+        if(changed) bl_refresh_connection(app);
     }
 }
 
@@ -255,8 +270,15 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
     switch(index) {
     case MenuConnect:
         app->screen = BlScreenConnection;
-        bl_show_text(app, "Connection", "starting...");
-        app->connect_pending = true; /* done by the next tick */
+        if(app->transport != NULL && app->link_id != 0) {
+            /* Already linked: show the status (and counters) instead of
+             * tearing a working link down. To restart, change Transport
+             * in Settings or leave the app. */
+            bl_refresh_connection(app);
+        } else {
+            bl_show_text(app, "Connection", "starting...");
+            app->connect_pending = true; /* done by the next tick */
+        }
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     case MenuDeviceInfo:

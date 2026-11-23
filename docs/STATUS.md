@@ -47,7 +47,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info works over the air (owner-reported)**; Wi-Fi scan not yet reported; capture / active op unavailable (placeholder hooks) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan does not return a result on hardware (open, under diagnosis)**; capture / active op unavailable (placeholder hooks) |
 | Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
 | Pairing-key provisioning | 📐 |

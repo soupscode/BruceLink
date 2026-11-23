@@ -44,6 +44,9 @@ typedef struct {
     void (*poll)(BlTransport* t, BlTransportRxCb cb, void* ctx);
     /* One short line for the status screen (e.g. "advertising"). */
     const char* (*status)(BlTransport* t);
+    /* Optional (may be NULL): write a short NUL-terminated line of link
+     * counters for troubleshooting into out[cap]. */
+    void (*diag)(BlTransport* t, char* out, size_t cap);
     void (*free)(BlTransport* t);
 } BlTransportApi;
 

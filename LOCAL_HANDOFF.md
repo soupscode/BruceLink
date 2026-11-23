@@ -93,8 +93,12 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Timeouts are estimates** (handshake 5 s, request 10 s): the Flipper's
-  X25519 time and Bruce's Wi-Fi scan time are unmeasured. If Connect over BLE
+- **Wi-Fi Scan returns nothing on hardware** (2026-11-23). Device Info and
+  Capabilities work. Cause unknown; see `docs/TEST_RESULTS.md` and read the
+  counters on the Flipper's Connection screen after a failed scan.
+- **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
+  eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
+  time is unmeasured. If Connect over BLE
   loops between `authenticating...` and `BLE advertising`, measure first.
 - **No link encryption and a public key.** GATT is open and unpaired; frames
   are authenticated but readable on air (M4.6). Both builds use the demo key

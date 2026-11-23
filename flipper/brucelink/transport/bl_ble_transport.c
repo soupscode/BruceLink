@@ -45,6 +45,7 @@
 #include <furi_ble/profile_interface.h>
 #include <furi_hal_bt.h>
 #include <furi_hal_version.h>
+#include <stdio.h>
 #include <storage/storage.h>
 #include <string.h>
 
@@ -54,6 +55,7 @@
 /* A full 540-byte frame is 30 chunks at the default MTU, and the queue is
  * only drained once per app tick. */
 #define BLE_RX_QUEUE_DEPTH 32
+_Static_assert(BL_GATT_RX_CHUNK_MAX == BL_BLE_CHUNK_MAX, "assembler and transport chunk size differ");
 /* A central that connects but never enables notifications is dropped
  * after this long, so it cannot keep the StickS3 out. */
 #define BLE_SUBSCRIBE_TIMEOUT_MS 20000u /* the StickS3 subscribes within a second; 20 s
@@ -100,11 +102,21 @@ struct Ble {
     /* BLE event thread -> app thread */
     FuriMessageQueue* rxq;
     BleChunk scratch; /* event thread only; keeps 246 bytes off its stack */
+    bl_rx_asm_t rx_asm; /* event thread only: joins writes split across events */
     volatile bool connected; /* a central is connected (maybe not subscribed) */
     volatile bool subscribed;
     volatile uint32_t link_seq; /* bumped on every new subscription */
     volatile uint16_t mtu; /* negotiated ATT MTU; 0 = not yet known */
-    volatile uint32_t rx_dropped;
+    /* troubleshooting counters since start(); shown on the Connection screen */
+    volatile uint32_t rx_chunks; /* chunks queued for reassembly */
+    volatile uint32_t rx_dropped; /* queue full or oversize: chunk lost */
+    volatile uint32_t rx_frag; /* events that were a piece of a longer write */
+    volatile uint32_t rx_odd; /* pieces that did not fit together: write lost */
+    volatile uint16_t rx_odd_offset; /* raw offset field of the last one */
+    volatile uint16_t rx_odd_len;
+    uint32_t rx_frames; /* app thread: complete frames delivered */
+    uint32_t rx_bad; /* app thread: reassembly rejected a chunk */
+    uint32_t tx_fail; /* app thread: notify refused by the stack */
 
     /* app thread only */
     bl_reasm_t reasm;
@@ -166,16 +178,34 @@ static BleEventAckStatus ble_evt(void* event, void* context) {
         pckt, 3u + (size_t)pckt[2], ble->rx_char.handle, ble->tx_char.handle, &e);
 
     switch(e.kind) {
-    case BL_GATT_EVT_RX_DATA:
-        if(e.len > 0 && e.len <= BL_BLE_CHUNK_MAX) {
-            ble->scratch.len = e.len;
-            memcpy(ble->scratch.data, e.data, e.len);
-            if(furi_message_queue_put(ble->rxq, &ble->scratch, 0) != FuriStatusOk) {
-                ble->rx_dropped++; /* reassembly will fail; peer re-requests */
+    case BL_GATT_EVT_RX_DATA: {
+        const uint8_t* chunk = NULL;
+        uint16_t clen = 0;
+        if(e.offset != 0) ble->rx_frag++; /* reported in more than one event */
+        switch(bl_rx_asm_push(&ble->rx_asm, e.offset, e.data, e.len, &chunk, &clen)) {
+        case BL_RX_ASM_CHUNK:
+            if(clen > 0 && clen <= BL_BLE_CHUNK_MAX) {
+                ble->scratch.len = clen;
+                memcpy(ble->scratch.data, chunk, clen);
+                if(furi_message_queue_put(ble->rxq, &ble->scratch, 0) == FuriStatusOk) {
+                    ble->rx_chunks++;
+                } else {
+                    ble->rx_dropped++; /* reassembly will fail; the request times out */
+                }
             }
+            break;
+        case BL_RX_ASM_REJECT:
+            ble->rx_odd++;
+            ble->rx_odd_offset = e.offset;
+            ble->rx_odd_len = e.len;
+            break;
+        default: /* BL_RX_ASM_PENDING: waiting for the rest of the write */
+            break;
         }
         break;
+    }
     case BL_GATT_EVT_SUBSCRIBED:
+        bl_rx_asm_init(&ble->rx_asm);
         ble->link_seq++;
         ble->subscribed = true;
         break;
@@ -331,6 +361,9 @@ static bool ble_start(BlTransport* t) {
     ble->seen_link = 0;
     bl_sub_guard_init(&ble->sub_guard);
     ble_flush_rx(ble);
+    ble->link_seq = 0;
+    ble->rx_chunks = ble->rx_dropped = ble->rx_frag = ble->rx_odd = 0;
+    ble->rx_frames = ble->rx_bad = ble->tx_fail = 0;
 
     /* Same sequence as the stock HID app: drop the phone link, use our own
      * key file so the phone bond is untouched, then switch profiles. */
@@ -417,6 +450,7 @@ static int ble_send(BlTransport* t, const uint8_t* frame, size_t len) {
         /* NB: this firmware call returns TRUE ON FAILURE. It already
          * retries internally while the stack's TX pool is full. */
         if(ble_gatt_characteristic_update(ble->svc_handle, &ble->tx_char, &ref)) {
+            ble->tx_fail++;
             return BL_E_NO_RESOURCE;
         }
     }
@@ -454,7 +488,11 @@ static void ble_poll(BlTransport* t, BlTransportRxCb cb, void* ctx) {
     while(furi_message_queue_get(ble->rxq, &c, 0) == FuriStatusOk) {
         const uint8_t* frame = NULL;
         size_t flen = 0;
-        if(bl_reasm_push(&ble->reasm, c.data, c.len, &frame, &flen) == BL_OK && frame != NULL) {
+        int rc = bl_reasm_push(&ble->reasm, c.data, c.len, &frame, &flen);
+        if(rc < 0) {
+            ble->rx_bad++;
+        } else if(frame != NULL) {
+            ble->rx_frames++;
             cb(frame, flen, ctx);
         }
     }
@@ -466,6 +504,26 @@ static const char* ble_status(BlTransport* t) {
     if(ble_lost(ble)) return "BLE taken by system\nPress Connect again";
     if(ble->subscribed) return "BLE linked";
     return ble->connected ? "BLE connecting" : "BLE advertising";
+}
+
+/* Link counters. "frag" counts events that were a piece of a longer write;
+ * "odd" counts pieces that could not be joined (then: raw Offset field in
+ * hex / length of the last one). */
+static void ble_diag(BlTransport* t, char* out, size_t cap) {
+    Ble* ble = t->impl;
+    if(cap == 0) return;
+    out[0] = 0;
+    if(!ble->started) return;
+    int n = snprintf(
+        out, cap, "link %lu mtu %u rx %lu/%lu\ndrop %lu bad %lu txf %lu",
+        (unsigned long)ble->link_seq, (unsigned)ble->mtu, (unsigned long)ble->rx_chunks,
+        (unsigned long)ble->rx_frames,
+        (unsigned long)ble->rx_dropped, (unsigned long)ble->rx_bad, (unsigned long)ble->tx_fail);
+    if((ble->rx_frag != 0 || ble->rx_odd != 0) && n > 0 && (size_t)n < cap) {
+        snprintf(
+            out + n, cap - (size_t)n, "\nfrag %lu odd %lu %04X/%u", (unsigned long)ble->rx_frag,
+            (unsigned long)ble->rx_odd, (unsigned)ble->rx_odd_offset, (unsigned)ble->rx_odd_len);
+    }
 }
 
 static void ble_free(BlTransport* t) {
@@ -487,6 +545,7 @@ static const BlTransportApi BLE_API = {
     .send = ble_send,
     .poll = ble_poll,
     .status = ble_status,
+    .diag = ble_diag,
     .free = ble_free,
 };
 

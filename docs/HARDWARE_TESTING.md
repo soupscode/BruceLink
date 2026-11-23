@@ -95,6 +95,15 @@ link, not its security; the bridge refuses active ops in that state.
 - Flipper-side recovery: power the StickS3 off mid-handshake or mid-request.
   Expect `no reply (timed out)` after 10 s for a request, `link lost` when the
   link drops, and a fresh handshake when the StickS3 returns.
+- **Counters.** The Flipper's Connection screen (press Connect while linked;
+  it no longer restarts the link) and the `no reply (timed out)` message show
+  `link N mtu M rx chunks/frames`, `drop`, `bad`, `txf`, and, if any occurred,
+  `frag` (writes that arrived in pieces) and `odd` (pieces that could not be
+  joined, with the raw Offset field and length of the last one). Note them
+  when something fails. `mtu 0` means the MTU event never reached the Flipper
+  (it then sends 20-byte chunks).
+- The StickS3's Wi-Fi scan reply now carries its duration, or the reason it
+  failed; the same line goes to the USB serial log.
 - **Measure** (the timeouts are estimates): time from `BLE linked` to
   `connected` (two X25519 operations on the Flipper; budget 5 s), and how long
   Bruce takes to answer a Wi-Fi scan (budget 10 s).

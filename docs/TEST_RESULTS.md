@@ -317,10 +317,33 @@ connected, device info looks right."**
 | Flipper shows `connected` | StickS3 central finds the advertisement, connects, subscribes; chunks flow both ways; the authenticated handshake completes over BLE with both devices running the shared core |
 | Device Info looks right | An authenticated request/response round trip through the bridge and `BruceBackendImpl` |
 
-Not reported / not yet checked: Capabilities and Wi-Fi Scan over the air, how
-long `authenticating...` lasted, the Flipper app commit, toggling BruceLink
-off/on on the StickS3, behaviour when either device goes out of range, the rest
-of Bruce while BruceLink is on. Both devices use the public demo key and the
+Follow-up from the owner, same session:
+
+| Check | Reported |
+|---|---|
+| Capabilities | list shows |
+| Handshake (`authenticating...` → `connected`) | about 3 s (limit 5 s) |
+| Toggle BruceLink off/on on the StickS3 | works (Flipper recovers) |
+| **Wi-Fi Scan** | **"does not do anything"** — open defect, cause not yet known |
+
+Wi-Fi Scan is the first request whose reply can span more than one BLE chunk
+and the first that starts Wi-Fi next to a live BLE link; neither had run on
+hardware. The first report did not say what the Flipper displayed, and nothing
+on either device could distinguish a lost reply from a failed or slow scan.
+Diagnostics added for the next run: link counters on the Flipper (Connection
+screen and the timeout message), and on the StickS3 an explicit failure reason
+plus the scan duration in the reply and on the serial log.
+
+One candidate cause was fixed on suspicion, not on evidence: the Flipper
+dropped every RX event whose Offset field was non-zero, and ST documents that
+field as the mechanism by which the controller splits one write across events.
+A reply longer than one chunk starts with a full 244-byte chunk, the largest
+write the link carries and one byte more than the stock serial profile ever
+uses (243). The transport now joins such pieces; the `frag` counter will show
+whether it ever happens.
+
+Not yet checked: behaviour when either device goes out of range, the rest of
+Bruce while BruceLink is on, the Flipper app commit used. Both devices use the public demo key and the
 link is unencrypted, so this demonstrates the link, not its security.
 
 ## Not yet tested (requires the local hardware session)
