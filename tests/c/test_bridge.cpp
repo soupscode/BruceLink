@@ -926,6 +926,213 @@ static void t_wifi_start_guard() {
     CHECK(!formatWifiNoMemory(nullptr, 1, 1));
 }
 
+/* ----------------------------------------------- pairing mode (ADR 0005) */
+
+/* The Flipper side of a pairing attempt against the bridge in pairing mode. */
+struct PairLink {
+    Harness h;
+    bl_pair_t fl;
+    uint32_t frng = 0xF1F1;
+
+    explicit PairLink(bool provisioned = false) {
+        if(provisioned) {
+            h.begin();
+        } else {
+            h.bridge.begin(nullptr, &h.be, &Harness::tx, &h, h.mtu);
+        }
+        h.bridge.beginPairing("StickS3");
+    }
+    /* Link up: the bridge starts an attempt, the Flipper sends COMMIT. */
+    void linkUp() {
+        h.bridge.onConnect();
+        bl_pair_init(&fl, BL_PAIR_INITIATOR, "Flipper", central_rng, &frng, h.be.now);
+        uint8_t b[BL_MAX_MSG];
+        int n = bl_pair_start(&fl, b, sizeof(b));
+        h.toBridge(b, (size_t)n);
+        pump();
+    }
+    /* Deliver the bridge's frames to the Flipper and its replies back. */
+    void pump() {
+        for(int guard = 0; guard < 6; guard++) {
+            auto frames = h.drain();
+            if(frames.empty()) return;
+            for(auto& fr : frames) {
+                uint8_t o[BL_MAX_MSG];
+                size_t ol = 0;
+                (void)bl_pair_rx(&fl, fr.data(), fr.size(), o, sizeof(o), &ol);
+                if(ol) h.toBridge(o, ol);
+            }
+        }
+    }
+    void flipperAnswers(bool accept) {
+        uint8_t o[BL_MAX_MSG];
+        size_t ol = 0;
+        CHECK_EQ_INT(bl_pair_accept(&fl, accept, o, sizeof(o), &ol), BL_OK);
+        h.toBridge(o, ol);
+        pump();
+    }
+    void stickAnswers(bool accept) {
+        h.bridge.pairAnswer(accept);
+        pump();
+    }
+};
+
+static void t_pair_bridge_happy_path() {
+    PairLink l; /* unprovisioned StickS3: first pairing */
+    CHECK(l.h.bridge.pairing());
+    l.linkUp();
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_COMPARE);
+    uint32_t cs = 0, cf = 1;
+    CHECK(l.h.bridge.pairCode(&cs));
+    CHECK(bl_pair_code(&l.fl, &cf));
+    CHECK_EQ_INT(cs, cf);
+    CHECK(strcmp(l.h.bridge.pairPeerName(), "Flipper") == 0);
+    CHECK(strcmp(bl_pair_peer_name(&l.fl), "StickS3") == 0);
+    CHECK(!l.h.bridge.needsDisconnect()); /* the users are comparing */
+
+    l.flipperAnswers(true);
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_COMPARE); /* StickS3 user still deciding */
+    l.stickAnswers(true);
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_DONE);
+    CHECK_EQ_INT(bl_pair_state(&l.fl), BL_PS_DONE);
+
+    uint8_t k_st[BL_KEY_LEN], id_st[2], k_fl[BL_KEY_LEN], id_fl[2];
+    CHECK(l.h.bridge.pairTakeResult(k_st, id_st));
+    CHECK(!l.h.bridge.pairTakeResult(k_st, id_st)); /* only once */
+    CHECK_EQ_INT(bl_pair_result(&l.fl, k_fl, id_fl), BL_OK);
+    CHECK(memcmp(k_st, k_fl, BL_KEY_LEN) == 0);
+    CHECK(memcmp(id_st, id_fl, 2) == 0);
+    /* the attempt is over: the link goes, without a cooldown */
+    CHECK(l.h.bridge.needsDisconnect());
+    CHECK(!l.h.bridge.penalizeOnDrop());
+
+    /* Leave pairing mode with the new key: the next link is a normal,
+     * authenticated session with it. */
+    l.h.bridge.endPairing();
+    l.h.bridge.setKey(k_st);
+    CHECK(l.h.bridge.needsDisconnect()); /* the pairing link still has to go */
+    CHECK(!l.h.bridge.penalizeOnDrop());
+    l.h.bridge.onDisconnect();
+    memcpy(l.h.psk, k_fl, BL_KEY_LEN);
+    CHECK(l.h.connect());
+    auto r = l.h.request(BL_MSG_DEVICE_INFO_REQ);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_DEVICE_INFO);
+    /* and a paired key is not the demo key: active ops can be enabled */
+    CHECK(contains(l.h.status(), "demo:0"));
+}
+
+static void t_pair_bridge_rejections() {
+    /* the StickS3 user says no */
+    PairLink a;
+    a.linkUp();
+    a.stickAnswers(false);
+    CHECK_EQ_INT(a.h.bridge.pairState(), BL_PS_FAILED);
+    CHECK_EQ_INT(a.h.bridge.pairFail(), BL_PF_REJECTED);
+    CHECK_EQ_INT(bl_pair_state(&a.fl), BL_PS_FAILED);
+    CHECK_EQ_INT(a.fl.fail, BL_PF_PEER_REJECTED);
+    uint8_t k[BL_KEY_LEN], id[2];
+    CHECK(!a.h.bridge.pairTakeResult(k, id));
+    CHECK(a.h.bridge.needsDisconnect());
+    CHECK(!a.h.bridge.penalizeOnDrop()); /* may try again straight away */
+
+    /* the Flipper user says no */
+    PairLink b;
+    b.linkUp();
+    b.flipperAnswers(false);
+    CHECK_EQ_INT(b.h.bridge.pairState(), BL_PS_FAILED);
+    CHECK_EQ_INT(b.h.bridge.pairFail(), BL_PF_PEER_REJECTED);
+    CHECK_EQ_INT(b.h.bridge.pairPeerReason(), BL_PAIR_ABORT_REJECTED);
+
+    /* answering when there is nothing to answer does nothing */
+    PairLink c;
+    c.h.bridge.pairAnswer(true); /* no link */
+    CHECK(c.h.chunks.empty());
+    c.linkUp();
+    c.stickAnswers(true);
+    c.h.bridge.pairAnswer(true); /* already answered */
+    CHECK(c.h.chunks.empty());
+}
+
+/* A Flipper that is not pairing (it starts a session) is dropped, with a
+ * cooldown, so the scan can find the one that is. */
+static void t_pair_bridge_foreign_peer() {
+    PairLink l(true);
+    l.h.bridge.onConnect();
+    bl_session_t c;
+    uint32_t r = 5;
+    bl_session_init(&c, BL_ROLE_CENTRAL, l.h.psk, central_rng, &r);
+    uint8_t b[BL_MAX_MSG];
+    int n = bl_session_start(&c, b, sizeof(b));
+    l.h.toBridge(b, (size_t)n);
+    CHECK(l.h.drain().empty()); /* no session in pairing mode */
+    CHECK(!l.h.bridge.established());
+    CHECK(l.h.bridge.needsDisconnect());
+    CHECK(l.h.bridge.penalizeOnDrop());
+
+    /* a peer that never says anything is dropped too, after the normal
+     * authentication deadline */
+    PairLink q;
+    q.h.bridge.onConnect();
+    CHECK(!q.h.bridge.needsDisconnect());
+    q.h.be.now += brucelink::kAuthTimeoutMs;
+    CHECK(q.h.bridge.needsDisconnect());
+    CHECK(q.h.bridge.penalizeOnDrop());
+}
+
+/* Pairing mode never authenticates a session, even with the right key,
+ * and normal mode never answers pairing. */
+static void t_pair_bridge_modes_are_separate() {
+    PairLink l(true);
+    CHECK(!l.h.connect()); /* the provisioned key does not open a session here */
+    l.h.bridge.endPairing();
+    l.h.bridge.onDisconnect();
+    CHECK(l.h.connect()); /* back in normal mode it does */
+
+    Harness n;
+    n.begin();
+    n.bridge.onConnect();
+    bl_pair_t fl;
+    uint32_t r = 9;
+    bl_pair_init(&fl, BL_PAIR_INITIATOR, "F", central_rng, &r, n.be.now);
+    uint8_t b[BL_MAX_MSG];
+    int len = bl_pair_start(&fl, b, sizeof(b));
+    n.toBridge(b, (size_t)len);
+    CHECK(n.drain().empty()); /* no PAIR_KEY from a bridge that is not pairing */
+    CHECK_EQ_INT(n.bridge.pairState(), BL_PS_IDLE);
+
+    /* an unprovisioned bridge outside pairing mode drops every link */
+    Harness u;
+    u.bridge.begin(nullptr, &u.be, &Harness::tx, &u, u.mtu);
+    u.bridge.onConnect();
+    CHECK(u.bridge.needsDisconnect());
+}
+
+/* Link loss and the time limit end an attempt without a key. */
+static void t_pair_bridge_link_loss_and_timeout() {
+    PairLink l;
+    l.linkUp();
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_COMPARE);
+    l.h.bridge.onDisconnect();
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_FAILED);
+    CHECK_EQ_INT(l.h.bridge.pairFail(), BL_PF_CANCELLED);
+    l.stickAnswers(true); /* too late: nothing is sent */
+    CHECK(l.h.chunks.empty());
+    /* the next link is a fresh attempt */
+    l.linkUp();
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_COMPARE);
+
+    /* nobody answers: the time limit ends it and tells the Flipper */
+    l.h.be.now += BL_PAIR_TIMEOUT_MS;
+    l.h.bridge.tick();
+    CHECK_EQ_INT(l.h.bridge.pairState(), BL_PS_FAILED);
+    CHECK_EQ_INT(l.h.bridge.pairFail(), BL_PF_TIMEOUT);
+    l.pump();
+    CHECK_EQ_INT(bl_pair_state(&l.fl), BL_PS_FAILED);
+    CHECK_EQ_INT(l.fl.peer_reason, BL_PAIR_ABORT_TIMEOUT);
+    CHECK(l.h.bridge.needsDisconnect());
+    CHECK(!l.h.bridge.penalizeOnDrop());
+}
+
 int main() {
     printf("BruceLink bridge tests (host)\n[bridge]\n");
     RUN(t_pr1_reconnect_preserves_psk);
@@ -960,6 +1167,12 @@ int main() {
     RUN(t_demo_key_never_enables_active_ops);
     RUN(t_real_key_reports_not_demo);
     RUN(t_wifi_start_guard);
+    printf("[pairing]\n");
+    RUN(t_pair_bridge_happy_path);
+    RUN(t_pair_bridge_rejections);
+    RUN(t_pair_bridge_foreign_peer);
+    RUN(t_pair_bridge_modes_are_separate);
+    RUN(t_pair_bridge_link_loss_and_timeout);
     printf("\n%d checks, %d failed\n", bl_tests_run, bl_tests_failed);
     return bl_tests_failed == 0 ? 0 : 1;
 }

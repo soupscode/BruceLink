@@ -259,6 +259,71 @@ entries for slash-named Arduino `depends=` lines, and the framework's built-in
 the installer does. A local build with the real registry is the reference;
 this one shows the integration compiles, links and fits.
 
+## Pairing (ADR 0005) — host tests and builds (2026-11-23)
+
+```
+$ make -C tests/c clean test cppcheck
+[pair]      13 tests ok   (happy path + session with the new key, peer confirms
+                           first, rejection either side, man in the middle,
+                           tampering with name / nonce / key changes the code,
+                           commitment enforced, forged confirm, out-of-order and
+                           garbage ignored, malformed COMMITs, low-order key,
+                           timeout across tick wrap + cancel, name sanitising,
+                           wipe and argument checks)
+2137 checks, 0 failed
+[pairing]    5 tests ok   (bridge pairing mode: full pairing then a session with
+                           the key, rejections, foreign / silent peers dropped
+                           with cooldown, modes kept separate, link loss and
+                           time limit)
+266 checks, 0 failed
+cppcheck clean
+$ python3 -m unittest discover -s tests       20 tests OK
+  incl. test_pairing_interop: Python recomputes commitment, transcript, code,
+  key, both confirm tags and key id from the ADR and matches the C vector
+```
+
+Mutation check of `bl_pair.c`: six deliberately broken variants (no commitment
+check, confirm never verified, names or responder nonce left out of the
+transcript, secrets kept after failure, reveal sent before checking the peer's
+key) each fail at least one test.
+
+Bug found by the new bridge tests before shipping: taking the pairing result a
+second time returned the wiped, all-zero buffer as a key.
+
+Builds: Flipper FAP 45,616 bytes, APPCHK pass (enclave and FlipperFormat calls
+are exported at API 87.1); ESP32 compile check OK; Bruce 1.17 + BruceLink for
+`m5stack-sticks3` builds and links (RAM 40.8 %, Flash 56.9 %).
+
+**Not run on hardware.** Not host-testable: the Flipper key file (secure
+enclave), both pairing screens, the StickS3 NVS store.
+
+## BLE-only Flipper app, BruceLink on Bruce's main menu (2026-11-23)
+
+Owner's request: drop the loopback transport, and put BruceLink where it is
+easy to reach on the StickS3 instead of under Config → Advanced.
+
+```
+$ make -C tests/c test cppcheck            2137 + 266 checks, 0 failed; cppcheck clean
+$ python3 -m unittest discover -s tests    22 tests OK
+  test_install_into_bruce: 8 tests (main_menu.h include + member and the
+  main_menu.cpp entry, each inside a LITE_VERSION guard, BruceLink first
+  before Wi-Fi; idempotent; uninstall restores all three files; CRLF kept;
+  upgrade removes the old Config → Advanced entries; a missing anchor in one
+  file writes nothing to any file; a tree without ConfigMenu.cpp installs)
+```
+
+- Flipper FAP v0.3: builds, APPCHK pass, 42,212 bytes (was 45,616). The demo
+  key's bytes no longer occur in the `.fap`.
+- ESP32 compile check: SUCCESS (RAM 10.2 %, Flash 17.2 %).
+- Bruce 1.17 + BruceLink for `m5stack-sticks3`: installer run on the existing
+  tree (old Config → Advanced install), which it upgraded; build SUCCESS
+  (RAM 40.8 %, Flash 56.9 %), no BruceLink warnings; `BruceLinkMenu` is linked
+  into `firmware.elf`; installed sources byte-identical to the repo.
+- The menu icon was checked from a desktop rendering of the same geometry, not
+  on the device.
+
+**Not run on hardware.**
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)
@@ -480,6 +545,28 @@ figures with BLE up.
 Not yet checked: behaviour when either device goes out of range, the rest of
 Bruce while BruceLink is on. Both devices use the public demo key and the
 link is unencrypted, so this demonstrates the link, not its security.
+
+### 2026-11-23 — `b635b03` app-only image does not boot (owner's StickS3)
+
+The owner flashed `Bruce-1.17-BruceLink-b635b03-m5stack-sticks3-app-only.bin`
+(`firmware.bin`) and the StickS3 did not boot. The merged image of the same
+build, flashed afterwards at `0x0`, **boots** (owner-reported), so the build is
+fine and the failure lies in how or onto what the app-only file was written.
+Not known: the offset and tool used, and what the StickS3 held before.
+
+Checked in the cloud: the delivered file is byte-identical to the app inside
+the merged image at `0x10000`; the bootloader and partition table (`factory`
+app at `0x10000`, 0x4E0000 bytes; the app is 0x48DF40) are byte-identical in
+every merged image delivered since the first. So written at `0x10000` over an
+earlier BruceLink merged image, flash would match the merged image except for
+NVS. Code that runs at boot and is new since the last build that ran
+(`ee58380`): the main-menu item's constructor and icon (the first item drawn),
+plus static constructors of the bridge; nothing found that could fail. An
+emulator boot test was not run.
+
+Response: the docs no longer recommend `firmware.bin` alone. To keep NVS,
+flash bootloader, partition table and app at `0x0` / `0x8000` / `0x10000`,
+which needs nothing from what was on the device.
 
 ## Not yet tested (requires the local hardware session)
 

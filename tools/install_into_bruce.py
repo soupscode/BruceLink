@@ -8,8 +8,12 @@ What it does (and nothing else):
        esp32/lib/BruceLink/*          (bridge core + NimBLE central transport)
        shared/brucelink_core/src/*    (shared protocol core)
   2. copies the Bruce glue to       <bruce>/src/modules/brucelink/
-  3. adds one menu entry to         <bruce>/src/core/menu_items/ConfigMenu.cpp
-       Config > Advanced > "Toggle BruceLink", next to "Toggle BLE API"
+  3. adds "BruceLink" to Bruce's main menu, first, before Wi-Fi:
+       <bruce>/src/core/main_menu.h    include + member
+       <bruce>/src/core/main_menu.cpp  entry in the item list
+     Every added line ends with "// BruceLink". Older versions of this script
+     put two entries under Config > Advanced (ConfigMenu.cpp); re-running
+     removes those.
 
 It is idempotent (safe to run again after updating BruceLink) and refuses
 to touch a tree that does not look like the Bruce version it was written
@@ -34,11 +38,29 @@ LIB_SOURCES = [
 MODULE_SOURCE = REPO / "esp32" / "src" / "modules" / "brucelink"
 MODULE_PATTERNS = ("*.h", "*.cpp")
 
-MENU_FILE = Path("src/core/menu_items/ConfigMenu.cpp")
-MENU_INCLUDE_ANCHOR = '#include "core/wifi/wifi_common.h"\n'
-MENU_INCLUDE = '#include "modules/brucelink/BruceLinkModule.h" // BruceLink\n'
-MENU_ENTRY_ANCHOR = '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n'
-MENU_ENTRY = '            {"Toggle BruceLink", [this]() { toggleBruceLink(); }   }, // BruceLink\n'
+MARKER = " // BruceLink"
+GUARD = "#if !defined(LITE_VERSION)" + MARKER + "\n"  # the module is not built in LITE builds
+END = "#endif" + MARKER + "\n"
+
+MAIN_MENU_H = Path("src/core/main_menu.h")
+MAIN_MENU_CPP = Path("src/core/main_menu.cpp")
+CONFIG_MENU = Path("src/core/menu_items/ConfigMenu.cpp")  # older installs only: cleaned
+
+# (file, [(anchor line, "before" | "after", lines to add)]). Each anchor must
+# occur exactly once in the unpatched file.
+PATCHES = [
+    (MAIN_MENU_H, [
+        ('#include "menu_items/WireToolsMenu.h"\n', "after",
+         GUARD + '#include "modules/brucelink/BruceLinkMenu.h"' + MARKER + "\n" + END),
+        ("    WifiMenu wifiMenu;\n", "after",
+         GUARD + "    BruceLinkMenu bruceLinkMenu;" + MARKER + "\n" + END),
+    ]),
+    (MAIN_MENU_CPP, [
+        ("        &wifiMenu,\n", "before",
+         GUARD + "        &bruceLinkMenu," + MARKER + "\n" + END),
+    ]),
+    (CONFIG_MENU, []),
+]
 
 LIBRARY_JSON = """{
   "name": "BruceLink",
@@ -83,27 +105,52 @@ def copy_tree(sources, dest):
     return len(names)
 
 
-def patch_menu(path, uninstall):
+def read_text(path):
     raw = path.read_bytes()
     crlf = b"\r\n" in raw  # keep the checkout's line endings (Windows autocrlf)
-    text = raw.decode("utf-8").replace("\r\n", "\n")
-    # Always start from the unpatched text so re-running never duplicates.
-    clean = text.replace(MENU_INCLUDE, "").replace(MENU_ENTRY, "")
-    if uninstall:
-        new = clean
-    else:
-        for anchor in (MENU_INCLUDE_ANCHOR, MENU_ENTRY_ANCHOR):
-            if clean.count(anchor) != 1:
-                fail(f"{path}: expected exactly one line\n    {anchor.strip()}\n"
-                     f"  (found {clean.count(anchor)}). This Bruce version differs from "
-                     f"{PINNED_BRUCE}; add the menu entry by hand:\n    {MENU_INCLUDE.strip()}\n"
-                     f"    {MENU_ENTRY.strip()}")
-        new = clean.replace(MENU_INCLUDE_ANCHOR, MENU_INCLUDE_ANCHOR + MENU_INCLUDE)
-        new = new.replace(MENU_ENTRY_ANCHOR, MENU_ENTRY_ANCHOR + MENU_ENTRY)
-    if new != text:
-        out = new.replace("\n", "\r\n") if crlf else new
-        path.write_bytes(out.encode("utf-8"))
-    return new != text
+    return raw.decode("utf-8").replace("\r\n", "\n"), crlf
+
+
+def unpatched(text):
+    """The text without any line this script ever added (they all end with
+    MARKER), so re-running never duplicates and old layouts are removed."""
+    return "".join(
+        line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(MARKER)
+    )
+
+
+def plan_patches(bruce, uninstall):
+    """Work out every file's new text first; fail before writing anything if
+    an anchor is missing. Returns [(path, old_text, new_text, crlf)]."""
+    plan = []
+    for rel, edits in PATCHES:
+        path = bruce / rel
+        if not path.is_file():
+            if edits:
+                fail(f"{path} is missing; this does not look like Bruce {PINNED_BRUCE}")
+            continue
+        text, crlf = read_text(path)
+        new = unpatched(text)
+        if not uninstall:
+            for anchor, where, lines in edits:
+                if new.count(anchor) != 1:
+                    fail(f"{path}: expected exactly one line\n    {anchor.strip()}\n"
+                         f"  (found {new.count(anchor)}). This Bruce version differs from "
+                         f"{PINNED_BRUCE}; add these lines {where} it by hand:\n"
+                         + "".join("    " + l + "\n" for l in lines.splitlines()))
+                new = new.replace(anchor, lines + anchor if where == "before" else anchor + lines)
+        plan.append((path, text, new, crlf))
+    return plan
+
+
+def apply_patches(plan):
+    changed = []
+    for path, text, new, crlf in plan:
+        if new != text:
+            out = new.replace("\n", "\r\n") if crlf else new
+            path.write_bytes(out.encode("utf-8"))
+            changed.append(path)
+    return changed
 
 
 def main():
@@ -115,8 +162,7 @@ def main():
     args = ap.parse_args()
 
     bruce = args.bruce.resolve()
-    menu = bruce / MENU_FILE
-    if not (bruce / "platformio.ini").is_file() or not menu.is_file():
+    if not (bruce / "platformio.ini").is_file() or not (bruce / MAIN_MENU_CPP).is_file():
         fail(f"{bruce} does not look like a Bruce firmware checkout")
 
     rev = bruce_revision(bruce)
@@ -134,13 +180,13 @@ def main():
         for d in (lib_dest, mod_dest):
             if d.exists():
                 shutil.rmtree(d)
-        patch_menu(menu, uninstall=True)
+        apply_patches(plan_patches(bruce, uninstall=True))
         print(f"BruceLink removed from {bruce}")
         return
 
     # Menu first: if this Bruce's menu is not what we expect, stop before
-    # copying anything, so a failed install leaves the tree untouched.
-    changed = patch_menu(menu, uninstall=False)
+    # writing anything, so a failed install leaves the tree untouched.
+    changed = apply_patches(plan_patches(bruce, uninstall=False))
     n_lib = copy_tree(LIB_SOURCES, lib_dest)
     (lib_dest / "library.json").write_text(LIBRARY_JSON, encoding="utf-8", newline="\n")
     n_mod = copy_tree([(MODULE_SOURCE, MODULE_PATTERNS)], mod_dest)
@@ -148,9 +194,12 @@ def main():
     print(f"BruceLink installed into {bruce}")
     print(f"  lib/BruceLink/            {n_lib} files + library.json")
     print(f"  src/modules/brucelink/    {n_mod} files")
-    print(f"  {MENU_FILE}  {'menu entry added' if changed else 'menu entry already present'}")
+    for path in changed:
+        print(f"  {path.relative_to(bruce)}  updated")
+    if not changed:
+        print("  main menu entry already present")
     print("Build:  pio run -e m5stack-sticks3")
-    print("On the device:  Config > Advanced > Toggle BruceLink")
+    print("On the device:  main menu > BruceLink > Pair with Flipper, then Turn on")
 
 
 if __name__ == "__main__":

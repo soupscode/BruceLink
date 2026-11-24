@@ -6,7 +6,9 @@
  * SPDX-License-Identifier: MIT
  */
 #include "../shared/brucelink_core/src/bl_cobs.h"
+#include "../shared/brucelink_core/src/bl_crypto.h"
 #include "../shared/brucelink_core/src/bl_frame.h"
+#include "../shared/brucelink_core/src/bl_pair.h"
 #include "../shared/brucelink_core/src/bl_pcap.h"
 
 #include <stdio.h>
@@ -16,6 +18,61 @@ static void emit_hex(const char* name, const uint8_t* b, size_t n) {
     printf("  \"%s\": \"", name);
     for(size_t i = 0; i < n; i++) printf("%02x", b[i]);
     printf("\"");
+}
+
+static void emit_frame(const char* name, const uint8_t* b, size_t n) {
+    printf(",\n");
+    emit_hex(name, b, n);
+}
+
+typedef struct {
+    uint8_t next;
+} counter_rng_t;
+/* Deterministic "randomness" for vectors: 0x01, 0x02, ... per byte. */
+static void counter_rng(void* ctx, uint8_t* buf, size_t len) {
+    counter_rng_t* r = ctx;
+    for(size_t i = 0; i < len; i++) buf[i] = r->next++;
+}
+
+/* A complete pairing run with fixed keys, so the Python reference can
+ * recompute every derived value from ADR 0005 independently. */
+static void emit_pairing(void) {
+    counter_rng_t ri = {0x01}, rr = {0x81};
+    bl_pair_t i, r;
+    bl_pair_init(&i, BL_PAIR_INITIATOR, "Flipper Aster", counter_rng, &ri, 0);
+    bl_pair_init(&r, BL_PAIR_RESPONDER, "StickS3", counter_rng, &rr, 0);
+    uint8_t sk_i[32];
+    memcpy(sk_i, i.sk, 32); /* the vector needs it; real code never copies it */
+    uint8_t commit[BL_MAX_MSG], key[BL_MAX_MSG], reveal[BL_MAX_MSG], ci[BL_MAX_MSG],
+        cr[BL_MAX_MSG];
+    size_t keyl = 0, revl = 0, cil = 0, crl = 0, none = 0;
+    uint8_t scratch[BL_MAX_MSG];
+    int cn = bl_pair_start(&i, commit, sizeof(commit));
+    bl_pair_rx(&r, commit, (size_t)cn, key, sizeof(key), &keyl);
+    bl_pair_rx(&i, key, keyl, reveal, sizeof(reveal), &revl);
+    bl_pair_rx(&r, reveal, revl, scratch, sizeof(scratch), &none);
+    bl_pair_accept(&i, true, ci, sizeof(ci), &cil);
+    bl_pair_accept(&r, true, cr, sizeof(cr), &crl);
+    bl_pair_rx(&r, ci, cil, scratch, sizeof(scratch), &none);
+    bl_pair_rx(&i, cr, crl, scratch, sizeof(scratch), &none);
+
+    uint8_t shared[32];
+    bl_x25519(shared, sk_i, r.pk);
+    uint8_t psk[BL_KEY_LEN], kid[BL_PAIR_KEY_ID_LEN];
+    bl_pair_result(&i, psk, kid);
+    uint32_t code = 0;
+    bl_pair_code(&i, &code);
+
+    emit_frame("pair_commit", commit, (size_t)cn);
+    emit_frame("pair_key", key, keyl);
+    emit_frame("pair_reveal", reveal, revl);
+    emit_frame("pair_confirm_i", ci, cil);
+    emit_frame("pair_confirm_r", cr, crl);
+    emit_frame("pair_shared", shared, sizeof(shared));
+    emit_frame("pair_psk", psk, sizeof(psk));
+    emit_frame("pair_key_id", kid, sizeof(kid));
+    printf(",\n  \"pair_code\": %u,\n", (unsigned)code);
+    printf("  \"pair_done\": %s", (bl_pair_state(&i) == BL_PS_DONE && bl_pair_state(&r) == BL_PS_DONE) ? "true" : "false");
 }
 
 int main(void) {
@@ -54,7 +111,11 @@ int main(void) {
     printf(",\n");
 
     /* 4. CRC32 of a known buffer */
-    printf("  \"crc32_123456789\": \"%08x\"\n", bl_crc32("123456789", 9));
+    printf("  \"crc32_123456789\": \"%08x\"", bl_crc32("123456789", 9));
+
+    /* 5. Pairing (ADR 0005) */
+    emit_pairing();
+    printf("\n");
 
     printf("}\n");
     return 0;

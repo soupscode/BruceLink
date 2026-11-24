@@ -31,16 +31,16 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
 | BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; run on hardware 2026-11-23 (owner-reported): against a phone scanner, then linked with the StickS3 — handshake completes, Device Info works |
 | Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
-| Pairing key | ⬜ | both builds use the public demo key until M5.3 |
+| Pairing (ADR 0005) | 🟡 | core: 13 host tests incl. man in the middle + Python recomputation; bridge pairing mode: 5 host tests; Flipper and StickS3 screens + key storage build; **not yet run on hardware**. The Flipper app contains no demo key; the StickS3 knows it only to refuse it |
 
 ## Native application (Milestone 4)
 
 | Item | State |
 |---|---|
-| Connection screen / menu / settings / about | ✅ runs on a Flipper over loopback (owner-reported, 2026-11-23) |
+| Connection screen / menu / settings / about | ✅ ran on a Flipper (v0.2, loopback and BLE; owner-reported, 2026-11-23). v0.3 (BLE-only, Pair first until paired) builds; not yet run |
 | Device info, capabilities, Wi-Fi scan views | 🟡 builds; rendered from protocol replies |
 | BLE discovery screen | ⬜ |
-| Transport choice (Loopback / BLE) in Settings | 🟡 builds; not yet run on a device |
+| Loopback transport (mock StickS3 in the app) | removed in v0.3 on the owner's request; BLE is the only transport (git history: `5fdc650`) |
 | Responsive on disconnect / recovery | 🟡 live connection status, timeouts, re-handshake on every new link (host-tested logic) |
 
 ## Bruce integration (Milestone 5)
@@ -48,9 +48,10 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Item | State |
 |---|---|
 | BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, four scans, no leak)** with the reduced, transient driver start (ADR 0004): 4.8 s each; guard headroom only 1.8 kB in steady state; capture / active op unavailable (placeholder hooks) |
-| Bruce module + menu toggle + installer | 🟡 runs on the StickS3 (owner-reported: link established); off/on cycling and coexistence with other Bruce features not yet checked |
+| Bruce module + installer | 🟡 runs on the StickS3 (owner-reported: link established, off/on works); coexistence with other Bruce features not yet checked |
+| BruceLink on Bruce's main menu (icon, Turn on/off, Pair, Forget) | 🟡 builds and links in Bruce 1.17; installer host-tested (8 tests, incl. upgrade from the Config → Advanced entries); not yet run |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
-| Pairing-key provisioning | 📐 |
+| Pairing-key provisioning | 🟡 pairing (ADR 0005) builds in Bruce; key in NVS; not yet run |
 
 ## Phase 2 — capture & research capabilities
 

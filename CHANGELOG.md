@@ -2,6 +2,43 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — Pairing (2026-11-23)
+
+Builds on both devices; host-tested where it can be; **not yet run on hardware**.
+
+### Added
+- **Pairing** (ADR 0005, task M5.3): put both devices into pairing mode, compare
+  a 6-digit code on both screens, confirm on each. The devices agree on a fresh
+  key over X25519 with a commitment, so a man in the middle gets the codes to
+  match with probability 1 in a million per attempt.
+  - Flipper: **Pair** / **Forget pairing** in the main menu. The key file is
+    encrypted with the Flipper's device-unique key (like the stock U2F app).
+  - StickS3: **BruceLink → Pair with Flipper**. The key is kept in NVS, as
+    Bruce keeps its U2F secrets.
+- `bl_pair` (shared core) with 13 host tests, five bridge pairing-mode tests,
+  and an independent Python recomputation of every derived value.
+- **BruceLink on Bruce's main menu** (first item, before Wi-Fi), with its own
+  icon and one submenu: Turn on / off, Pair with Flipper, Forget pairing, and
+  the state and key id in the title line. The installer patches
+  `main_menu.{h,cpp}` and removes the Config → Advanced entries of an older
+  install.
+
+### Changed
+- **Real devices no longer use the public demo key.** Connect and turning
+  BruceLink on require a pairing.
+- **The Flipper app is BLE-only (v0.3).** The loopback transport (a mock
+  StickS3 inside the app, with the demo key) and the Transport setting are
+  gone; the app contains no demo key. Until paired, **Pair** is the first menu
+  item.
+- Status screens say "Key XXXX, not encrypted" instead of "DEMO KEY".
+- StickS3 bridge task stack 12 kB → 10 kB (measured peak use 4.3 kB): 2 kB more
+  internal RAM next to Wi-Fi (ADR 0004 headroom).
+- Starting BruceLink clears the StickS3's peer cooldown list.
+
+### Fixed
+- Found by the new tests before it shipped: taking the pairing result twice
+  on the bridge handed out an all-zero key the second time.
+
 ## [Unreleased] — Bruce module and installer (2026-11-23)
 
 Builds and links inside Bruce 1.17 for the StickS3; not flashed or run.

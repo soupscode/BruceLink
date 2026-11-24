@@ -47,12 +47,43 @@ C = Flipper (session central/initiator), P = StickS3 (session peripheral). Keys:
 HKDF-SHA256 over `X25519(eph_C,eph_P) ‖ PSK`, salted by both nonces; separate
 c2p/p2c keys. Replay prevented by the strictly increasing `seq`.
 
+The PSK comes from pairing (below). The public demo key (`bl_demo_key.h`) is
+used as a key only by host tests and the ESP32 compile check. The StickS3 knows
+it only to refuse it: its key store rejects it, and a bridge holding it refuses
+every active op. The Flipper app does not contain it.
+
+## Pairing
+
+Run instead of a session when the user puts both devices into pairing mode.
+Gives both a fresh PSK; a 6-digit code shown on both screens protects against a
+man in the middle. Full construction and rationale: ADR 0005. Zero MAC field,
+`seq` 0, one attempt per link, 90 s limit.
+
+| # | dir | type | payload |
+|---|-----|------|---------|
+| 1 | C→P | `PAIR_COMMIT` 0x08 | ver(1)=1, commit(32), name_len(1), name(≤16, printable ASCII) |
+| 2 | P→C | `PAIR_KEY` 0x09 | ver(1)=1, pub_P(32), nonce_P(16), name_len(1), name(≤16) |
+| 3 | C→P | `PAIR_REVEAL` 0x0A | pub_C(32), nonce_C(16) |
+| 4 | C↔P | `PAIR_CONFIRM` 0x0B | tag(32), sent by each side after its user accepts |
+| – | C↔P | `PAIR_ABORT` 0x0C | reason(1): 1 rejected, 2 cancelled, 3 timeout, 4 check failed |
+
+```
+commit = SHA256("BLpair1 commit" ‖ 0x01 ‖ pub_C ‖ nonce_C)
+T      = SHA256("BLpair1 transcript" ‖ 0x01 ‖ lenC ‖ name_C ‖ pub_C ‖ nonce_C
+                                          ‖ lenP ‖ name_P ‖ pub_P ‖ nonce_P)
+code   = LE32(SHA256("BLpair1 code" ‖ T)[0..3]) mod 1 000 000
+psk    = HKDF-SHA256(salt = nonce_C ‖ nonce_P, ikm = X25519, info = "BLpair1 psk" ‖ T, 32)
+tag_C  = HMAC-SHA256(psk, "BLpair1 confirm I" ‖ T);   tag_P: "... confirm R"
+key id = SHA256("BLpair1 key id" ‖ psk)[0..1]          (display only)
+```
+
 ## Message types
 
 | Type | Name | Dir | Payload |
 |------|------|-----|---------|
 | 0x05 | PING / 0x06 PONG | C↔P | echo bytes |
 | 0x07 | BYE | C→P | — (graceful close) |
+| 0x08–0x0C | PAIR_* | C↔P | pairing only (above) |
 | 0x10/0x11 | DEVICE_INFO_REQ / DEVICE_INFO | C→P/P→C | text summary |
 | 0x12/0x13 | STATUS_REQ / STATUS | — | capture + gate status text |
 | 0x14/0x15 | CAPS_REQ / CAPS | — | capability registry (below) |

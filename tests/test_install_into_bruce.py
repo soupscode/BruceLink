@@ -8,7 +8,32 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools" / "install_into_bruce.py"
 
-MENU = (
+# The lines of Bruce 1.17's files the installer anchors on, in their real
+# order (src/core/main_menu.h, main_menu.cpp, menu_items/ConfigMenu.cpp).
+MAIN_H = (
+    "#include <MenuItemInterface.h>\n"
+    '#include "menu_items/BleMenu.h"\n'
+    '#include "menu_items/WireToolsMenu.h"\n'
+    "class MainMenu {\n"
+    "public:\n"
+    "    FileMenu fileMenu;\n"
+    "    WifiMenu wifiMenu;\n"
+    "#if !defined(LITE_VERSION)\n"
+    "    LoRaMenu loraMenu;\n"
+    "#endif\n"
+    "};\n"
+)
+MAIN_CPP = (
+    '#include "main_menu.h"\n'
+    "MainMenu::MainMenu() {\n"
+    "    _menuItems = {\n"
+    "        &wifiMenu,\n"
+    "        &bleMenu,\n"
+    "        &configMenu,\n"
+    "    };\n"
+    "}\n"
+)
+CONFIG = (
     '#include "ConfigMenu.h"\n'
     '#include "core/wifi/wifi_common.h"\n'
     "void ConfigMenu::advancedMenu() {\n"
@@ -18,6 +43,17 @@ MENU = (
     "#endif\n"
     "        };\n"
     "}\n"
+)
+# What the previous version of the installer left in ConfigMenu.cpp.
+CONFIG_OLD_INSTALL = CONFIG.replace(
+    '#include "core/wifi/wifi_common.h"\n',
+    '#include "core/wifi/wifi_common.h"\n'
+    '#include "modules/brucelink/BruceLinkModule.h" // BruceLink\n',
+).replace(
+    '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n',
+    '            {"Toggle BLE API",  [this]() { enableBLEAPI(); }       },\n'
+    '            {"Toggle BruceLink", [this]() { toggleBruceLink(); }   }, // BruceLink\n'
+    '            {"BruceLink pairing", [this]() { bruceLinkPairingMenu(); } }, // BruceLink\n',
 )
 
 
@@ -30,21 +66,45 @@ class InstallIntoBruce(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.bruce = Path(self.tmp.name) / "bruce"
-        menu = self.bruce / "src/core/menu_items/ConfigMenu.cpp"
-        menu.parent.mkdir(parents=True)
-        menu.write_bytes(MENU.encode())
+        self.main_h = self.bruce / "src/core/main_menu.h"
+        self.main_cpp = self.bruce / "src/core/main_menu.cpp"
+        self.config = self.bruce / "src/core/menu_items/ConfigMenu.cpp"
+        self.config.parent.mkdir(parents=True)
+        self.write(MAIN_H, MAIN_CPP, CONFIG)
         (self.bruce / "platformio.ini").write_text("[platformio]\n")
-        self.menu = menu
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def write(self, h, cpp, config, eol="\n"):
+        for path, text in ((self.main_h, h), (self.main_cpp, cpp), (self.config, config)):
+            path.write_bytes(text.replace("\n", eol).encode())
+
+    def snapshot(self):
+        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config)]
+
+    def assert_pristine(self, eol="\n"):
+        self.assertEqual(
+            self.snapshot(), [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG)])
+        self.assertFalse((self.bruce / "lib/BruceLink").exists())
+        self.assertFalse((self.bruce / "src/modules/brucelink").exists())
+
+    def assert_guarded(self, text, needle):
+        """`needle` occurs once, on a line between this script's LITE_VERSION guard lines."""
+        lines = text.splitlines()
+        hits = [i for i, l in enumerate(lines) if needle in l]
+        self.assertEqual(len(hits), 1, text)
+        i = hits[0]
+        self.assertEqual(lines[i - 1], "#if !defined(LITE_VERSION) // BruceLink")
+        self.assertTrue(lines[i].endswith(" // BruceLink"))
+        self.assertEqual(lines[i + 1], "#endif // BruceLink")
+        return i
 
     def test_refuses_unknown_revision_without_force(self):
         r = run(self.bruce)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--force", r.stderr)
-        self.assertEqual(self.menu.read_bytes(), MENU.encode())  # untouched
-        self.assertFalse((self.bruce / "lib/BruceLink").exists())
+        self.assert_pristine()
 
     def test_install_is_complete_and_idempotent(self):
         r = run(self.bruce, "--force")
@@ -58,43 +118,76 @@ class InstallIntoBruce(unittest.TestCase):
         want |= {f.name for f in (REPO / "shared/brucelink_core/src").glob("*.c")}
         self.assertEqual({f.name for f in lib.iterdir()}, want | {"library.json"})
         self.assertTrue((mod / "BruceLinkModule.cpp").is_file())
+        self.assertTrue((mod / "BruceLinkMenu.cpp").is_file())
         self.assertTrue((mod / "BruceBackendImpl.cpp").is_file())
         self.assertFalse((mod / "PATCH.md").exists())  # docs are not installed
-        once = self.menu.read_text()
-        self.assertEqual(once.count("toggleBruceLink"), 1)
-        self.assertEqual(once.count("BruceLinkModule.h"), 1)
-        # the entry sits inside the same LITE_VERSION guard as the BLE API toggle
-        self.assertLess(once.index("enableBLEAPI"), once.index("toggleBruceLink"))
-        self.assertLess(once.index("toggleBruceLink"), once.index("#endif"))
-        # second run changes nothing
-        r = run(self.bruce, "--force")
+
+        h = self.main_h.read_text()
+        cpp = self.main_cpp.read_text()
+        # include after the last menu header, member next to wifiMenu
+        inc = self.assert_guarded(h, '#include "modules/brucelink/BruceLinkMenu.h"')
+        mem = self.assert_guarded(h, "BruceLinkMenu bruceLinkMenu;")
+        lines = h.splitlines()
+        self.assertEqual(lines[inc - 2], '#include "menu_items/WireToolsMenu.h"')
+        self.assertEqual(lines[mem - 2], "    WifiMenu wifiMenu;")
+        # first item on the main menu, before Wi-Fi
+        entry = self.assert_guarded(cpp, "&bruceLinkMenu,")
+        self.assertEqual(cpp.splitlines()[entry + 2], "        &wifiMenu,")
+        # nothing in Config any more
+        self.assertEqual(self.config.read_text(), CONFIG)
+
+        once = self.snapshot()
+        r = run(self.bruce, "--force")  # second run changes nothing
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.menu.read_text(), once)
+        self.assertEqual(self.snapshot(), once)
 
     def test_uninstall_restores_the_tree(self):
         self.assertEqual(run(self.bruce, "--force").returncode, 0)
         self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
-        self.assertEqual(self.menu.read_bytes(), MENU.encode())
-        self.assertFalse((self.bruce / "lib/BruceLink").exists())
-        self.assertFalse((self.bruce / "src/modules/brucelink").exists())
+        self.assert_pristine()
 
     def test_crlf_checkout_keeps_its_line_endings(self):
-        self.menu.write_bytes(MENU.replace("\n", "\r\n").encode())
+        self.write(MAIN_H, MAIN_CPP, CONFIG, eol="\r\n")
         self.assertEqual(run(self.bruce, "--force").returncode, 0)
-        raw = self.menu.read_bytes()
-        self.assertIn(b"toggleBruceLink", raw)
-        self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))  # no bare LF introduced
+        for raw in self.snapshot()[:2]:
+            self.assertIn(b"bruceLinkMenu", raw)
+            self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))  # no bare LF introduced
         self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
-        self.assertEqual(self.menu.read_bytes(), MENU.replace("\n", "\r\n").encode())
+        self.assert_pristine(eol="\r\n")
+
+    def test_upgrade_moves_the_entries_out_of_config(self):
+        """The previous installer put two entries under Config > Advanced."""
+        self.write(MAIN_H, MAIN_CPP, CONFIG_OLD_INSTALL)
+        r = run(self.bruce, "--force")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.config.read_text(), CONFIG)
+        self.assert_guarded(self.main_cpp.read_text(), "&bruceLinkMenu,")
+        self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
+        self.assert_pristine()
+
+    def test_uninstall_cleans_an_old_config_install(self):
+        self.write(MAIN_H, MAIN_CPP, CONFIG_OLD_INSTALL)
+        self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
+        self.assert_pristine()
 
     def test_unknown_menu_layout_is_reported_not_guessed(self):
-        self.menu.write_text(MENU.replace("Toggle BLE API", "Something else"))
+        # main_menu.h is fine, main_menu.cpp is not: neither may be written
+        self.write(MAIN_H, MAIN_CPP.replace("&wifiMenu", "&radioMenu"), CONFIG_OLD_INSTALL)
+        before = self.snapshot()
         r = run(self.bruce, "--force")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("by hand", r.stderr)
-        self.assertNotIn("toggleBruceLink", self.menu.read_text())
+        self.assertIn("&bruceLinkMenu,", r.stderr)  # says what to add
+        self.assertEqual(self.snapshot(), before)  # not even the old Config lines removed
         self.assertFalse((self.bruce / "lib/BruceLink").exists())  # nothing half-installed
         self.assertFalse((self.bruce / "src/modules/brucelink").exists())
+
+    def test_without_config_menu(self):
+        """ConfigMenu.cpp is only cleaned; a tree without it still installs."""
+        self.config.unlink()
+        r = run(self.bruce, "--force")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_guarded(self.main_cpp.read_text(), "&bruceLinkMenu,")
 
 
 if __name__ == "__main__":
