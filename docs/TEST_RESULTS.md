@@ -663,6 +663,12 @@ Response (next build): the job runs before the animation, the boot after a
 job skips it (and Wi-Fi at startup), scan 120 ms per channel, delays trimmed,
 and the result reports scan time, stick boot time and the Flipper's total.
 
+### 2026-11-23 — Faster jobs (`8f9285a`, app v0.5)
+
+- Wi-Fi scan job: **"much faster"** (owner), cycle works. The `Took` / scan /
+  boot figures were not reported, so how much each change saved is not
+  known.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,

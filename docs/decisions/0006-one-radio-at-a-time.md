@@ -2,7 +2,8 @@
 
 Status: Accepted (2026-11-23, owner's decision) — implemented for the Wi-Fi
 scan; **the full cycle worked on the owner's devices** (2026-11-23, one run;
-too slow, time not reported; speed-ups below not yet run). Supersedes ADR 0004 (Wi-Fi next to the BLE
+too slow at first; "much faster" after the speed-ups below, figures not
+reported). Supersedes ADR 0004 (Wi-Fi next to the BLE
 link). Amends ADR 0003 for active operations.
 
 ## Context
