@@ -14,11 +14,16 @@ What it does (and nothing else):
   4. calls bruceLinkBootEarly() after the input task starts and
      bruceLinkBoot() at the end of setup() in <bruce>/src/main.cpp: they run
      a pending BruceLink job and bring the link back after it (ADR 0006)
-  5. adds two build flags to the StickS3 environment
-     (<bruce>/boards/m5stack-sticks3/m5stack-sticks3.ini): lib/BruceLink on
-     the include path and a forced include of bl_nimble_psram.h, which puts
-     NimBLE's host buffers in PSRAM (about 16 kB less internal RAM at BLE
-     start)
+  5. trims internal RAM in the StickS3 build (RAM review, owner's choice):
+     three build flags in <bruce>/boards/m5stack-sticks3/m5stack-sticks3.ini
+     (-DBRUCELINK_RAM_TRIM, lib/BruceLink on the include path and a forced
+     include of bl_sticks3_ram.h: NimBLE's host buffers in PSRAM, no USB HID),
+     and lines guarded by BRUCELINK_RAM_TRIM in five Bruce files: no USB mass
+     storage (massStorage.h), the Wi-Fi cracker's hot loop out of IRAM
+     (wifi_recover.cpp), NetCut's device table and the RF decoder's
+     allocation table in PSRAM (netcut.cpp, rf_stream_memory.c), no mDNS
+     (webInterface.h/.cpp, and ESPmDNS in the env's lib_ignore). Other boards
+     built from the same tree are unchanged.
      Every added line ends with "// BruceLink" (C++) or "; BruceLink" (ini).
      Older versions of this script put two entries under Config > Advanced
      (ConfigMenu.cpp); re-running removes those.
@@ -56,6 +61,21 @@ MAIN_MENU_CPP = Path("src/core/main_menu.cpp")
 BRUCE_MAIN = Path("src/main.cpp")
 CONFIG_MENU = Path("src/core/menu_items/ConfigMenu.cpp")  # older installs only: cleaned
 STICKS3_INI = Path("boards/m5stack-sticks3/m5stack-sticks3.ini")
+MASS_STORAGE_H = Path("src/core/massStorage.h")
+WIFI_RECOVER = Path("src/modules/wifi/wifi_recover.cpp")
+NETCUT = Path("src/modules/wifi/netcut.cpp")
+RF_STREAM_MEMORY = Path("src/modules/rf/protocols/rf_stream_memory.c")
+WEB_INTERFACE = Path("src/core/wifi/webInterface.cpp")
+WEB_INTERFACE_H = Path("src/core/wifi/webInterface.h")
+
+# RAM trims: only the StickS3 env defines BRUCELINK_RAM_TRIM (see STICKS3_INI).
+TRIM = "#if defined(BRUCELINK_RAM_TRIM)" + MARKER + "\n"
+NO_TRIM = "#if !defined(BRUCELINK_RAM_TRIM)" + MARKER + "\n"
+
+
+def trim(*lines):
+    """Lines guarded by BRUCELINK_RAM_TRIM, each ending in MARKER."""
+    return TRIM + "".join(l + MARKER + "\n" for l in lines) + END
 
 # (file, [(anchor line, "before" | "after", lines to add)]). Each anchor must
 # occur exactly once in the unpatched file.
@@ -86,8 +106,71 @@ PATCHES = [
         # directory; -I paths are made absolute by PlatformIO. So the header
         # is named bare and found through the include path.
         ("\t${env.build_flags}\n", "after",
+         "\t-DBRUCELINK_RAM_TRIM=1" + INI_MARKER + "\n"
          "\t-I lib/BruceLink" + INI_MARKER + "\n"
-         "\t-include bl_nimble_psram.h" + INI_MARKER + "\n"),
+         "\t-include bl_sticks3_ram.h" + INI_MARKER + "\n"),
+        # PlatformIO links a library's objects whenever a source includes its
+        # header (default LDF mode ignores #if), and ESPmDNS's global object
+        # keeps the mDNS component alive: leave the library out entirely.
+        ("lib_ignore =\n", "after", "\tESPmDNS" + INI_MARKER + "\n"),
+    ]),
+    # The RAM trims below insert guarded lines only; no Bruce line is changed.
+    (MASS_STORAGE_H, [
+        # No USB mass storage: with USB HID gone too, nothing links TinyUSB.
+        # Only the files that include this header (the storage itself, the
+        # File menu entry, the startup app) stop seeing the USB-OTG flag.
+        ("#include <globals.h>\n", "after",
+         trim("#undef SOC_USB_OTG_SUPPORTED // no USB mass storage on the StickS3 (RAM review)")),
+    ]),
+    (WIFI_RECOVER, [
+        # The cracker's SHA-1 / PBKDF2 loop runs from flash: about 4 kB of
+        # IRAM goes back to the heap; cracking is slower.
+        ("#include <string>\n", "after",
+         trim("#undef IRAM_ATTR", "#define IRAM_ATTR // the cracker runs from flash (RAM review)")),
+    ]),
+    (NETCUT, [
+        # The 64-entry device table (4.3 kB) moves to PSRAM. The macro turns
+        # Bruce's array declaration into a pointer to an array of the same
+        # type, so every s_devices[i] in the file still works.
+        ("static NetCutDevice s_devices[NETCUT_MAX_DEVICES];\n", "before",
+         trim("#include <esp_heap_caps.h>", "#include <new>",
+              "#define s_devices (*s_devices_ps) // the table lives in PSRAM (RAM review)")),
+        ("static NetCutDevice s_devices[NETCUT_MAX_DEVICES];\n", "after",
+         trim("static bool s_devices_ps_init() {",
+              "    void *m = heap_caps_calloc(1, sizeof(*s_devices_ps), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);",
+              "    if (m == nullptr) m = calloc(1, sizeof(*s_devices_ps));",
+              "    NetCutDevice *d = static_cast<NetCutDevice *>(m);",
+              "    for (size_t i = 0; d != nullptr && i < NETCUT_MAX_DEVICES; i++) new (&d[i]) NetCutDevice();",
+              "    s_devices_ps = reinterpret_cast<NetCutDevice(*)[NETCUT_MAX_DEVICES]>(d);",
+              "    return d != nullptr;",
+              "}",
+              "__attribute__((unused)) static const bool s_devices_ps_ok = s_devices_ps_init();")),
+    ]),
+    (RF_STREAM_MEMORY, [
+        # The decoder's 512-entry allocation table (4 kB) moves to PSRAM, the
+        # same way; allocated before any decode by a constructor.
+        ("static Allocation allocated[512];\n", "before",
+         trim("#include <esp_heap_caps.h>",
+              "#define allocated (*rf_alloc_ps) // the table lives in PSRAM (RAM review)")),
+        ("static Allocation allocated[512];\n", "after",
+         trim("__attribute__((constructor)) static void rf_alloc_ps_init(void) {",
+              "    rf_alloc_ps = heap_caps_calloc(1, sizeof(*rf_alloc_ps), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);",
+              "    if (!rf_alloc_ps) rf_alloc_ps = calloc(1, sizeof(*rf_alloc_ps));",
+              "}")),
+    ]),
+    (WEB_INTERFACE_H, [
+        ("#include <ESPmDNS.h>\n", "before", NO_TRIM),
+        ("#include <ESPmDNS.h>\n", "after", END),
+    ]),
+    (WEB_INTERFACE, [
+        # No mDNS (bruce.local): the WebUI shows its IP address instead.
+        # Every MDNS call is compiled out, so the mDNS library is not linked.
+        ("        MDNS.end();\n", "before", NO_TRIM),
+        ("        MDNS.end();\n", "after", END),
+        ("    if (!MDNS.begin(host)) {\n", "before",
+         TRIM + "    if (true) { // no mDNS on the StickS3 (RAM review)" + MARKER + "\n"
+         "#else" + MARKER + "\n"),
+        ("    if (!MDNS.begin(host)) {\n", "after", END),
     ]),
     (CONFIG_MENU, []),
 ]

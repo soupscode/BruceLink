@@ -753,6 +753,31 @@ on (stack), fewer transient allocations while scanning. To check: the
 `internal` and `dma-blk` figures in the `[BruceLink] module: BLE up` and
 `Flipper linked` serial lines, against the same lines from `222920f`.
 
+### 2026-11-23 — RAM trims in Bruce (owner's choice; cloud, no hardware)
+
+The owner chose to drop the features the RAM review listed (USB HID, USB mass
+storage, mDNS, the cracker's IRAM) and move NetCut's and the RF decoder's
+tables to PSRAM. All as lines guarded by `BRUCELINK_RAM_TRIM`, defined only in
+the StickS3 build (`PATCH.md`).
+
+| | `3fac5b5` | trimmed | change |
+|---|---|---|---|
+| Static internal RAM (PlatformIO "RAM") | 133,796 B | 91,260 B | −42,536 B |
+| IRAM segments in the image | 111,012 B | 106,920 B | −4,092 B (goes to the heap) |
+| Flash | 4,778,827 B | 4,656,491 B | −122 kB |
+
+Checked in the image: no TinyUSB or mDNS object takes internal RAM (none in
+the map's DRAM ranges; no `mdns_*` symbol left); `sha1_transform` is in flash;
+NetCut's and the RF tables are 4-byte pointers in internal RAM. The mDNS cut
+needed `lib_ignore = ESPmDNS` as well: PlatformIO links a library's objects
+whenever its header is included, and ESPmDNS's global object kept the mDNS
+component (2 kB) alive. Host tests, Python tests (incl. the installer's new
+patches and its failure cases) and the compile check pass.
+
+Expected on the stick (not measured): about 46 kB more internal heap at boot
+than `3fac5b5`, on top of NimBLE's buffers in PSRAM. To check:
+`HARDWARE_TESTING.md` step 4a.
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see

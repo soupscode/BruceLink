@@ -2,6 +2,21 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — RAM trims in Bruce (2026-11-23, owner's choice)
+
+The owner chose to drop the Bruce features the RAM review listed. Lines
+guarded by `BRUCELINK_RAM_TRIM` (defined only in the StickS3 build) are
+inserted into five Bruce files; no Bruce line is changed, and `--uninstall`
+removes them. Built; **not yet run on hardware**.
+
+- **Removed:** BadUSB / keyboard / mouse over USB, the USB clicker, U2F and
+  USB mass storage (TinyUSB is no longer linked); mDNS (`bruce.local`: the
+  WebUI is reached by IP). BLE keyboard and the USB serial console stay.
+- **Slower:** the Wi-Fi password cracker (its hot loop runs from flash).
+- **Moved to PSRAM, nothing lost:** NetCut's device table and the RF
+  decoder's allocation table.
+- Figures in `docs/TEST_RESULTS.md`.
+
 ## [Unreleased] — RAM trims without feature loss (2026-11-23)
 
 From three RAM reviewers (Bruce's static RAM, its heap and PSRAM use, and the

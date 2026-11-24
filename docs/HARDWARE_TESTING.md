@@ -91,6 +91,21 @@ the same service; a subscribed scanner then receives a `PAIR_COMMIT`, and the
    from Bruce's own menu). Starting another Bruce BLE feature while BruceLink
    is on is expected to misbehave: turn BruceLink off first.
 
+## 4a. RAM trims (`PATCH.md`)
+
+The StickS3 build drops USB HID, USB mass storage and mDNS, runs the Wi-Fi
+cracker from flash and keeps NetCut's and the RF decoder's tables in PSRAM.
+With BruceLink off:
+
+1. On the USB serial log, note `internal` and `dma-blk` from the first
+   `[BruceLink]` line after boot, after **Turn on** (`module: BLE up`) and
+   after the Flipper links (`Flipper linked`). Compare with the same lines
+   from an older build if you have them.
+2. Still working: a BLE keyboard (BadBLE), the WebUI (reach it by the IP on
+   the screen; `bruce.local` is gone), NetCut (device list fills), an RF
+   decode if you have a source, the cracker (slower).
+3. Gone, as intended: Files → Mass Storage, USB BadUSB / clicker / U2F.
+
 ## 4b. Pairing (ADR 0005)
 
 Needs the step 4 build on the StickS3 and the Flipper app. Flash the merged

@@ -27,8 +27,8 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
 - `esp32/src/modules/brucelink/` — Bruce glue (builds only in the Bruce tree) + `PATCH.md`.
   `python3 tools/install_into_bruce.py <bruce-checkout>` installs it, the bridge library,
   a "BruceLink" item on Bruce 1.17's main menu, the two boot hooks in `setup()` and the
-  NimBLE-in-PSRAM build flags for the StickS3 env (`--uninstall` reverses; tested by
-  `tests/test_install_into_bruce.py`).
+  StickS3 RAM trims (build flags + lines guarded by `BRUCELINK_RAM_TRIM` in five Bruce
+  files; `PATCH.md`) (`--uninstall` reverses; tested by `tests/test_install_into_bruce.py`).
 - `esp32/test_compile/` — standalone ESP32-S3 compile check (stub backend).
 - `tests/c/` — host C tests (ASan+UBSan). `tests/test_protocol.py` — Python + interop.
 - `scripts/hil/` — hardware-in-the-loop scripts.

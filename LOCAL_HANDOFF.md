@@ -26,7 +26,8 @@ verified from what was not.
   screen, bridge task), `BruceLinkKeyStore` (NVS), `BruceLinkJobs` (the job
   record in RTC memory, the boot hooks, the Wi-Fi scan job),
   `BruceBackendImpl` (capture and active ops refused on the live link), and
-  `PATCH.md`.
+  `PATCH.md`. The installer also applies the StickS3 RAM trims (owner's
+  choice: no USB HID / mass storage, no mDNS; `PATCH.md`).
   `tools/install_into_bruce.py` puts all of it into a Bruce 1.17 checkout.
 - **Python reference** (`shared/brucelink_protocol.py`): wire bytes, the
   session handshake and pairing, recomputed from the C output.
@@ -149,7 +150,7 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
    job; report the `Took` / scan / boot figures).
 2. Handshake capture as a job (M5.2), the owner's next pick, then getting the
    file to the Flipper. Then BLE tools as jobs.
-3. The RAM trims in `docs/TEST_RESULTS.md` (2026-11-23 RAM review), measured
-   on the stick.
+3. Measure the RAM trims on the stick (`HARDWARE_TESTING.md` step 4a) and
+   check Bruce's remaining features.
 4. Link confidentiality (M4.6): AEAD with the session keys.
 5. Re-enabling without reboot (M5.6), BLE ownership in Bruce (M5.4).

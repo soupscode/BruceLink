@@ -71,7 +71,30 @@ STICKS3_INI = (
     "\n"
     "\t-Iboards/m5stack-sticks3\n"
     "\t-DUSB_as_HID=1  ;uncomment to enable\n"
+    "\n"
+    "lib_ignore =\n"
+    "\tTFT_eSPI\n"
 )
+# The Bruce files the RAM trims insert guarded lines into, cut to their anchors.
+TRIM_FILES = {
+    "src/core/massStorage.h": (
+        "#ifndef __MASS_STORAGE_H__\n#define __MASS_STORAGE_H__\n\n#include <globals.h>\n"
+        "#if defined(SOC_USB_OTG_SUPPORTED)\n#include <USBMSC.h>\n#endif\n#endif\n"),
+    "src/modules/wifi/wifi_recover.cpp": (
+        "#ifndef LITE_VERSION\n#include <string.h>\n#include <string>\n\n"
+        "static IRAM_ATTR void sha1_transform(void) {}\n#endif\n"),
+    "src/modules/wifi/netcut.cpp": (
+        '#include "netcut.h"\nstatic void _activeLoop();\n'
+        "static NetCutDevice s_devices[NETCUT_MAX_DEVICES];\nstatic int s_deviceCount = 0;\n"),
+    "src/modules/rf/protocols/rf_stream_memory.c": (
+        "#include <stdlib.h>\ntypedef struct {\n    void *p;\n    size_t n;\n} Allocation;\n"
+        "static Allocation allocated[512];\nstatic size_t used, total;\n"),
+    "src/core/wifi/webInterface.h": "#pragma once\n#include <ESPmDNS.h>\nextern bool mdnsRunning;\n",
+    "src/core/wifi/webInterface.cpp": (
+        "void stopWebUi() {\n    if (mdnsRunning) {\n        MDNS.end();\n        mdnsRunning = false;\n"
+        "    }\n}\nstatic bool startMdnsResponder() {\n    if (!MDNS.begin(host)) {\n"
+        "        return false;\n    }\n    return true;\n}\n"),
+}
 # What the previous version of the installer left in ConfigMenu.cpp.
 CONFIG_OLD_INSTALL = CONFIG.replace(
     '#include "core/wifi/wifi_common.h"\n',
@@ -101,6 +124,9 @@ class InstallIntoBruce(unittest.TestCase):
         self.ini = self.bruce / "boards/m5stack-sticks3/m5stack-sticks3.ini"
         self.config.parent.mkdir(parents=True)
         self.ini.parent.mkdir(parents=True)
+        self.trim = {rel: self.bruce / rel for rel in TRIM_FILES}
+        for p in self.trim.values():
+            p.parent.mkdir(parents=True, exist_ok=True)
         self.write(MAIN_H, MAIN_CPP, CONFIG)
         (self.bruce / "platformio.ini").write_text("[platformio]\n")
 
@@ -108,17 +134,21 @@ class InstallIntoBruce(unittest.TestCase):
         self.tmp.cleanup()
 
     def write(self, h, cpp, config, eol="\n", main=MAIN, ini=STICKS3_INI):
-        for path, text in ((self.main_h, h), (self.main_cpp, cpp), (self.config, config),
-                           (self.main, main), (self.ini, ini)):
+        files = [(self.main_h, h), (self.main_cpp, cpp), (self.config, config),
+                 (self.main, main), (self.ini, ini)]
+        files += [(self.trim[rel], text) for rel, text in TRIM_FILES.items()]
+        for path, text in files:
             path.write_bytes(text.replace("\n", eol).encode())
 
     def snapshot(self):
-        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config, self.main, self.ini)]
+        paths = [self.main_h, self.main_cpp, self.config, self.main, self.ini, *self.trim.values()]
+        return [p.read_bytes() for p in paths]
 
     def assert_pristine(self, eol="\n"):
         self.assertEqual(
             self.snapshot(),
-            [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG, MAIN, STICKS3_INI)])
+            [t.replace("\n", eol).encode()
+             for t in (MAIN_H, MAIN_CPP, CONFIG, MAIN, STICKS3_INI, *TRIM_FILES.values())])
         self.assertFalse((self.bruce / "lib/BruceLink").exists())
         self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
@@ -132,6 +162,28 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertTrue(lines[i].endswith(" // BruceLink"))
         self.assertEqual(lines[i + 1], "#endif // BruceLink")
         return i
+
+    def assert_trims(self):
+        """Each RAM trim: guarded by BRUCELINK_RAM_TRIM, every added line marked,
+        and the Bruce lines themselves untouched."""
+        for rel, orig in TRIM_FILES.items():
+            text = self.trim[rel].read_text()
+            added = [l for l in text.splitlines() if l.endswith(" // BruceLink")]
+            self.assertTrue(added, rel)
+            self.assertTrue(any("BRUCELINK_RAM_TRIM" in l for l in added), rel)
+            kept = [l for l in text.splitlines() if not l.endswith(" // BruceLink")]
+            self.assertEqual(kept, orig.splitlines(), rel)
+        web = self.trim["src/core/wifi/webInterface.cpp"].read_text().splitlines()
+        i = web.index("        MDNS.end();")
+        self.assertEqual(web[i - 1], "#if !defined(BRUCELINK_RAM_TRIM) // BruceLink")
+        self.assertEqual(web[i + 1], "#endif // BruceLink")
+        j = web.index("    if (!MDNS.begin(host)) {")
+        self.assertEqual(web[j - 1], "#else // BruceLink")
+        self.assertEqual(web[j + 1], "#endif // BruceLink")
+        net = self.trim["src/modules/wifi/netcut.cpp"].read_text().splitlines()
+        k = net.index("static NetCutDevice s_devices[NETCUT_MAX_DEVICES];")
+        self.assertIn("#define s_devices (*s_devices_ps)", net[k - 2])
+        self.assertEqual(net[k + 1], "#if defined(BRUCELINK_RAM_TRIM) // BruceLink")
 
     def test_refuses_unknown_revision_without_force(self):
         r = run(self.bruce)
@@ -182,10 +234,15 @@ class InstallIntoBruce(unittest.TestCase):
         # pointing at a header the library copy has
         ini = self.ini.read_text().splitlines()
         i = ini.index("\t${env.build_flags}")
-        self.assertEqual(ini[i + 1], "\t-I lib/BruceLink ; BruceLink")
-        self.assertEqual(ini[i + 2], "\t-include bl_nimble_psram.h ; BruceLink")
-        self.assertEqual(sum("bl_nimble_psram" in l for l in ini), 1)
-        self.assertTrue((lib / "bl_nimble_psram.h").is_file())
+        self.assertEqual(ini[i + 1], "\t-DBRUCELINK_RAM_TRIM=1 ; BruceLink")
+        self.assertEqual(ini[i + 2], "\t-I lib/BruceLink ; BruceLink")
+        self.assertEqual(ini[i + 3], "\t-include bl_sticks3_ram.h ; BruceLink")
+        self.assertEqual(sum("bl_sticks3_ram" in l for l in ini), 1)
+        self.assertTrue((lib / "bl_sticks3_ram.h").is_file())
+        k = ini.index("lib_ignore =")
+        self.assertEqual(ini[k + 1], "\tESPmDNS ; BruceLink")
+        self.assertEqual(ini[k + 2], "\tTFT_eSPI")
+        self.assert_trims()
 
         once = self.snapshot()
         r = run(self.bruce, "--force")  # second run changes nothing
@@ -248,9 +305,18 @@ class InstallIntoBruce(unittest.TestCase):
         before = self.snapshot()
         r = run(self.bruce, "--force")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("bl_nimble_psram.h", r.stderr)  # says what to add
+        self.assertIn("bl_sticks3_ram.h", r.stderr)  # says what to add
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.bruce / "lib/BruceLink").exists())
+
+    def test_unknown_trim_file_is_reported_not_guessed(self):
+        net = self.trim["src/modules/wifi/netcut.cpp"]
+        net.write_text(TRIM_FILES["src/modules/wifi/netcut.cpp"].replace("[NETCUT_MAX_DEVICES]", "[128]"))
+        before = self.snapshot()
+        r = run(self.bruce, "--force")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("s_devices_ps", r.stderr)  # says what to add
+        self.assertEqual(self.snapshot(), before)
 
     def test_without_config_menu(self):
         """ConfigMenu.cpp is only cleaned; a tree without it still installs."""

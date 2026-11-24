@@ -11,7 +11,7 @@ python3 tools/install_into_bruce.py /path/to/bruce-firmware     # from the Bruce
 cd /path/to/bruce-firmware && pio run -e m5stack-sticks3
 ```
 
-The installer (idempotent; `--uninstall` reverses it; host-tested) does five things:
+The installer (idempotent; `--uninstall` reverses it; host-tested) does six things:
 
 - copies `esp32/lib/BruceLink/` + `shared/brucelink_core/src/` to Bruce's
   `lib/BruceLink/` (bridge core, NimBLE central transport, shared protocol core).
@@ -41,16 +41,34 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does five thi
   `bruceLinkBoot()` right before Bruce's startup app (turns BruceLink back on
   after a job, or after "restart into BruceLink"). On a normal boot both do
   nothing.
-- adds two build flags to the StickS3 environment in
-  `boards/m5stack-sticks3/m5stack-sticks3.ini` (both ending in `; BruceLink`):
-  `-I lib/BruceLink` and `-include bl_nimble_psram.h`. The header puts
-  NimBLE's host buffers (about 16 kB, allocated at BLE start) in PSRAM instead
-  of internal RAM, for BruceLink and for Bruce's own BLE tools. A `-D` flag
-  cannot do this: NimBLE-Arduino reads the prebuilt `sdkconfig.h`, which would
-  set internal RAM again. Checked in the compile-check object code (the
-  allocator asks for PSRAM, caps `0x404`); not yet run on hardware.
+- adds three build flags to the StickS3 environment in
+  `boards/m5stack-sticks3/m5stack-sticks3.ini` (all ending in `; BruceLink`):
+  `-DBRUCELINK_RAM_TRIM=1`, `-I lib/BruceLink` and
+  `-include bl_sticks3_ram.h`. The header puts NimBLE's host buffers (about
+  16 kB, allocated at BLE start) in PSRAM, for BruceLink and for Bruce's own
+  BLE tools, and undoes the board's `-DUSB_as_HID`. A `-D` flag cannot move
+  NimBLE's buffers: NimBLE-Arduino reads the prebuilt `sdkconfig.h`, which
+  would set internal RAM again. Checked in the compile-check object code (the
+  allocator asks for PSRAM, caps `0x404`).
+- **trims Bruce's internal RAM use on the StickS3** (RAM review, owner's
+  choice, 2026-11-23). Only lines inside `#if defined(BRUCELINK_RAM_TRIM)`
+  are inserted; no Bruce line is changed, other boards built from the same
+  tree are unaffected, and `--uninstall` removes it all.
 
-That is the whole change to Bruce so far: no existing Bruce function is modified.
+  | Bruce file | Change | Gain | Cost |
+  |---|---|---|---|
+  | `bl_sticks3_ram.h` (forced) + `core/massStorage.h` | no USB HID, no USB mass storage: TinyUSB is not linked | ~31 kB static | BadUSB / keyboard / mouse over USB, USB clicker, U2F, USB mass storage. BLE keyboard and the USB serial console stay |
+  | `modules/wifi/wifi_recover.cpp` | the cracker's SHA-1/PBKDF2 loop without `IRAM_ATTR` | ~4 kB heap (IRAM) | slower cracking |
+  | `modules/wifi/netcut.cpp` | the 64-device table in PSRAM | 4.3 kB static | none |
+  | `modules/rf/protocols/rf_stream_memory.c` | the RF decoder's allocation table in PSRAM | 4 kB static | none |
+  | `core/wifi/webInterface.cpp` | no mDNS | ~2.4 kB static + heap | the WebUI is reached by IP, not `bruce.local` |
+
+  Measured gains are in `docs/TEST_RESULTS.md`. The NetCut and RF tables are
+  allocated at startup (PSRAM, internal RAM if that fails) through a macro
+  that turns Bruce's array into a pointer to an array of the same type, so
+  Bruce's code using them is unchanged.
+
+That is the whole change to Bruce so far.
 
 ### What this build does and does not do
 
