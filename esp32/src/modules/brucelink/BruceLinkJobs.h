@@ -36,5 +36,9 @@ void jobRestartRequest();
 bool jobRestartRequested();
 /* The bridge cancelled the job before the restart (e-stop, link loss). */
 void jobRestartCancel();
+/* Restart now and start BruceLink once at the next boot, skipping the boot
+ * animation and Wi-Fi at startup like the boot after a job. For when the
+ * heap is too fragmented for BLE: a restart gives it back in one piece. */
+void restartIntoBruceLink();
 
 } // namespace brucelink

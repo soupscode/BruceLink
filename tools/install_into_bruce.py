@@ -14,9 +14,14 @@ What it does (and nothing else):
   4. calls bruceLinkBootEarly() after the input task starts and
      bruceLinkBoot() at the end of setup() in <bruce>/src/main.cpp: they run
      a pending BruceLink job and bring the link back after it (ADR 0006)
-     Every added line ends with "// BruceLink". Older versions of this script
-     put two entries under Config > Advanced (ConfigMenu.cpp); re-running
-     removes those.
+  5. adds two build flags to the StickS3 environment
+     (<bruce>/boards/m5stack-sticks3/m5stack-sticks3.ini): lib/BruceLink on
+     the include path and a forced include of bl_nimble_psram.h, which puts
+     NimBLE's host buffers in PSRAM (about 16 kB less internal RAM at BLE
+     start)
+     Every added line ends with "// BruceLink" (C++) or "; BruceLink" (ini).
+     Older versions of this script put two entries under Config > Advanced
+     (ConfigMenu.cpp); re-running removes those.
 
 It is idempotent (safe to run again after updating BruceLink) and refuses
 to touch a tree that does not look like the Bruce version it was written
@@ -42,6 +47,7 @@ MODULE_SOURCE = REPO / "esp32" / "src" / "modules" / "brucelink"
 MODULE_PATTERNS = ("*.h", "*.cpp")
 
 MARKER = " // BruceLink"
+INI_MARKER = " ; BruceLink"  # PlatformIO strips "; ..." from build_flags lines
 GUARD = "#if !defined(LITE_VERSION)" + MARKER + "\n"  # the module is not built in LITE builds
 END = "#endif" + MARKER + "\n"
 
@@ -49,6 +55,7 @@ MAIN_MENU_H = Path("src/core/main_menu.h")
 MAIN_MENU_CPP = Path("src/core/main_menu.cpp")
 BRUCE_MAIN = Path("src/main.cpp")
 CONFIG_MENU = Path("src/core/menu_items/ConfigMenu.cpp")  # older installs only: cleaned
+STICKS3_INI = Path("boards/m5stack-sticks3/m5stack-sticks3.ini")
 
 # (file, [(anchor line, "before" | "after", lines to add)]). Each anchor must
 # occur exactly once in the unpatched file.
@@ -73,6 +80,14 @@ PATCHES = [
          "before",
          GUARD + "    bruceLinkBoot(); // after a job: turns BruceLink back on for its result" + MARKER
          + "\n" + END),
+    ]),
+    (STICKS3_INI, [
+        # -include takes the path as given, against each compile's own working
+        # directory; -I paths are made absolute by PlatformIO. So the header
+        # is named bare and found through the include path.
+        ("\t${env.build_flags}\n", "after",
+         "\t-I lib/BruceLink" + INI_MARKER + "\n"
+         "\t-include bl_nimble_psram.h" + INI_MARKER + "\n"),
     ]),
     (CONFIG_MENU, []),
 ]
@@ -135,9 +150,11 @@ def read_text(path):
 
 def unpatched(text):
     """The text without any line this script ever added (they all end with
-    MARKER), so re-running never duplicates and old layouts are removed."""
+    MARKER or INI_MARKER), so re-running never duplicates and old layouts
+    are removed."""
     return "".join(
-        line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(MARKER)
+        line for line in text.splitlines(keepends=True)
+        if not line.rstrip("\n").endswith((MARKER, INI_MARKER))
     )
 
 

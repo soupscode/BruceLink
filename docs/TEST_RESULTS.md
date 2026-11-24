@@ -739,6 +739,20 @@ Figures are computed or read from the map, not measured on the stick.
   cracker's IRAM (4 kB), NetCut's device table (4.3 kB), the RF stream buffer
   (4 kB), mDNS (2.4 kB), and smaller items.
 
+### 2026-11-23 — RAM trims without feature loss (cloud, no hardware)
+
+| Check | Result |
+|---|---|
+| Host tests, cppcheck, Python (29 incl. the installer's new ini patch and its failure case) | pass |
+| `esp32/test_compile` with the forced include | SUCCESS; `nimble_platform_mem_malloc` / `_calloc` ask for caps `0x404` (PSRAM, 8-bit), not `0x804` (internal) |
+| Bruce 1.17 + BruceLink, `m5stack-sticks3` | SUCCESS, static RAM 133,796 B (heap changes only); `pio project metadata` shows `-include bl_nimble_psram.h` in both the C and C++ flags and `lib/BruceLink` on the include path |
+
+Expected on the stick (computed, not measured): about 16 kB more internal
+RAM free after BLE starts (NimBLE's host buffers), 3 kB more while BruceLink is
+on (stack), fewer transient allocations while scanning. To check: the
+`internal` and `dma-blk` figures in the `[BruceLink] module: BLE up` and
+`Flipper linked` serial lines, against the same lines from `222920f`.
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see

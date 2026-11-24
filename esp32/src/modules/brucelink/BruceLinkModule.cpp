@@ -34,9 +34,13 @@ namespace brucelink {
 
 /* The bridge task runs the session handshake or a pairing attempt (X25519:
  * ~1.2 KB frame) and handlers that stage one 512-byte payload plus a
- * 540-byte frame, on top of NimBLE client calls and a Wi-Fi scan. Measured
- * peak so far: 4.3 kB (handshake + Wi-Fi scan, stack-left in the log). */
-static const uint32_t kTaskStackBytes = 10 * 1024;
+ * 540-byte frame, on top of NimBLE client calls. Measured peak: 4.3 kB, when
+ * the task still ran a Wi-Fi scan (it no longer does: ADR 0006). The pairing
+ * path is about 3.5 kB by -fstack-usage (RAM review, 2026-11-23). 7 kB keeps
+ * a margin and gives 3 kB of internal RAM back; `stack-left` in the log
+ * shows what is left. (A PSRAM stack would give all 10 kB back, but then
+ * this task must never touch flash, and NimBLE's deinit runs here.) */
+static const uint32_t kTaskStackBytes = 7 * 1024;
 static const UBaseType_t kTaskPriority = 1; // same as Arduino's loopTask
 static const TickType_t kLoopPeriod = pdMS_TO_TICKS(10);
 /* Pairing mode gives up if no Flipper has shown up in this long. */
@@ -366,6 +370,17 @@ static void showNoMemory() {
     displayError(msg, true);
 }
 
+/* Turn on found the heap too fragmented: offer the restart that fixes it,
+ * with BruceLink started once at the next boot (the same boot path as after
+ * a job: no boot animation, no Wi-Fi at startup). */
+static void offerRestartIntoBruceLink() {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Not enough memory\nfor BLE (block %u kB,\nneeds %u).\nRestart into BruceLink?",
+             (unsigned)(radioLargestDmaBlock() / 1024), (unsigned)(RADIO_BLE_MIN_DMA_BLOCK / 1024));
+    tft.fillScreen(bruceConfig.bgColor);
+    if(displayMessage(msg, "No", nullptr, "Yes", bruceConfig.priColor) == 1) restartIntoBruceLink();
+}
+
 /* Leave pairing mode for normal sessions with `psk` without restarting BLE.
  * Stopping and starting again needs a fresh 48 kB DMA block, which the heap
  * may no longer have after a BLE session (hardware, 2026-11-23: paired, then
@@ -504,7 +519,7 @@ static void toggleModule() {
         break;
     case kModuleNotPaired: displayError("BruceLink: not paired. Pair with Flipper first", true); break;
     case kModuleBleBusy: displayError("BruceLink: BLE in use, turn the other BLE feature off", true); break;
-    case kModuleNoMemory: showNoMemory(); break;
+    case kModuleNoMemory: offerRestartIntoBruceLink(); break;
     default: break;
     }
 }

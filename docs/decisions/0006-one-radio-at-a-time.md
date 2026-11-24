@@ -159,6 +159,10 @@ active jobs:
   the stick for something else (recording, writing a file).
 - **No record from an earlier pairing.** Forget pairing and a new pairing
   clear the job record, so a result is never handed to a different Flipper.
+- **Restart into BruceLink.** When Turn on finds no 48 kB block for BLE (the
+  heap fragments after BLE or Wi-Fi has been used), the stick offers to
+  restart and start BruceLink once at the next boot, through the same boot
+  path as after a job (a one-shot flag in RTC memory, cleared before use).
 - **Capture and active ops** are refused on the live link; they are to run as
   jobs (capture first, task M5.2). Active jobs stay refused (now host-tested,
   `t_active_job_refused`) until the rules above are implemented and tested.

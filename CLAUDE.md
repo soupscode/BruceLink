@@ -25,9 +25,10 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
   file run `python3 tools/gen_wrappers.py`; `tests/test_wrappers.py` fails if they're stale.
 - `esp32/lib/BruceLink/` — bridge core + NimBLE transport (portable / NimBLE only).
 - `esp32/src/modules/brucelink/` — Bruce glue (builds only in the Bruce tree) + `PATCH.md`.
-  `python3 tools/install_into_bruce.py <bruce-checkout>` installs it, the bridge library
-  a "BruceLink" item on Bruce 1.17's main menu and a `bruceLinkBoot()` call at the end of
-  `setup()` (`--uninstall` reverses; tested by `tests/test_install_into_bruce.py`).
+  `python3 tools/install_into_bruce.py <bruce-checkout>` installs it, the bridge library,
+  a "BruceLink" item on Bruce 1.17's main menu, the two boot hooks in `setup()` and the
+  NimBLE-in-PSRAM build flags for the StickS3 env (`--uninstall` reverses; tested by
+  `tests/test_install_into_bruce.py`).
 - `esp32/test_compile/` — standalone ESP32-S3 compile check (stub backend).
 - `tests/c/` — host C tests (ASan+UBSan). `tests/test_protocol.py` — Python + interop.
 - `scripts/hil/` — hardware-in-the-loop scripts.

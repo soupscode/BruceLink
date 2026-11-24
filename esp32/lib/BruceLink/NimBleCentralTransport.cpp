@@ -97,7 +97,11 @@ void NimBleCentralTransport::startScan(uint32_t duration_s) {
     // object lives. This scan runs whenever no Flipper is linked, and
     // internal RAM is what Wi-Fi needs next to BLE (hardware, 2026-11-23).
     scan->setMaxResults(0);
-    scan->setActiveScan(true);
+    // Passive: the Flipper puts the service UUID in its advertisement itself
+    // (bl_ble_transport.c), so no scan request is needed. An active scan made
+    // NimBLE keep every scannable advertiser (~100 B of internal RAM each)
+    // until its scan response came or 10 s passed (RAM review 2026-11-23).
+    scan->setActiveScan(false);
     scan->setInterval(100);
     scan->setWindow(80);
     portENTER_CRITICAL(&lock_);

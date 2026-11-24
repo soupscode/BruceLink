@@ -29,6 +29,10 @@ namespace brucelink {
  * here after a restart. Validated (magic, CRC, bounds) before any use. */
 static RTC_NOINIT_ATTR bl_job_record_t g_job;
 static volatile bool g_restart = false;
+/* "Start BruceLink once at the next boot" (restartIntoBruceLink), kept in
+ * the same RTC memory as the job record. Any other value means no. */
+static RTC_NOINIT_ATTR uint32_t g_autostart;
+static const uint32_t kAutostartMagic = 0x424C4153u; // "BLAS"
 
 /* This boot's decision (bruceLinkBootEarly), acted on again at the end of
  * setup (bruceLinkBoot). */
@@ -57,6 +61,13 @@ bool jobRestartRequested() {
 
 void jobRestartCancel() {
     g_restart = false;
+}
+
+void restartIntoBruceLink() {
+    logStep("restarting into BruceLink (heap too fragmented for BLE)");
+    g_autostart = kAutostartMagic;
+    delay(50);
+    esp_restart();
 }
 
 static bool timeUp(uint32_t deadline) {
@@ -182,6 +193,10 @@ static void runJob(bl_job_record_t* rec) {
 void bruceLinkBootEarly() {
     using namespace brucelink;
     g_boot = bl_job_on_boot(&g_job);
+    // Asked for once, honoured once: cleared before anything can fail.
+    const bool autostart = g_autostart == kAutostartMagic;
+    g_autostart = 0;
+    if(g_boot == BL_JOB_BOOT_NONE && autostart) g_boot = BL_JOB_BOOT_LINK;
     switch(g_boot) {
     case BL_JOB_BOOT_RUN:
         // Before Bruce's boot animation (up to 7 s), sound, Wi-Fi at
@@ -208,9 +223,10 @@ void bruceLinkBoot() {
     g_boot = BL_JOB_BOOT_NONE;
     bruceConfig.instantBoot = g_saved_instant_boot;
     bruceConfig.wifiAtStartup = g_saved_wifi_at_startup;
-    // The job's result is waiting: bring the link back without a menu
-    // trip. resume_link is already cleared, so this happens once.
-    logStep("job: back from a job, starting BruceLink");
+    // The job's result is waiting (or the user asked for a restart into
+    // BruceLink): bring the link back without a menu trip. Both flags are
+    // already cleared, so this happens once.
+    logStep("boot: starting BruceLink");
     if(moduleStart() != kModuleStarted) logStep("job: BruceLink did not start");
 }
 #endif // !LITE_VERSION

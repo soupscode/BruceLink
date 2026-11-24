@@ -2,6 +2,22 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — RAM trims without feature loss (2026-11-23)
+
+From three RAM reviewers (Bruce's static RAM, its heap and PSRAM use, and the
+BLE stack plus BruceLink). Built; **not yet run on hardware**.
+
+- NimBLE's host buffers (msys pools, ACL and HCI event buffers, about 16 kB at
+  BLE start) live in PSRAM: a forced-include header the installer adds to the
+  StickS3 build flags. Applies to Bruce's own BLE tools too.
+- Bridge task stack 10 → 7 kB (3 kB internal RAM while BruceLink is on; the
+  task no longer runs a Wi-Fi scan).
+- Passive BLE scan: the Flipper's advertisement carries the service UUID, so
+  no scan requests, and NimBLE no longer keeps each scannable advertiser in
+  internal RAM while waiting for its scan response.
+- Turn on, when the heap has no 48 kB block for BLE, offers "restart into
+  BruceLink" instead of only "reboot, then retry".
+
 ## [Unreleased] — Review fixes (2026-11-23)
 
 From an independent review of the whole repository (four reviewers: protocol

@@ -11,7 +11,7 @@ python3 tools/install_into_bruce.py /path/to/bruce-firmware     # from the Bruce
 cd /path/to/bruce-firmware && pio run -e m5stack-sticks3
 ```
 
-The installer (idempotent; `--uninstall` reverses it; host-tested) does four things:
+The installer (idempotent; `--uninstall` reverses it; host-tested) does five things:
 
 - copies `esp32/lib/BruceLink/` + `shared/brucelink_core/src/` to Bruce's
   `lib/BruceLink/` (bridge core, NimBLE central transport, shared protocol core).
@@ -39,7 +39,16 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does four thi
   same guard and marker): `bruceLinkBootEarly()` right after
   `_late_setup_gpio()` (a job runs there, before the boot animation) and
   `bruceLinkBoot()` right before Bruce's startup app (turns BruceLink back on
-  after a job). On a normal boot both do nothing.
+  after a job, or after "restart into BruceLink"). On a normal boot both do
+  nothing.
+- adds two build flags to the StickS3 environment in
+  `boards/m5stack-sticks3/m5stack-sticks3.ini` (both ending in `; BruceLink`):
+  `-I lib/BruceLink` and `-include bl_nimble_psram.h`. The header puts
+  NimBLE's host buffers (about 16 kB, allocated at BLE start) in PSRAM instead
+  of internal RAM, for BruceLink and for Bruce's own BLE tools. A `-D` flag
+  cannot do this: NimBLE-Arduino reads the prebuilt `sdkconfig.h`, which would
+  set internal RAM again. Checked in the compile-check object code (the
+  allocator asks for PSRAM, caps `0x404`); not yet run on hardware.
 
 That is the whole change to Bruce so far: no existing Bruce function is modified.
 

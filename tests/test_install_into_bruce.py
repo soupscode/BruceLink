@@ -64,6 +64,14 @@ CONFIG = (
     "        };\n"
     "}\n"
 )
+STICKS3_INI = (
+    "[env:m5stack-sticks3]\n"
+    "build_flags =\n"
+    "\t${env.build_flags}\n"
+    "\n"
+    "\t-Iboards/m5stack-sticks3\n"
+    "\t-DUSB_as_HID=1  ;uncomment to enable\n"
+)
 # What the previous version of the installer left in ConfigMenu.cpp.
 CONFIG_OLD_INSTALL = CONFIG.replace(
     '#include "core/wifi/wifi_common.h"\n',
@@ -90,25 +98,27 @@ class InstallIntoBruce(unittest.TestCase):
         self.main_cpp = self.bruce / "src/core/main_menu.cpp"
         self.config = self.bruce / "src/core/menu_items/ConfigMenu.cpp"
         self.main = self.bruce / "src/main.cpp"
+        self.ini = self.bruce / "boards/m5stack-sticks3/m5stack-sticks3.ini"
         self.config.parent.mkdir(parents=True)
+        self.ini.parent.mkdir(parents=True)
         self.write(MAIN_H, MAIN_CPP, CONFIG)
         (self.bruce / "platformio.ini").write_text("[platformio]\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def write(self, h, cpp, config, eol="\n", main=MAIN):
+    def write(self, h, cpp, config, eol="\n", main=MAIN, ini=STICKS3_INI):
         for path, text in ((self.main_h, h), (self.main_cpp, cpp), (self.config, config),
-                           (self.main, main)):
+                           (self.main, main), (self.ini, ini)):
             path.write_bytes(text.replace("\n", eol).encode())
 
     def snapshot(self):
-        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config, self.main)]
+        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config, self.main, self.ini)]
 
     def assert_pristine(self, eol="\n"):
         self.assertEqual(
             self.snapshot(),
-            [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG, MAIN)])
+            [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG, MAIN, STICKS3_INI)])
         self.assertFalse((self.bruce / "lib/BruceLink").exists())
         self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
@@ -168,6 +178,14 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertEqual(main.splitlines()[early - 2], "    _late_setup_gpio();")
         self.assertIn("USE_DUMMY_TFT", main.splitlines()[early + 2])
         self.assertTrue((mod / "BruceLinkJobs.cpp").is_file())
+        # the NimBLE-in-PSRAM forced include, right after the inherited flags,
+        # pointing at a header the library copy has
+        ini = self.ini.read_text().splitlines()
+        i = ini.index("\t${env.build_flags}")
+        self.assertEqual(ini[i + 1], "\t-I lib/BruceLink ; BruceLink")
+        self.assertEqual(ini[i + 2], "\t-include bl_nimble_psram.h ; BruceLink")
+        self.assertEqual(sum("bl_nimble_psram" in l for l in ini), 1)
+        self.assertTrue((lib / "bl_nimble_psram.h").is_file())
 
         once = self.snapshot()
         r = run(self.bruce, "--force")  # second run changes nothing
@@ -224,6 +242,15 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("bruceLinkBoot", r.stderr)  # says what to add
         self.assertEqual(self.snapshot(), before)  # the menu files are not touched either
+
+    def test_unknown_board_ini_is_reported_not_guessed(self):
+        self.write(MAIN_H, MAIN_CPP, CONFIG, ini=STICKS3_INI.replace("${env.build_flags}", "${common.flags}"))
+        before = self.snapshot()
+        r = run(self.bruce, "--force")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("bl_nimble_psram.h", r.stderr)  # says what to add
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.bruce / "lib/BruceLink").exists())
 
     def test_without_config_menu(self):
         """ConfigMenu.cpp is only cleaned; a tree without it still installs."""
