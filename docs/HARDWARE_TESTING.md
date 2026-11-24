@@ -9,7 +9,10 @@ Windows, Linux and macOS and is the verified path (owner's PC, 2026-11-24); the
 `.sh` scripts are Linux-only (`udevadm`, `/dev/ttyACM*`) and unverified; the
 `.ps1` scripts are Windows-only read-only helpers. Logs go to `hil-logs/`
 (git-ignored). Set `STICKS3_PORT` / `FLIPPER_PORT`, or pass `--port`, to
-override auto-detection.
+override auto-detection. Its parsers (Flipper CLI replies, the app's code
+digest, the partition table, the app descriptor, `verify-flash` output, the
+read-only command allowlist) are host-tested by `tests/test_hil.py`, which
+needs no device and no pyserial.
 
 ## 0. Safety first
 

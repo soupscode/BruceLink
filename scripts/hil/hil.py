@@ -43,8 +43,8 @@ from pathlib import Path
 try:
     import serial
     from serial.tools import list_ports
-except ImportError:  # pragma: no cover - environment check
-    sys.exit("pyserial is required: python -m pip install pyserial")
+except ImportError:  # the device commands need it (main() says so); the
+    serial = list_ports = None  # parsers below do not (tests/test_hil.py)
 
 REPO = Path(__file__).resolve().parents[2]
 FLIPPER_VID, FLIPPER_PID = 0x0483, 0x5740
@@ -348,6 +348,14 @@ def esptool(*args):
     return r.returncode, r.stdout + r.stderr
 
 
+def verify_flash_ok(rc, text):
+    """Whether `esptool verify-flash` matched. esptool 4 prints "-- verify OK
+    (digest matched)", esptool 5 "Verification successful (digest matched)";
+    a difference prints a mismatch and exits non-zero."""
+    low = text.lower()
+    return rc == 0 and "digest matched" in low and "mismatch" not in low
+
+
 def parse_partitions(blob):
     parts = []
     for i in range(0, 0xC00, 32):
@@ -395,8 +403,7 @@ def cmd_sticks3_backup(a):
     # Read-only comparison of the file against the chip (MD5 per region).
     rc, vout = esptool("--chip", "esp32s3", "-p", port, "verify-flash", "0x0", str(image))
     (dest / "verify-flash.txt").write_text(vout)
-    low = vout.lower()
-    verified = rc == 0 and ("verification successful" in low or "verified" in low) and "mismatch" not in low
+    verified = verify_flash_ok(rc, vout)
     blob = image.read_bytes()
     parts = parse_partitions(blob[0x8000:0x9000])
     app = next((p for p in parts if p["type"] == 0), None)
@@ -489,12 +496,15 @@ def main(argv=None):
     s.set_defaults(fn=cmd_sticks3_cli)
     s = sub.add_parser("check")
     s.add_argument("--flipper-port"); s.add_argument("--sticks3-port")
-    s.add_argument("--fap-ref", help="reference .fap to compare the installed app against (MD5)")
+    s.add_argument("--fap-ref", help="reference .fap to compare the installed app against "
+                   "(code digest: every ELF section except .gnu_debuglink)")
     s.add_argument("--log-seconds", type=float, default=0, help="also log the StickS3 (no reset) this long")
     s.add_argument("--sticks3-cli", action="store_true",
                    help="also ask Bruce's CLI for `info` and `free` (read-only, no reset)")
     s.add_argument("--out"); s.set_defaults(fn=cmd_check)
     a = p.parse_args(argv)
+    if serial is None:
+        sys.exit("pyserial is required: python -m pip install pyserial")
     return a.fn(a)
 
 

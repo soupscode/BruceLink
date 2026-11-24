@@ -773,6 +773,24 @@ Windows).
 | GitHub Actions run 45361740657 (`e4b0928`) | **all jobs green**; cppcheck passes and the Python/interop step runs for the first time on CI |
 | PR review follow-up: `$CC` as a quoted Windows path with an argument (`"C:\…\gcc.exe" -m64`) | failed before (`FileNotFoundError`: the quotes were kept and escaped); builds and passes after. New `CompilerCommandTests` (the Windows case splits with `CommandLineToArgvW`) fail against the old logic; 16 tests OK on Windows, 15 OK + 1 skipped (Windows-only) on Linux |
 
+### 2026-11-24 — HIL diagnostics tooling (local session, `tools/hil-diagnostics`, agent-read)
+
+`scripts/hil/hil.py` plus the Windows `.ps1` helpers. Every command used here
+only reads; `sticks3-backup` reboots the stick (download mode) and writes
+nothing. Devices: Flipper on Momentum `mntm-012` (API 87.1, COM12), StickS3
+ESP32-S3-PICO-1 rev v0.2 (COM13), both running the `448b798` builds.
+
+| Check | Result |
+|---|---|
+| `hil.py check --fap-ref <448b798 .fap> --sticks3-cli --log-seconds 5` (Windows 11, Python 3.11.9, pyserial 3.5) | **11/11 PASS**: both present; Flipper `mntm-012`, API 87.1, target 7; app installed, same code as the reference build (only `.gnu_debuglink` differs); paired; Bruce CLI answers; serial read without a reset |
+| `hil.py flipper-backup` | app + `apps_data/brucelink/` files read, each MD5-matched against the Flipper |
+| `hil.py sticks3-backup` (esptool 5.6.0) | full 8 MB read; `verify-flash` digest matched; partition table and app descriptor parsed |
+| `hil.py sticks3-log` / `check --log-seconds 5` | port opened with DTR/RTS low: no reset (a reset would print Bruce's boot log; the 5 s capture in `check` read 0 lines) |
+| `tests/test_hil.py` (no device, no pyserial) | 16 OK on Windows and Linux (WSL); also OK with pyserial blocked, as on CI. The esptool 4 `verify-flash` case fails against the first version's check (it matched only esptool 5's wording) |
+
+The backups hold pairing keys and the serial logs can hold `bruce.conf`
+secrets: both stay on the owner's PC, outside the repository.
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see
