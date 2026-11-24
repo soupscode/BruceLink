@@ -771,6 +771,7 @@ Windows).
 | `python -m unittest discover -s tests` (Windows 11, Python 3.11.9, WinLibs gcc 16.2.0) | 29 OK, 1 skipped (no built `.fap`); all 7 interop tests run |
 | Independent review (differential: old vs new `bl_hkdf_expand` for every `out_len` 0–8160 × 9 info shapes, ASan+UBSan) | byte-identical output; fit to merge |
 | GitHub Actions run 45361740657 (`e4b0928`) | **all jobs green**; cppcheck passes and the Python/interop step runs for the first time on CI |
+| PR review follow-up: `$CC` as a quoted Windows path with an argument (`"C:\…\gcc.exe" -m64`) | failed before (`FileNotFoundError`: the quotes were kept and escaped); builds and passes after. New `CompilerCommandTests` (the Windows case splits with `CommandLineToArgvW`) fail against the old logic; 16 tests OK on Windows, 15 OK + 1 skipped (Windows-only) on Linux |
 
 ## Not yet tested (requires the local hardware session)
 
