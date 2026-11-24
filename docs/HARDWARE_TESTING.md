@@ -250,11 +250,17 @@ Needs both devices on the same build (Flipper 0.7) and a paired, connected link.
    CRC-32 checked". On a PC the file is in `apps_data/brucelink/captures/` and
    opens in Wireshark (linktype 105) with the EAPOL frames.
 3. Start a larger download and walk out of range (or turn BruceLink off and
-   on): it continues where it stopped once the link is back (Connect again if
-   needed), and still ends with the CRC check.
+   on): it continues where it stopped once the link is back (pressing Connect
+   is fine too), and still ends with the CRC check. Five drops in a row with no
+   progress end it with "Gave up".
 4. **Delete** a file (confirm with Yes): it disappears from the list on the next
    **Captures**.
 5. Capture and transfer never overlap: the capture runs with BLE off.
+6. On the USB serial log, note `stack-left` on the `files: listing` and
+   `files: info` lines with 7 or more files and the largest file: LittleFS now
+   runs on the bridge task (8 kB stack).
+7. The file crosses the link unencrypted (M4.6): test with captures of your
+   own network only.
 
 ## 9. Active-RF gate (authorized lab only)
 

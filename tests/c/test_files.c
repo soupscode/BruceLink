@@ -16,10 +16,15 @@ static void t_names(void) {
     CHECK(ok("HS_A1B2C3D4E5F6.pcap"));
     CHECK(ok("HS_A1B2C3D4E5F6_My-Home_Wifi.5G.pcap"));
     CHECK(ok("HS_A1B2C3D4E5F6_abcdefghijklmnopqrstuvwxyz012345.pcap")); /* 32-char SSID */
+    /* Bruce keeps dots in SSIDs (review 2026-11-23: these were refused, so
+     * real captures could not be listed, fetched or deleted) */
+    CHECK(ok("HS_A1B2C3D4E5F6_My..Net.pcap"));
+    CHECK(ok("HS_A1B2C3D4E5F6_Cafe..pcap"));
+    CHECK(ok("a..b.pcap"));
     /* never a path, never outside the directory */
     CHECK(!ok("../HS_A.pcap"));
     CHECK(!ok("..pcap"));
-    CHECK(!ok("a..b.pcap"));
+    CHECK(!ok("..\\HS_A.pcap"));
     CHECK(!ok("dir/HS_A.pcap"));
     CHECK(!ok("dir\\HS_A.pcap"));
     CHECK(!ok("/HS_A.pcap"));
@@ -84,6 +89,11 @@ static void t_list(void) {
     memcpy(extra, out, len);
     extra[len] = 0;
     CHECK_EQ_INT(bl_files_parse_list(extra, len + 1, &total, &start, e, 7, &count), BL_E_FORMAT);
+    /* the list shrank between two pages: an empty page past the total is
+     * an answer, not a malformed reply (review 2026-11-23) */
+    CHECK_EQ_INT(bl_files_list_begin(3, 7, out, sizeof(out), &len), BL_OK);
+    CHECK_EQ_INT(bl_files_parse_list(out, len, &total, &start, e, 7, &count), BL_OK);
+    CHECK_EQ_INT((long)count, 0);
     /* requests */
     uint8_t r[2];
     uint8_t st = 0;
@@ -288,6 +298,57 @@ static void t_download_resume_and_failures(void) {
     CHECK(bl_xferc_next(&x, &type, req, sizeof(req)) > 0);
     bl_xferc_unsend(&x);
     CHECK(bl_xferc_next(&x, &type, req, sizeof(req)) > 0);
+
+    /* a reply of the wrong type for the request that is out */
+    bl_xferc_start(&x, "HS_R.pcap", 9);
+    CHECK(round_trip(&x, &s)); /* info: now a read is due */
+    CHECK(bl_xferc_next(&x, &type, req, sizeof(req)) > 0);
+    h = bl_files_encode_info(1000, 0, "HS_R.pcap", 9, resp, sizeof(resp));
+    CHECK(bl_xferc_on_response(&x, BL_MSG_CAP_FILE_INFO, resp, (size_t)h, &d, &dl, &at));
+    CHECK(x.state == BL_XFER_FAILED && x.fail == BL_XFER_F_PROTOCOL);
+
+    /* same size, other content (the CRC alone tells): changed */
+    memset(s.got, 0, sizeof(s.got));
+    s.got_len = 0;
+    bl_xferc_start(&x, "HS_R.pcap", 9);
+    CHECK(round_trip(&x, &s));
+    CHECK(round_trip(&x, &s));
+    bl_xferc_retry(&x);
+    s.file[999] ^= 0x55;
+    CHECK(round_trip(&x, &s));
+    CHECK(x.state == BL_XFER_FAILED && x.fail == BL_XFER_F_CHANGED);
+    s.file[999] ^= 0x55;
+
+    /* an error reply with no code is still a refusal */
+    bl_xferc_start(&x, "HS_R.pcap", 9);
+    CHECK(bl_xferc_next(&x, &type, req, sizeof(req)) > 0);
+    CHECK(bl_xferc_on_response(&x, BL_MSG_ERROR, NULL, 0, &d, &dl, &at));
+    CHECK(x.state == BL_XFER_FAILED && x.fail == BL_XFER_F_REFUSED && x.err == BL_ERR_INTERNAL);
+
+    /* a finished download is not revived by a retry */
+    srv_t z;
+    memset(&z, 0, sizeof(z));
+    bl_xferc_start(&x, "HS_Z.pcap", 9);
+    CHECK(round_trip(&x, &z));
+    CHECK_EQ_INT(x.state, BL_XFER_DONE);
+    bl_xferc_retry(&x);
+    CHECK_EQ_INT(x.state, BL_XFER_DONE);
+
+    /* review 2026-11-23: a link that keeps dropping is given up on, but
+     * every chunk that gets through restarts the count */
+    bl_xferc_start(&x, "HS_R.pcap", 9);
+    for(unsigned i = 0; i + 1 < BL_XFER_RETRY_MAX; i++) {
+        CHECK(bl_xferc_next(&x, &type, req, sizeof(req)) > 0);
+        bl_xferc_retry(&x);
+        CHECK(bl_xferc_active(&x));
+    }
+    memset(s.got, 0, sizeof(s.got));
+    s.got_len = 0;
+    CHECK(round_trip(&x, &s)); /* info: not progress */
+    CHECK(round_trip(&x, &s)); /* a chunk: progress */
+    CHECK_EQ_INT(x.retries, 0);
+    for(unsigned i = 0; i < BL_XFER_RETRY_MAX; i++) bl_xferc_retry(&x);
+    CHECK(x.state == BL_XFER_FAILED && x.fail == BL_XFER_F_GAVE_UP);
 
     /* bytes that do not match the CRC */
     memset(s.got, 0, sizeof(s.got));

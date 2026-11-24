@@ -48,7 +48,7 @@ Phase 1 BLE; does not interrupt foundation work.
 | P2.4 | Generalized command adapter (CMD_REQ) | 🟡 | Bridge dispatch; add features via registry |
 | P2.5 | Remote safety gate (connection-level) | ✅ host | default-deny, one specific target, rate (no wrap), e-stop, link-loss, cleared only by a new session, refund; mutation-checked 2026-11-23. Nothing transmits yet |
 | P2.6 | Sniffer/EAPOL via Bruce (handshake mode) | 🟡 | As M5.2. Handshake pcap on LittleFS on HW |
-| P2.7 | Resumable PCAP transfer + integrity | 🟡 host-tested | `bl_files`: stateless reads, resume after a drop (same size + CRC), CRC-32 at the end, strict names. HARDWARE_TESTING step 8 |
+| P2.7 | Resumable PCAP transfer + integrity | 🟡 host-tested (core + bridge) | `bl_files`: stateless reads, resume after a drop (same size + CRC), CRC-32 at the end, strict names, retry cap. Flipper routing not host-tested. Not encrypted until M4.6. HARDWARE_TESTING step 8 |
 | P2.8 | Transfer channel decision (BLE/USB/Wi-Fi) | ⬜ | Throughput + coexistence measured on HW |
 | P2.9 | BLE/Wi-Fi coexistence evaluation | ⬜ | Loss/drop numbers recorded |
 | P2.10 | Capture UI on Flipper | 🟡 builds | Handshake Capture (duration, channel), Captures (list, download to SD, delete) |

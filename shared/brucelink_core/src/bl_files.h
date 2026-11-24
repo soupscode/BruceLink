@@ -24,9 +24,14 @@
  * checked once the last byte is in.
  *
  * Names are the bare file name, never a path: bl_file_name_ok() is the only
- * gate, applied on both devices. It accepts exactly what Bruce's sniffer can
- * produce ([A-Za-z0-9._-], ending in ".pcap") and so can never name a file
- * outside the capture directory.
+ * gate, applied on both devices. It accepts what Bruce's sniffer produces
+ * ([A-Za-z0-9._-], ending in ".pcap"; Bruce keeps dots in SSIDs, so "..",
+ * as in "HS_<MAC>_Cafe..pcap", is allowed) and, with no separator possible
+ * and no leading dot, can never name a file outside the capture directory.
+ *
+ * Not encrypted: until M4.6 the link authenticates frames but does not
+ * encrypt them, so a capture file sent over it is readable by a nearby BLE
+ * sniffer.
  * SPDX-License-Identifier: MIT
  */
 #pragma once
@@ -42,9 +47,17 @@ extern "C" {
 #define BL_FILE_LIST_PAGE 7u /* entries per CAP_LIST reply (fits 512 B) */
 #define BL_FILE_LIST_MAX 255u
 #define BL_FILE_SIZE_MAX (4u * 1024u * 1024u) /* larger than the StickS3's LittleFS */
+/* The largest request payload (CAP_XFER_DATA with the longest name) and the
+ * sealed frame it makes: what a sender's buffer must hold (review
+ * 2026-11-23: the Flipper sealed into 44 bytes, so no request with a file
+ * name could be sent). */
+#define BL_FILES_REQ_PAYLOAD_MAX (7u + BL_FILE_NAME_MAX)
+#define BL_FILES_REQ_FRAME_MAX (BL_HDR_LEN + BL_FILES_REQ_PAYLOAD_MAX + BL_MAC_LEN)
+/* A download gives up after this many retries in a row with no progress. */
+#define BL_XFER_RETRY_MAX 5u
 
 /* A capture file name the StickS3 may serve: 1..BL_FILE_NAME_MAX bytes of
- * [A-Za-z0-9._-], not starting with '.', no "..", ending in ".pcap". */
+ * [A-Za-z0-9._-], not starting with '.', ending in ".pcap". */
 bool bl_file_name_ok(const char* name, size_t len);
 
 typedef struct {
@@ -143,6 +156,7 @@ typedef enum {
     BL_XFER_F_PROTOCOL, /* a reply that does not fit the request */
     BL_XFER_F_CHANGED, /* the file changed while downloading */
     BL_XFER_F_CRC, /* all bytes in, CRC mismatch */
+    BL_XFER_F_GAVE_UP, /* BL_XFER_RETRY_MAX retries in a row without progress */
 } bl_xfer_fail_t;
 
 typedef struct {
@@ -160,6 +174,7 @@ typedef struct {
     uint8_t waiting_type;
     uint32_t want_offset; /* offset of the outstanding read */
     uint16_t want_len;
+    uint8_t retries; /* in a row, since the last progress */
 } bl_xferc_t;
 
 void bl_xferc_init(bl_xferc_t* x);
@@ -180,7 +195,9 @@ bool bl_xferc_on_response(
     const uint8_t** data,
     size_t* data_len,
     uint32_t* at);
-/* The request went unanswered (timeout) or the link dropped: ask again. */
+/* The request went unanswered (timeout) or the link dropped: ask again,
+ * unless that has now happened BL_XFER_RETRY_MAX times in a row without a
+ * byte of progress (then BL_XFER_F_GAVE_UP). Only for an active download. */
 void bl_xferc_retry(bl_xferc_t* x);
 bool bl_xferc_active(const bl_xferc_t* x);
 

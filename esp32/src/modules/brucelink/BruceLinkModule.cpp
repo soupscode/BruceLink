@@ -36,11 +36,12 @@ namespace brucelink {
  * ~1.2 KB frame) and handlers that stage one 512-byte payload plus a
  * 540-byte frame, on top of NimBLE client calls. Measured peak: 4.3 kB, when
  * the task still ran a Wi-Fi scan (it no longer does: ADR 0006). The pairing
- * path is about 3.5 kB by -fstack-usage (RAM review, 2026-11-23). 7 kB keeps
- * a margin and gives 3 kB of internal RAM back; `stack-left` in the log
- * shows what is left. (A PSRAM stack would give all 10 kB back, but then
- * this task must never touch flash, and NimBLE's deinit runs here.) */
-static const uint32_t kTaskStackBytes = 7 * 1024;
+ * path is about 3.5 kB by -fstack-usage (RAM review, 2026-11-23). Capture
+ * files add LittleFS calls (VFS, littlefs metadata walks) on this task, not
+ * yet measured, so 8 kB rather than the 7 kB the RAM trim chose; `stack-left`
+ * in the log shows what is left. (A PSRAM stack would give all of it back,
+ * but then this task must never touch flash, and it reads LittleFS now.) */
+static const uint32_t kTaskStackBytes = 8 * 1024;
 static const UBaseType_t kTaskPriority = 1; // same as Arduino's loopTask
 static const TickType_t kLoopPeriod = pdMS_TO_TICKS(10);
 /* Pairing mode gives up if no Flipper has shown up in this long. */

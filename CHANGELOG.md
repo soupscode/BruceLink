@@ -19,6 +19,19 @@ Builds on both devices; host-tested; **not yet run on hardware**. Flipper app
   serves none.
 - Flipper: **Handshake Capture** (duration, channel, start) and **Captures**
   (list, download, delete) screens.
+- **Not encrypted:** a downloaded capture crosses the BLE link readable (M4.6).
+- Review fixes before any hardware run (independent review of the transfer
+  path; the capture job's review was stopped by a usage safeguard and has not
+  been done):
+  - the Flipper sealed requests into 16 bytes of payload, so Download and
+    Delete could never be sent (the first build, `2b2c669` / `a1a6c04`);
+  - a failed rename was reported as saved;
+  - Connect while a download waited dropped it; now it continues;
+  - names with `..` (Bruce keeps dots in SSIDs) were refused;
+  - a download now gives up after 5 retries without progress, retries only
+    on its own timeout, and ignores event frames;
+  - an empty list page (the list shrank) is not "malformed";
+  - the bridge task stack is 8 kB again (LittleFS runs on it now).
 
 ## [Unreleased] — RAM trims in Bruce (2026-11-23, owner's choice)
 

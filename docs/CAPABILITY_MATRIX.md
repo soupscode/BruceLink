@@ -62,9 +62,11 @@ out.
    host-tested; the job itself is not host-testable.
 4. `bl_files` (shared core): list, info + CRC-32, stateless chunked reads, delete,
    and the Flipper's download tracker (resume after a dropped link, CRC check).
-   Over the live BLE link: handshake pcaps are a few kB. Names are checked on
-   both devices; only `/BrucePCAP/handshakes/*.pcap` can be named. Host-tested
-   end to end through the bridge with an in-memory backend.
+   Over the live BLE link: handshake pcaps are a few kB, **not encrypted**
+   until M4.6. Names are checked on both devices; only
+   `/BrucePCAP/handshakes/*.pcap` can be named. The core and the bridge are
+   host-tested (bridge with an in-memory backend); the Flipper's screens and
+   reply routing are not.
 5. PCAP header bytes and CRC32 verified against the C core and an independent
    Python implementation (`tests/test_protocol.py`).
 6. BruceLink adds **no** transmit code. Active ops are to forward to Bruce's

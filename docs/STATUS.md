@@ -64,8 +64,8 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | PCAP writer (linktype 105) + CRC-32 | ✅ host-tested + interop |
 | Generalized command adapter (CMD_REQ) | 🟡 in bridge core |
 | Remote safety gate (connection-level) | 🟡 host-tested (default-off, one specific target always, frame budget, no wrap, e-stop on link loss and cleared only by a new session, refund after a failed transmit; the review's surviving mutants are now caught). Nothing transmits yet: no active op is wired into Bruce. The target scope exists in the core only (nothing on the wire sets it) |
-| Handshake capture as a job (Bruce's sniffer, BLE off) | 🟡 bridge side host-tested; builds in Bruce; not yet run (`HARDWARE_TESTING.md` 7) |
-| Capture files: list, download (resumable, CRC-32), delete | 🟡 `bl_files` + bridge host-tested end to end; Flipper screens build; not yet run (`HARDWARE_TESTING.md` 8) |
+| Handshake capture as a job (Bruce's sniffer, BLE off) | 🟡 bridge side host-tested; builds in Bruce; not yet run (`HARDWARE_TESTING.md` 7); not independently reviewed (the review was stopped by a usage safeguard) |
+| Capture files: list, download (resumable, CRC-32), delete | 🟡 `bl_files` (payloads, names, the download tracker) and the bridge host-tested; the request size through `bl_client` host-tested; the Flipper's screens and reply routing build but are not host-tested; not yet run (`HARDWARE_TESTING.md` 8). **Not encrypted** over BLE (M4.6) |
 | RAM trims on the StickS3 (no USB HID / mass storage, no mDNS, cracker out of IRAM, tables and NimBLE buffers in PSRAM) | 🟡 static internal RAM 133.8 → 91.3 kB and 4 kB IRAM back, from the build; not yet run on the stick (`HARDWARE_TESTING.md` 4a) |
 | BLE/Wi-Fi coexistence | Avoided by design (ADR 0006, owner's decision): nothing uses Wi-Fi while the link is up. Background: with NimBLE up a full `esp_wifi_init` ran out of memory on the StickS3; ADR 0004's reduced scan fitted with 1.8 kB to spare |
 

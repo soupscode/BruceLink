@@ -474,7 +474,35 @@ static void t_session_header_tamper_and_counter_end(void) {
     CHECK_EQ_INT((long)c.tx_counter, (long)0xFFFFFFFFu);
 }
 
+/* Review 2026-11-23: the Flipper sealed requests into 44 bytes (16 bytes
+ * of payload), so no capture-file request, whose name alone is 20+ bytes,
+ * could ever be sent. BL_FILES_REQ_FRAME_MAX is what a sender needs. */
+#include "../../shared/brucelink_core/src/bl_files.h"
+static void t_client_files_request_size(void) {
+    pair_t p;
+    pair_init(&p, 0x42, 0x42);
+    CHECK_EQ_INT(pair_handshake(&p, 1000), BL_OK);
+    char name[BL_FILE_NAME_MAX];
+    memset(name, 'a', sizeof(name));
+    memcpy(name + sizeof(name) - 5, ".pcap", 5);
+    uint8_t pl[BL_FILES_REQ_PAYLOAD_MAX];
+    const int n = bl_files_encode_read_req(0, BL_FILE_CHUNK_MAX, name, sizeof(name), pl, sizeof(pl));
+    CHECK_EQ_INT(n, (int)BL_FILES_REQ_PAYLOAD_MAX); /* the largest request there is */
+    uint8_t out[BL_FILES_REQ_FRAME_MAX];
+    CHECK(bl_client_request(&p.cl, BL_MSG_CAP_XFER_DATA, pl, (uint16_t)n, 1100, out, sizeof(out)) > 0);
+    /* the old buffer: even the shortest name Bruce writes did not fit */
+    pair_t q;
+    pair_init(&q, 0x43, 0x43);
+    CHECK_EQ_INT(pair_handshake(&q, 1000), BL_OK);
+    uint8_t old_buf[BL_HDR_LEN + 16 + BL_MAC_TAG_LEN];
+    const int m = bl_files_encode_name("HS_A1B2C3D4E5F6.pcap", 20, pl, sizeof(pl));
+    CHECK_EQ_INT(bl_client_request(&q.cl, BL_MSG_CAP_FILE_INFO, pl, (uint16_t)m, 1100, old_buf, sizeof(old_buf)),
+                 BL_E_OVERFLOW);
+    CHECK(bl_client_request(&q.cl, BL_MSG_CAP_FILE_INFO, pl, (uint16_t)m, 1100, out, sizeof(out)) > 0);
+}
+
 void run_client_tests(void) {
+    RUN(t_client_files_request_size);
     RUN(t_session_header_tamper_and_counter_end);
     RUN(t_client_late_response_dropped);
     RUN(t_session_hello_range_is_authenticated);

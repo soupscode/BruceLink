@@ -247,7 +247,7 @@ _NAME_CHARS = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01234567
 
 
 def file_name_ok(name: bytes) -> bool:
-    return (5 < len(name) <= FILE_NAME_MAX and name[:1] != b"." and b".." not in name
+    return (5 < len(name) <= FILE_NAME_MAX and name[:1] != b"."
             and all(c in _NAME_CHARS for c in name) and name.endswith(b".pcap"))
 
 

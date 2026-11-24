@@ -37,7 +37,6 @@ bool bl_file_name_ok(const char* name, size_t len) {
         const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                         c == '.' || c == '_' || c == '-';
         if(!ok) return false;
-        if(c == '.' && i + 1 < len && name[i + 1] == '.') return false;
     }
     return memcmp(name + len - ext, kExt, ext) == 0;
 }
@@ -116,7 +115,9 @@ int bl_files_parse_list(
     if(n < 3) return BL_E_SHORT;
     const uint8_t c = p[2];
     if(c > BL_FILE_LIST_PAGE) return BL_E_FORMAT;
-    if((size_t)p[1] + c > p[0]) return BL_E_FORMAT; /* page past the total */
+    /* page past the total; an empty page past it is fine (the list shrank
+     * between two pages) */
+    if(c > 0 && (size_t)p[1] + c > p[0]) return BL_E_FORMAT;
     size_t off = 3;
     size_t got = 0;
     for(uint8_t i = 0; i < c; i++) {
@@ -293,6 +294,10 @@ void bl_xferc_unsend(bl_xferc_t* x) {
 void bl_xferc_retry(bl_xferc_t* x) {
     if(x == NULL || !bl_xferc_active(x)) return;
     x->waiting = false;
+    if(++x->retries >= BL_XFER_RETRY_MAX) {
+        xfer_fail(x, BL_XFER_F_GAVE_UP, 0);
+        return;
+    }
     /* The file may have changed while the link was away: check it again
      * before reading on (bl_xferc_on_response compares size and CRC). */
     x->state = BL_XFER_INFO;
@@ -352,7 +357,7 @@ bool bl_xferc_on_response(
         x->have_info = true;
         x->size = size;
         x->crc_expect = crc;
-        x->state = BL_XFER_DATA;
+        x->state = BL_XFER_DATA; /* not progress: only bytes reset the retry count */
         xfer_check_end(x); /* an empty file is complete at once */
         return true;
     }
@@ -370,6 +375,7 @@ bool bl_xferc_on_response(
     *data_len = dl;
     *at = off;
     x->offset += (uint32_t)dl;
+    x->retries = 0;
     xfer_check_end(x);
     return true;
 }

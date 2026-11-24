@@ -1182,7 +1182,11 @@ static void t_files_refuse_bad_names_and_demo_key() {
     n = bl_files_encode_name("HS_A.pcap", 9, req, sizeof(req));
     CHECK(isError(d.request(BL_MSG_CAP_FILE_INFO, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
     CHECK(isError(d.request(BL_MSG_CAP_DELETE, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
+    /* nor a read by a guessed name (review 2026-11-23: untested) */
+    n = bl_files_encode_read_req(0, 16, "HS_A.pcap", 9, req, sizeof(req));
+    CHECK(isError(d.request(BL_MSG_CAP_XFER_DATA, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
     CHECK(d.be.files.size() == 1);
+    CHECK(d.be.asked.empty());
 }
 
 /* The handshake capture is a job; its channel argument is bounded. */

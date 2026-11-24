@@ -223,7 +223,10 @@ grown file with its size.
 
 Reading a file needs no radio, so these run on the live link. Every message is
 a request (C→P) and its response (P→C, RESPONSE flag) of the same type; all
-integers little-endian. Code and tests: `bl_files.{h,c}`.
+integers little-endian. Code and tests: `bl_files.{h,c}`. **Not encrypted:**
+until M4.6 a file sent this way is readable by a BLE sniffer nearby, and a
+handshake capture is exactly what an attacker would want. A sender's buffer
+must hold `BL_FILES_REQ_FRAME_MAX` (98 B).
 
 | Message | Request | Response |
 |---|---|---|
@@ -233,9 +236,10 @@ integers little-endian. Code and tests: `bl_files.{h,c}`.
 | `CAP_DELETE` | `[u8 name_len][name]` | empty |
 
 - **Names** are bare file names, never paths. Both devices accept only
-  `[A-Za-z0-9._-]`, 1–63 bytes, not starting with `.`, no `..`, ending in
-  `.pcap` (`bl_file_name_ok`): exactly what Bruce's sniffer writes, and nothing
-  outside its capture directory can be named. The StickS3 lists only such
+  `[A-Za-z0-9._-]`, 1–63 bytes, not starting with `.`, ending in `.pcap`
+  (`bl_file_name_ok`). That covers what Bruce's sniffer writes, including SSIDs
+  with dots (`HS_<MAC>_Cafe..pcap`); with no separator and no leading dot,
+  nothing outside the capture directory can be named. The StickS3 lists only such
   files, and only from `/BrucePCAP/handshakes`.
 - **Paging.** A `CAP_LIST` page covers indexes `[start, start + 7)` of `total`
   files; ask again with `start + 7`. A page can hold fewer than 7 entries if a
@@ -245,7 +249,8 @@ integers little-endian. Code and tests: `bl_files.{h,c}`.
   if size and CRC are unchanged, continues from where it was. When the last byte
   is in, the CRC-32 (the pcap writer's, `bl_pcap.h`) of the received bytes must
   equal the info's. The Flipper writes `<name>.part` under
-  `/ext/apps_data/brucelink/captures/` and renames it only then.
+  `/ext/apps_data/brucelink/captures/` and renames it only then. It gives up
+  after 5 retries in a row (timeouts or lost links) without a byte of progress.
 - **Errors:** `bad_arg` (malformed or a name that fails the check, `max_len` 0 or
   over 448), `not_found` (no such file, or an offset past its end),
   `not_authorized` (the bridge holds the public demo key: no capture files for

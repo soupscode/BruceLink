@@ -139,6 +139,7 @@ typedef struct {
     char xfer_path[96];
     bool xfer_write_failed;
     bool xfer_closed; /* the transport stopped under it */
+    bool xfer_send_failed; /* a request could not be sealed */
     bool xfer_unseen;
 
     BlScreen screen;

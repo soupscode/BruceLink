@@ -145,6 +145,7 @@ template <typename Fn> static int eachCaptureFile(Fn fn) {
 }
 
 int BruceBackendImpl::captureFileCount() {
+    logStep("files: listing"); // stack-left: LittleFS on the bridge task
     return eachCaptureFile([](const char*, uint32_t) { return true; });
 }
 
@@ -177,6 +178,7 @@ bool BruceBackendImpl::captureFileInfo(const char* name, uint32_t* size, uint32_
     }
     const bool whole = total == f.size();
     f.close();
+    logStep("files: info (CRC read)");
     if(!whole) return false; // a read that stopped short: do not vouch for it
     *size = (uint32_t)total;
     *crc = bl_crc32_final(c);

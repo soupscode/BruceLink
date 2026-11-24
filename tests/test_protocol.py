@@ -206,7 +206,7 @@ class InteropTests(unittest.TestCase):
                          bl.files_read_req(896, 448, b"HS_A1B2C3D4E5F6_Home.pcap"))
         names = [b"HS_A.pcap", b"../x.pcap", b"a..b.pcap", b".x.pcap", b"HS A.pcap", b"x.pcap.txt"]
         self.assertEqual(v["files_names_ok"], [bl.file_name_ok(n) for n in names])
-        self.assertEqual(v["files_names_ok"], [True, False, False, False, False, False])
+        self.assertEqual(v["files_names_ok"], [True, False, True, False, False, False])  # Bruce keeps dots
 
 
 if __name__ == "__main__":
