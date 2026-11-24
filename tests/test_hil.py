@@ -6,8 +6,10 @@ take bytes. Run with: python3 -m unittest discover -s tests -v
 import hashlib
 import importlib.util
 import struct
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("hil", ROOT / "scripts" / "hil" / "hil.py")
@@ -119,9 +121,97 @@ class VerifyFlashTests(unittest.TestCase):
         self.assertFalse(hil.verify_flash_ok(0, "Connecting...\n"))
         self.assertFalse(hil.verify_flash_ok(1, "Verification successful (digest matched).\n"))
 
+    def test_path_with_mismatch_in_it(self):
+        # Review finding: esptool echoes the file path.
+        self.assertTrue(hil.verify_flash_ok(
+            0, "Verifying 0x800000 (8388608) bytes at 0x00000000 in flash against "
+               "'/backups/mismatch-hunt/sticks3-full.bin'...\n"
+               "Verification successful (digest matched).\n"))
+
+
+class BootBannerTests(unittest.TestCase):
+    def test_reset_seen(self):
+        lines = ["ESP-ROM:esp32s3-20210327", "Build:Mar 27 2021",
+                 "rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)"]
+        self.assertEqual(hil.boot_banner(lines), [lines[0], lines[2]])
+
+    def test_quiet_or_running(self):
+        self.assertEqual(hil.boot_banner([]), [])
+        self.assertEqual(hil.boot_banner(["[BruceLink] module: BLE up", "free: 181063"]), [])
+
+
+class BackupRootTests(unittest.TestCase):
+    def test_refused_inside_the_repository(self):
+        # Backups hold pairing keys (review finding: they defaulted to the checkout).
+        for d in (hil.REPO, hil.REPO / "hil-logs", hil.REPO / "backups" / "new"):
+            with self.assertRaises(SystemExit):
+                hil.backup_root(str(d))
+
+    def test_outside_any_checkout(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            if hil.in_git_checkout(t):
+                self.skipTest("the temp folder is inside a git checkout here")
+            d = Path(t) / "backups" / "new"
+            self.assertEqual(hil.backup_root(str(d)), d)
+            self.assertTrue(d.is_dir())
+
+
+class LineRecorder:
+    """A pyserial Serial stand-in that records the DTR/RTS line states the
+    device sees. POSIX: the kernel raises both lines at open, then pyserial
+    applies DTR, then RTS. Windows: pyserial applies both at once."""
+
+    def __init__(self, posix):
+        self.posix, self.states, self.is_open = posix, [], False
+        self._dtr = self._rts = True  # pyserial's defaults
+
+    def _set(self, name, value):
+        setattr(self, name, value)
+        if self.is_open:
+            self.states.append((self._dtr, self._rts))
+
+    dtr = property(lambda s: s._dtr, lambda s, v: s._set("_dtr", v))
+    rts = property(lambda s: s._rts, lambda s, v: s._set("_rts", v))
+
+    def open(self):
+        want = (self._dtr, self._rts)
+        if self.posix:
+            self._dtr = self._rts = True
+            self.states.append((True, True))
+            self._dtr = want[0]
+            self.states.append((self._dtr, self._rts))
+            self._rts = want[1]
+            self.states.append((self._dtr, self._rts))
+        else:
+            self._dtr, self._rts = want
+            self.states.append(want)
+        self.is_open = True
+
+
+class OpenNoResetTests(unittest.TestCase):
+    # The ESP32-S3 USB-Serial/JTAG resets the chip while RTS is on and DTR off.
+    RESET = (False, True)
+
+    def states(self, posix):
+        rec = LineRecorder(posix)
+        with mock.patch.object(hil, "serial", types.SimpleNamespace(Serial=lambda: rec)):
+            hil.open_no_reset("PORT", posix=posix)
+        return rec.states
+
+    def test_posix_never_passes_through_reset(self):
+        # Review finding: DTR off + RTS off before open went on/on, off/on, off/off.
+        states = self.states(posix=True)
+        self.assertNotIn(self.RESET, states)
+        self.assertEqual(states[-1], (False, False))
+
+    def test_windows_unchanged(self):
+        # The order verified on the StickS3: both lines off at once.
+        self.assertEqual(self.states(posix=False), [(False, False)])
+
 
 class FakeSerial:
-    """Replays a device's reply a few bytes at a time."""
+    """Replays a device's reply `chunk` bytes at a time."""
 
     def __init__(self, reply, chunk=7):
         self.reply, self.chunk, self.written = reply, chunk, b""
@@ -137,19 +227,35 @@ class FakeSerial:
         return out
 
 
-def fake_cli(reply):
+def fake_cli(reply, chunk=7):
     cli = hil.FlipperCli.__new__(hil.FlipperCli)  # no port opened
-    cli.s = FakeSerial(reply)
+    cli.s = FakeSerial(reply, chunk)
     return cli
+
+
+def storage_read_reply(path, data):
+    # As the Flipper sends it: echo, size line, the bytes, CR/LF, the prompt.
+    return b"storage read %s\r\nSize: %d\r\n" % (path, len(data)) + data + b"\r\n\r\n>: "
 
 
 class FlipperCliTests(unittest.TestCase):
     def test_read_file_returns_exact_bytes(self):
         # The file's own bytes may contain the prompt and CR/LF.
         data = b"\x00\x01\r\n>: Size: 9\r\n\xff" + bytes(range(200))
-        cli = fake_cli(b"storage read /ext/a.bin\r\nSize: %d\r\n" % len(data) + data + b"\r\n>: ")
+        cli = fake_cli(storage_read_reply(b"/ext/a.bin", data))
         self.assertEqual(cli.read_file("/ext/a.bin", timeout=2), data)
         self.assertEqual(cli.s.written, b"storage read /ext/a.bin\r")
+
+    def test_read_file_prompt_split_across_reads(self):
+        # Review finding: when the read that completes the size line also
+        # holds the whole file and part of the prompt, that part was dropped
+        # and the prompt never seen. Every split of the trailer, 256-byte reads.
+        path = b"/ext/apps_data/brucelink/f"
+        head = len(b"storage read %s\r\nSize: 190\r\n" % path)
+        for cut in range(1, 7):
+            data = bytes(256 - head - cut)
+            cli = fake_cli(storage_read_reply(path, data), chunk=256)
+            self.assertEqual(cli.read_file(path.decode(), timeout=2), data, f"cut {cut}")
 
     def test_read_file_missing(self):
         cli = fake_cli(b"storage read /ext/nope\r\nStorage error: file/dir not exist\r\n\r\n>: ")

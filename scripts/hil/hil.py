@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """BruceLink hardware-in-the-loop helper: detect, identify, back up, log, check.
 
-Cross-platform (Windows, Linux, macOS); needs `pyserial`, and `esptool` for
-the StickS3 commands. Nothing here writes to a device:
+Needs `pyserial`, and esptool 5 for the StickS3 backup. Verified on Windows;
+on Linux and macOS it is written to the same rules but not yet run with the
+devices. Nothing here writes to a device:
 
   detect                 list the Flipper (USB 0483:5740) and the StickS3
                          (ESP32-S3 USB-Serial/JTAG 303A:*) by VID/PID
   flipper-info           firmware identity, BruceLink files and their MD5s
                          (Flipper CLI read commands only; no reset)
-  flipper-backup DIR     copy the BruceLink app and its data folder off the
-                         Flipper's SD card, each verified against the
-                         Flipper's own MD5
+  flipper-backup DIR     copy the BruceLink app and the files directly in its
+                         data folder (not subfolders) off the Flipper's SD
+                         card, each verified against the Flipper's own MD5
   sticks3-log            log the StickS3's serial output WITHOUT resetting it
-                         (DTR and RTS held low)
+                         (see open_no_reset)
   sticks3-backup DIR     read the whole StickS3 flash with esptool, verify it
                          against the chip (`verify-flash`, read-only), and
                          describe it (partitions, app identity). The StickS3
-                         REBOOTS (download mode, then a hard reset); nothing
-                         is written to it
+                         REBOOTS (each esptool step enters download mode and
+                         ends in a reset); nothing is written to it
   check                  non-disruptive regression check of both devices
                          against the pins; JSON report; exit 1 on a mismatch
 
-Logs and reports go to hil-logs/ (git-ignored) unless --out is given. A flash
-backup holds the StickS3's NVS, which holds the pairing key: keep backups out
-of the repository and never share them. Serial logs can hold secrets too:
+Logs and reports go to hil-logs/ (git-ignored) unless --out is given. A
+backup holds pairing keys (the StickS3's NVS, the Flipper's key file), so DIR
+must be outside any git checkout (refused otherwise); never share a backup.
+Serial logs can hold secrets too:
 Bruce prints its whole bruce.conf (possibly Wi-Fi/web UI credentials) at boot.
 Procedures: docs/HARDWARE_TESTING.md.
 """
@@ -76,6 +78,33 @@ def out_dir(arg):
     return d
 
 
+def in_git_checkout(path):
+    """Whether `path` (existing or not) lies inside this or any git checkout."""
+    d = Path(path).resolve()
+    if d == REPO or REPO in d.parents:
+        return True
+    probe = d
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True)
+    except OSError:  # no git: the check above is all there is
+        return False
+    return r.returncode == 0
+
+
+def backup_root(arg):
+    """The folder a backup goes into. Backups hold pairing keys, so never in
+    a git checkout: there an ignored file is one `git add -f` from a commit,
+    and a worktree's ignored files vanish when the worktree is removed."""
+    if in_git_checkout(arg):
+        sys.exit(f"{Path(arg).resolve()} is inside a git checkout: back up to a folder outside it")
+    d = Path(arg)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # --- detection -------------------------------------------------------------
 
 def find_ports():
@@ -123,16 +152,14 @@ class FlipperCli:
     def close(self):
         self.s.close()
 
-    def _until(self, marker, timeout):
-        buf = b""
+    def _until(self, marker, timeout, buf=b""):
+        """Read until `marker` has arrived; `buf` holds what was already read."""
         end = time.monotonic() + timeout
-        while time.monotonic() < end:
-            chunk = self.s.read(4096)
-            if chunk:
-                buf += chunk
-                if marker in buf:
-                    return buf
-        raise TimeoutError(f"no {marker!r} within {timeout}s (got {buf[-80:]!r})")
+        while marker not in buf:
+            if time.monotonic() >= end:
+                raise TimeoutError(f"no {marker!r} within {timeout}s (got {buf[-80:]!r})")
+            buf += self.s.read(4096)
+        return buf
 
     def run(self, cmd, timeout=5.0):
         self.s.reset_input_buffer()
@@ -165,8 +192,8 @@ class FlipperCli:
             data += chunk
         rest = data[size:]
         data = data[:size]
-        if PROMPT not in rest:
-            self._until(PROMPT, 3.0)
+        # The read that finished the file may also hold part of the prompt.
+        self._until(PROMPT, 3.0, rest)
         return data
 
     def md5(self, path):
@@ -241,7 +268,7 @@ def cmd_flipper_info(a):
 
 
 def cmd_flipper_backup(a):
-    dest = out_dir(a.dir) / f"flipper-{ts()}"
+    dest = backup_root(a.dir) / f"flipper-{ts()}"
     cli = FlipperCli(port_or_detect(a.port, "flipper"))
     manifest = {"time": ts(), "files": {}}
     try:
@@ -271,13 +298,25 @@ def cmd_flipper_backup(a):
 
 # --- StickS3 ---------------------------------------------------------------
 
-def open_no_reset(port, baud=115200):
-    """Open the ESP32-S3 port with DTR/RTS low so the chip is not reset."""
+def open_no_reset(port, baud=115200, posix=None):
+    """Open the ESP32-S3 port without resetting the chip.
+
+    The USB-Serial/JTAG holds the chip in reset while RTS is on and DTR off.
+    On Windows pyserial applies both lines at once, so DTR and RTS off from
+    the start is safe (verified on the StickS3). On Linux and macOS the kernel
+    turns both lines on at open and pyserial then sets DTR before RTS, so the
+    same settings would pass through DTR off + RTS on. There, start from DTR
+    on + RTS off and drop DTR once open: on/on, on/off, off/off. That order
+    is not yet verified on hardware.
+    """
+    posix = os.name == "posix" if posix is None else posix
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = port, baud, 0.2
-    s.dtr = False
+    s.dtr = posix
     s.rts = False
     s.open()
+    if posix:
+        s.dtr = False
     return s
 
 
@@ -352,8 +391,13 @@ def verify_flash_ok(rc, text):
     """Whether `esptool verify-flash` matched. esptool 4 prints "-- verify OK
     (digest matched)", esptool 5 "Verification successful (digest matched)";
     a difference prints a mismatch and exits non-zero."""
-    low = text.lower()
-    return rc == 0 and "digest matched" in low and "mismatch" not in low
+    low = text.lower()  # (esptool echoes the file path, so match whole phrases)
+    return rc == 0 and "digest matched" in low and "digest mismatch" not in low
+
+
+def boot_banner(lines):
+    """ESP32-S3 ROM boot lines in a serial log: the chip was reset."""
+    return [l for l in lines if l.startswith("ESP-ROM:") or l.startswith("rst:0x")]
 
 
 def parse_partitions(blob):
@@ -383,7 +427,7 @@ def app_desc(img):
 
 def cmd_sticks3_backup(a):
     port = port_or_detect(a.port, "sticks3")
-    dest = out_dir(a.dir) / f"sticks3-{ts()}"
+    dest = backup_root(a.dir) / f"sticks3-{ts()}"
     dest.mkdir(parents=True, exist_ok=True)
     print("NOTE: the StickS3 reboots (download mode, then hard reset). Nothing is written.")
     rc, out = esptool("--chip", "esp32s3", "-p", port, "flash-id")
@@ -472,7 +516,10 @@ def cmd_check(a):
         path = out_dir(a.out) / f"sticks3-serial-{report['time']}.log"
         lines = capture_log(a.sticks3_port or es[0].device, a.log_seconds, path)
         report["sticks3_log"] = {"file": str(path), "lines": len(lines), "tail": lines[-20:]}
-        res("sticks3.serial_readable", True, f"{len(lines)} lines in {a.log_seconds}s (no reset)")
+        boot = boot_banner(lines)
+        res("sticks3.serial_no_reset", not boot,
+            f"{len(lines)} lines in {a.log_seconds}s, "
+            + (f"RESET: {boot[0]}" if boot else "no boot banner"))
     path = out_dir(a.out) / f"hil-check-{report['time']}.json"
     path.write_text(json.dumps(report, indent=2))
     print(f"report: {path}  overall: {'PASS' if report['ok'] else 'FAIL'}")
@@ -485,11 +532,13 @@ def main(argv=None):
     sub.add_parser("detect").set_defaults(fn=cmd_detect)
     s = sub.add_parser("flipper-info"); s.add_argument("--port"); s.add_argument("--all", action="store_true")
     s.set_defaults(fn=cmd_flipper_info)
-    s = sub.add_parser("flipper-backup"); s.add_argument("dir", nargs="?"); s.add_argument("--port")
+    s = sub.add_parser("flipper-backup"); s.add_argument("dir", help="a folder outside any git checkout")
+    s.add_argument("--port")
     s.set_defaults(fn=cmd_flipper_backup)
     s = sub.add_parser("sticks3-log"); s.add_argument("--port"); s.add_argument("--seconds", type=float, default=30)
     s.add_argument("--out"); s.set_defaults(fn=cmd_sticks3_log)
-    s = sub.add_parser("sticks3-backup"); s.add_argument("dir", nargs="?"); s.add_argument("--port")
+    s = sub.add_parser("sticks3-backup"); s.add_argument("dir", help="a folder outside any git checkout")
+    s.add_argument("--port")
     s.add_argument("--baud", type=int, default=921600); s.set_defaults(fn=cmd_sticks3_backup)
     s = sub.add_parser("sticks3-cli", help="read-only Bruce CLI command (info, free, uptime)")
     s.add_argument("command", choices=STICKS3_READONLY); s.add_argument("--port")
