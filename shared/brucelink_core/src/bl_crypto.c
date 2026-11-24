@@ -199,7 +199,9 @@ int bl_hkdf_expand(
     while(done < out_len) {
         bl_hmac_ctx c;
         bl_hmac_init(&c, prk, BL_SHA256_LEN);
-        bl_hmac_update(&c, t, tlen);
+        /* T(0) is the empty string (RFC 5869): the first block hashes no
+         * previous output, so t is only read once it holds T(n-1). */
+        if(tlen) bl_hmac_update(&c, t, tlen);
         if(info_len) bl_hmac_update(&c, info, info_len);
         bl_hmac_update(&c, &counter, 1);
         bl_hmac_final(&c, t);

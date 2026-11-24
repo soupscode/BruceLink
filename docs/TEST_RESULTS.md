@@ -753,6 +753,26 @@ on (stack), fewer transient allocations while scanning. To check: the
 `internal` and `dma-blk` figures in the `[BruceLink] module: BLE up` and
 `Flipper linked` serial lines, against the same lines from `222920f`.
 
+### 2026-11-24 — CI static analysis fixed (local session, `fix/ci-cppcheck`, no hardware)
+
+The "cppcheck clean" lines above held for the cloud session's cppcheck only.
+On CI (cppcheck 2.19.0 from apt) the gating job failed on **every** code
+commit from `31629db` on: `bl_crypto.c:202: Uninitialized variable: t
+[uninitvar]` in `bl_hkdf_expand`, a false positive (zero bytes were read).
+CI runs the Python + C↔Python interop step after cppcheck, so that step had
+never run on CI. Fixed in `90c1865` (skip the empty T(0), as RFC 5869 defines
+it; new A.3 vector) and `e4b0928` (the interop suite finds a C compiler on
+Windows).
+
+| Check | Result |
+|---|---|
+| `make -C tests/c test` (WSL Ubuntu 26.04, gcc 15.2.0, ASan+UBSan) | 3486 + 378 checks, 0 failed, before and after the fix (+3: RFC 5869 A.3) |
+| `make -C tests/c cppcheck` (cppcheck 2.19.0, = CI) | exit 2 before (`bl_crypto.c:202`), clean after |
+| `python -m unittest discover -s tests` (Windows 11, Python 3.11.9, WinLibs gcc 16.2.0) | 29 OK, 1 skipped (no built `.fap`); all 7 interop tests run |
+| Independent review (differential: old vs new `bl_hkdf_expand` for every `out_len` 0–8160 × 9 info shapes, ASan+UBSan) | byte-identical output; fit to merge |
+| GitHub Actions run 45361740657 (`e4b0928`) | **all jobs green**; cppcheck passes and the Python/interop step runs for the first time on CI |
+| PR review follow-up: `$CC` as a quoted Windows path with an argument (`"C:\…\gcc.exe" -m64`) | failed before (`FileNotFoundError`: the quotes were kept and escaped); builds and passes after. New `CompilerCommandTests` (the Windows case splits with `CommandLineToArgvW`) fail against the old logic; 16 tests OK on Windows, 15 OK + 1 skipped (Windows-only) on Linux |
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see
