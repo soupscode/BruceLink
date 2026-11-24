@@ -23,7 +23,7 @@ application messages (this doc)
 | 2 | 1 | wire version = 1 |
 | 3 | 1 | message type |
 | 4 | 1 | flags: `0x01` RESPONSE, `0x02` ERROR, `0x04` EVENT |
-| 5 | 1 | reserved (0) |
+| 5 | 1 | request tag: non-zero in a request, echoed in its response; 0 otherwise |
 | 6 | 4 | seq (u32) — per-session monotonic counter |
 | 10 | 2 | payload length (u16, ≤ 512) |
 | 12 | N | payload |
@@ -43,9 +43,30 @@ See ADR 0002 for the full construction. Four messages:
 | 3 | C→P | `AUTH` 0x03 | confirm_C(32) |
 | 4 | P→C | `AUTH_OK` 0x04 | (first MAC'd frame) |
 
-C = Flipper (session central/initiator), P = StickS3 (session peripheral). Keys:
-HKDF-SHA256 over `X25519(eph_C,eph_P) ‖ PSK`, salted by both nonces; separate
-c2p/p2c keys. Replay prevented by the strictly increasing `seq`.
+C = Flipper (session central/initiator), P = StickS3 (session peripheral).
+
+```
+transcript = proto_min ‖ proto_max ‖ proto_sel ‖ eph_pub_C ‖ nonce_C ‖ eph_pub_P ‖ nonce_P
+confirm_P  = HMAC-SHA256(PSK, "BLcP" ‖ transcript)
+confirm_C  = HMAC-SHA256(PSK, "BLcC" ‖ transcript)
+master     = HKDF-Extract(salt = nonce_C ‖ nonce_P, ikm = X25519(eph_C, eph_P) ‖ PSK)
+k_c2p      = HKDF-Expand(master, "brucelink v1 c2p" ‖ proto_sel, 32)
+k_p2c      = HKDF-Expand(master, "brucelink v1 p2c" ‖ proto_sel, 32)
+```
+
+Every HELLO and HELLO_ACK field is in the transcript, so a version range
+rewritten on the way fails the confirm tags (until 2026-11-23 only `proto_sel`
+was; the two devices must run the same build). Only `AUTH_OK` ends the wait for
+it: other frames are ignored then. A session that fails wipes its keys at once
+and seals or opens nothing; only an established session does. Replay is
+prevented by the strictly increasing `seq`. The Python reference recomputes all
+of this from the C vectors (`tests/test_protocol.py`).
+
+**Request tags.** The Flipper puts a non-zero tag (1–255, then wrapping, never
+0) in byte 5 of each request and the StickS3 copies it into the response. The
+Flipper drops a response whose tag is not the pending request's: one that
+arrives after its request timed out cannot be taken for the answer to the next
+request. The tag is under the MAC. Events and the handshake carry 0.
 
 The PSK comes from pairing (below). The public demo key (`bl_demo_key.h`) is
 used as a key only by host tests and the ESP32 compile check. The StickS3 knows
@@ -158,7 +179,11 @@ gate (ADR 0003); `REQUIRES_TARGET` ones must name a BSSID (no broadcast).
   clear, not all-zero); broadcast/multicast → `bad_arg`.
 - Checked in order: e-stop (`estopped`) → active ops enabled
   (`not_authorized`) → args (`bad_arg`) → frame budget (`rate_limited`) →
-  operator scope (`target_not_allowed`).
+  operator scope (`target_not_allowed`; the scope exists in the core only, no
+  message sets it yet).
+- The StickS3 build refuses every active op today: it needs Wi-Fi, so it has
+  to run as a job (ADR 0006), and active jobs are refused (`capability_disabled`)
+  until the active-job rules are implemented and tested.
 - **Frame budget:** the bridge reserves `min(16, frames left in the rate
   window)` and passes it to Bruce as a hard cap on transmitted frames; unused
   frames are refunded. A backend that reports more than its cap trips the

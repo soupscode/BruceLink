@@ -15,25 +15,66 @@ namespace brucelink {
 
 NimBleCentralTransport::NimBleCentralTransport()
     : bridge_(nullptr), backend_(nullptr), client_(nullptr), rx_(nullptr), tx_(nullptr),
-      chunks_(nullptr), have_pending_(false), link_lost_(false), pending_mtu_(0),
-      peer_id_len_(0), connected_(false), dropping_(false) {
+      chunks_(nullptr), have_pending_(false), link_lost_(false), pending_mtu_(0), blocked_seen_(false),
+      peer_id_len_(0), connected_(false), dropping_(false), scan_started_ms_(0) {
     portMUX_INITIALIZE(&lock_);
     memset(peer_id_, 0, sizeof(peer_id_));
 }
 
-void NimBleCentralTransport::begin(
+bool NimBleCentralTransport::begin(
     BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend) {
     bridge_ = bridge;
     backend_ = backend;
     cooldown_.clear(); // a fresh start (or a switch to pairing) owes nobody a penalty
+    blocked_seen_ = false;
+    // The bridge first, so it is in a defined state even if NimBLE fails.
+    bridge_->begin(psk, backend_, &NimBleCentralTransport::txTrampoline, this, usableMtu(23));
     // ~4 kB of chunk storage: keep it out of internal RAM when there is
     // PSRAM (only tasks touch this queue, never an ISR).
     chunks_ = xQueueCreateWithCaps(kEventQueueDepth, sizeof(ChunkEvent), MALLOC_CAP_SPIRAM);
     chunks_with_caps_ = chunks_ != nullptr;
     if(chunks_ == nullptr) chunks_ = xQueueCreate(kEventQueueDepth, sizeof(ChunkEvent));
-    NimBLEDevice::init("BruceLink");
+    if(chunks_ == nullptr) {
+        log_e("BruceLink: no memory for the chunk queue");
+        return false;
+    }
+    if(!NimBLEDevice::init("BruceLink")) {
+        log_e("BruceLink: NimBLE did not start");
+        return false;
+    }
     NimBLEDevice::setMTU(247); // request a larger ATT MTU for throughput
-    bridge_->begin(psk, backend_, &NimBleCentralTransport::txTrampoline, this, usableMtu(23));
+    return true;
+}
+
+bool NimBleCentralTransport::stackGone() const {
+    return !NimBLEDevice::isInitialized();
+}
+
+void NimBleCentralTransport::abandon() {
+    if(connected_ && bridge_ != nullptr) bridge_->onDisconnect(); // fail-safe first
+    connected_ = false;
+    dropping_ = false;
+    rx_ = nullptr;
+    tx_ = nullptr;
+    client_ = nullptr; // deleted by whoever deinitialised NimBLE
+    peer_id_len_ = 0;
+    portENTER_CRITICAL(&lock_);
+    have_pending_ = false;
+    link_lost_ = false;
+    pending_mtu_ = 0;
+    portEXIT_CRITICAL(&lock_);
+    if(chunks_ != nullptr) {
+        if(chunks_with_caps_) vQueueDeleteWithCaps(chunks_);
+        else vQueueDelete(chunks_);
+        chunks_ = nullptr;
+    }
+}
+
+void NimBleCentralTransport::clearCooldowns() {
+    portENTER_CRITICAL(&lock_);
+    cooldown_.clear();
+    blocked_seen_ = false;
+    portEXIT_CRITICAL(&lock_);
 }
 
 size_t NimBleCentralTransport::usableMtu(uint16_t att_mtu) {
@@ -59,6 +100,10 @@ void NimBleCentralTransport::startScan(uint32_t duration_s) {
     scan->setActiveScan(true);
     scan->setInterval(100);
     scan->setWindow(80);
+    portENTER_CRITICAL(&lock_);
+    blocked_seen_ = false;
+    portEXIT_CRITICAL(&lock_);
+    scan_started_ms_ = backend_ != nullptr ? backend_->nowMs() : 0;
     scan->start(duration_s * 1000, false, true);
 }
 
@@ -71,10 +116,14 @@ void NimBleCentralTransport::onResult(const NimBLEAdvertisedDevice* dev) {
     const uint32_t now = backend_->nowMs();
     bool take = false;
     portENTER_CRITICAL(&lock_);
-    if(!have_pending_ && !cooldown_.blocked(id, n, now)) {
-        pending_addr_ = dev->getAddress(); // POD copy, no allocation
-        have_pending_ = true;
-        take = true;
+    if(!have_pending_) {
+        if(cooldown_.blocked(id, n, now)) {
+            blocked_seen_ = true; // see kRescanMs
+        } else {
+            pending_addr_ = dev->getAddress(); // POD copy, no allocation
+            have_pending_ = true;
+            take = true;
+        }
     }
     portEXIT_CRITICAL(&lock_);
     if(take) NimBLEDevice::getScan()->stop(); // blocked peers: keep scanning
@@ -171,6 +220,7 @@ void NimBleCentralTransport::connectPending() {
     if(!have) return;
 
     if(client_ == nullptr) client_ = NimBLEDevice::createClient();
+    if(client_ == nullptr) return; // no memory for a client: rescan, try again
     client_->setClientCallbacks(this, false);
     // connect() blocks the loop; NimBLE's default is 30 s. A Flipper that
     // has stopped advertising should not stall supervision or shutdown.
@@ -247,12 +297,22 @@ void NimBleCentralTransport::loop() {
     // 4. connect / rescan when idle
     const bool idle = !connected_ && !dropping_ && (client_ == nullptr || !client_->isConnected());
     if(idle) connectPending();
-    if(!connected_ && !dropping_ && !NimBLEDevice::getScan()->isScanning()) {
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    if(!connected_ && !dropping_ && !scan->isScanning()) {
         bool pending = false;
         portENTER_CRITICAL(&lock_);
         pending = have_pending_;
         portEXIT_CRITICAL(&lock_);
         if(!pending) startScan(0);
+    } else if(!connected_ && !dropping_ && scan->isScanning()) {
+        // 5. a Flipper on cooldown was seen: rescan now and then so it is
+        //    reported again once its cooldown is over (review 2026-11-23:
+        //    the duplicate filter hid it for the rest of the scan)
+        bool blocked = false;
+        portENTER_CRITICAL(&lock_);
+        blocked = blocked_seen_;
+        portEXIT_CRITICAL(&lock_);
+        if(blocked && (uint32_t)(backend_->nowMs() - scan_started_ms_) >= kRescanMs) scan->stop();
     }
 
     if(bridge_) bridge_->tick();

@@ -29,8 +29,8 @@ namespace brucelink {
 bool keyStoreLoad(uint8_t psk[BL_KEY_LEN], char peer[BL_PAIR_NAME_MAX + 1]);
 /* Replace the stored pairing. */
 bool keyStoreSave(const uint8_t psk[BL_KEY_LEN], const char* peer);
-/* Remove it. */
-void keyStoreForget();
+/* Remove it. False if NVS could not be written. */
+bool keyStoreForget();
 /* True if a usable pairing is stored (its name and key id for display). */
 bool keyStoreInfo(char peer[BL_PAIR_NAME_MAX + 1], uint8_t key_id[BL_PAIR_KEY_ID_LEN]);
 

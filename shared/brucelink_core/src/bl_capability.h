@@ -38,7 +38,9 @@ typedef enum {
 /* Capability flags. Authorization itself is the authenticated session,
  * so there is no per-capability "requires auth" flag. ACTIVE_RF marks a
  * capability that transmits and is therefore subject to the remote
- * safeguards (e-stop, dead-man, optional allowlist/rate limit). */
+ * safeguards (bl_safety: default-off, one specific target, e-stop incl. on
+ * link loss, rate limit). As a job it is refused until ADR 0006's
+ * active-job rules exist. */
 #define BL_CAP_F_ACTIVE_RF 0x01u /* transmits RF; honours the safety guard */
 #define BL_CAP_F_REQUIRES_EXT_HW 0x02u /* needs hardware the StickS3 lacks */
 #define BL_CAP_F_HW_UNVERIFIED 0x04u /* implemented but not verified on device */

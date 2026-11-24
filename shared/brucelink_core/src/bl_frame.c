@@ -58,7 +58,7 @@ int bl_frame_encode(
     out[BL_OFF_VERSION] = f->version;
     out[BL_OFF_TYPE] = f->type;
     out[BL_OFF_FLAGS] = f->flags;
-    out[BL_OFF_RSVD] = 0;
+    out[BL_OFF_TAG] = f->tag;
     put_u32le(out + BL_OFF_SEQ, f->seq);
     put_u16le(out + BL_OFF_LEN, f->payload_len);
     if(f->payload_len) memcpy(out + BL_HDR_LEN, f->payload, f->payload_len);
@@ -102,6 +102,7 @@ int bl_frame_decode(
     f->type = buf[BL_OFF_TYPE];
     f->flags = buf[BL_OFF_FLAGS];
     f->seq = get_u32le(buf + BL_OFF_SEQ);
+    f->tag = buf[BL_OFF_TAG];
     f->payload_len = plen;
     f->payload = (plen > 0) ? (buf + BL_HDR_LEN) : NULL;
     return BL_OK;

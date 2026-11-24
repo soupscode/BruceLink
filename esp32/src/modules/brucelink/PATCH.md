@@ -11,7 +11,7 @@ python3 tools/install_into_bruce.py /path/to/bruce-firmware     # from the Bruce
 cd /path/to/bruce-firmware && pio run -e m5stack-sticks3
 ```
 
-The installer (idempotent; `--uninstall` reverses it; host-tested) does three things:
+The installer (idempotent; `--uninstall` reverses it; host-tested) does four things:
 
 - copies `esp32/lib/BruceLink/` + `shared/brucelink_core/src/` to Bruce's
   `lib/BruceLink/` (bridge core, NimBLE central transport, shared protocol core).
@@ -52,11 +52,11 @@ That is the whole change to Bruce so far: no existing Bruce function is modified
   `bruce_brucelink_hooks_unavailable.cpp` makes every one of them refuse.
 - **Pairing** (ADR 0005): **BruceLink → Pair with Flipper**. The key is kept in
   NVS (`BruceLinkKeyStore`), never in `bruce.conf` or on LittleFS. **Turn on**
-  refuses without one. Flashing the merged image at `0x0` erases NVS and the
-  pairing. To keep it, flash the merged image's three parts in one command:
-  `write-flash 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
-  (NVS sits between them, at `0x9000`). `firmware.bin` alone at `0x10000`
-  boots only on top of a BruceLink merged image (same partition table).
+  refuses without one. Updating the StickS3 currently means the merged image
+  at `0x0`, which erases NVS and the pairing: pair again after each update.
+  Flashing the parts separately (with or without bootloader and partitions)
+  would keep NVS but did not boot either time it was tried (2026-11-23, cause
+  unknown; `docs/TEST_RESULTS.md`), so it is not recommended until one boots.
 - One BLE stack, one owner: **Turn on** refuses while another Bruce BLE
   feature (BLE API, BadBLE, scanners) has NimBLE initialised, and those features
   will fail or disturb the link if started while BruceLink is on. Turn BruceLink

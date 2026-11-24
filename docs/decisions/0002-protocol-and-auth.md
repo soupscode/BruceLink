@@ -92,8 +92,14 @@ authenticated channel (ADR 0003).
 
 ## Verification
 
-Host: 1434 assertions under ASan+UBSan (`tests/c`) incl. RFC KATs, tamper,
-replay, fragmentation, COBS resync, and a fault-injecting simulated transport;
-cppcheck clean; a C↔Python interop test proves a second implementation agrees
-on the wire bytes (`tests/test_protocol.py`). Cross-compiles for ARM (FAP) and
-Xtensa (ESP32). Hardware timing/MTU behaviour is unverified.
+Host (`tests/c`, ASan+UBSan, cppcheck): RFC known-answer tests for SHA-256,
+HMAC (incl. keys longer than a block), HKDF (incl. multi-block output) and
+X25519 (incl. all seven low-order points); header and payload tamper, replay,
+out-of-order seq, counter end, fragmentation, COBS resync and a fault-injecting
+simulated transport. A downgrade (a rewritten HELLO range) fails the confirm
+tags (fixed 2026-11-23; before that only `proto_sel` was in the transcript). The
+Python reference (`tests/test_protocol.py`) recomputes the transcript, both
+confirm tags and both direction keys from the C handshake and checks the MACs
+with them, so a second implementation agrees on the handshake as well as the
+wire bytes. On hardware the link, pairing and a paired reconnect worked
+(2026-11-23, owner's devices; `docs/TEST_RESULTS.md`).

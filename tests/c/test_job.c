@@ -326,15 +326,35 @@ static void t_jobc_retries_and_timeout(void) {
     CHECK_EQ_INT(bl_jobc_start(&j, 0x10, BL_JOB_MAX_S + 1, NULL, 0, 0, out, sizeof(out)), BL_E_ARG);
 }
 
+/* Review 2026-11-23: bl_jobc_fetch only checked the state, so a caller
+ * that skipped bl_jobc_want_fetch could ask on the starting session. */
+static void t_jobc_no_fetch_before_the_link_drops(void) {
+    bl_jobc_t j;
+    bl_jobc_init(&j);
+    uint8_t out[BL_MAX_MSG];
+    uint8_t args[1] = {0};
+    CHECK(bl_jobc_start(&j, BL_CAP_WIFI_SCAN, 20, args, 0, 1000, out, sizeof(out)) > 0);
+    uint8_t acc[16];
+    const int an = bl_job_encode_accepted(7, 20, acc, sizeof(acc));
+    CHECK(an > 0);
+    CHECK(bl_jobc_on_response(&j, BL_MSG_JOB_ACCEPTED, acc, (size_t)an, 1100, NULL, NULL));
+    CHECK_EQ_INT(j.state, BL_JOBC_RUNNING);
+    CHECK_EQ_INT(bl_jobc_fetch(&j, out, sizeof(out)), BL_E_STATE);
+    CHECK_EQ_INT(j.state, BL_JOBC_RUNNING);
+    bl_jobc_link_down(&j);
+    CHECK(bl_jobc_fetch(&j, out, sizeof(out)) > 0);
+    CHECK_EQ_INT(j.state, BL_JOBC_FETCHING);
+}
+
 void run_job_tests(void) {
-    t_record_create_and_bounds();
-    t_record_detects_any_corruption();
-    t_boot_normal_job();
-    t_boot_crash_mid_job_never_reruns();
-    t_record_survives_copy_and_truncates();
-    t_payloads();
-    t_jobc_happy_path();
-    t_jobc_refusals_and_losses();
-    t_jobc_retries_and_timeout();
-    printf("  9 tests ok\n");
+    RUN(t_jobc_no_fetch_before_the_link_drops);
+    RUN(t_record_create_and_bounds);
+    RUN(t_record_detects_any_corruption);
+    RUN(t_boot_normal_job);
+    RUN(t_boot_crash_mid_job_never_reruns);
+    RUN(t_record_survives_copy_and_truncates);
+    RUN(t_payloads);
+    RUN(t_jobc_happy_path);
+    RUN(t_jobc_refusals_and_losses);
+    RUN(t_jobc_retries_and_timeout);
 }

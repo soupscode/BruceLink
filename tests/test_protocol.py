@@ -74,13 +74,16 @@ class InteropTests(unittest.TestCase):
         out = ROOT / "tests" / "_bl_vectors"
         srcs = [str(tool)] + [str(p) for p in core.glob("*.c")]
         cc = os.environ.get("CC", "cc")
-        try:
-            subprocess.run(
-                [cc, "-std=c99", "-O1", f"-I{core}", *srcs, "-o", str(out)],
-                check=True, capture_output=True,
-            )
-        except (OSError, subprocess.CalledProcessError) as e:
-            raise unittest.SkipTest(f"cannot build C vectors tool: {e}")
+        if os.environ.get("BL_SKIP_INTEROP") == "1":
+            raise unittest.SkipTest("BL_SKIP_INTEROP=1")
+        # A tool that does not build is a failure, not a skip: a skipped
+        # interop suite hides exactly the drift it exists to catch.
+        r = subprocess.run(
+            [cc, "-std=c99", "-O1", "-Wall", "-Werror", f"-I{core}", *srcs, "-o", str(out)],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise AssertionError(f"cannot build the C vectors tool:\n{r.stderr}")
         cls.vectors = json.loads(subprocess.check_output([str(out)]))
         cls.out = out
 
@@ -99,9 +102,15 @@ class InteropTests(unittest.TestCase):
         f = bl.decode(c_frame, key)
         self.assertEqual(f.seq, 7)
         self.assertEqual(f.payload, bytes(range(32)))
+        self.assertEqual(f.tag, 0xA5)  # header byte 5 carries the request tag
         # ...and re-encodes to the identical bytes.
-        py = bl.encode(bl.Frame(bl.WIRE_VERSION, f.type, f.flags, 7, f.payload), key)
+        py = bl.encode(bl.Frame(bl.WIRE_VERSION, f.type, f.flags, 7, f.payload, 0xA5), key)
         self.assertEqual(py, c_frame)
+        # the tag is under the MAC
+        bad = bytearray(c_frame)
+        bad[5] ^= 1
+        with self.assertRaises(ValueError):
+            bl.decode(bytes(bad), key)
 
     def test_cobs_interop(self):
         v = self.vectors
@@ -155,6 +164,35 @@ class InteropTests(unittest.TestCase):
         self.assertEqual(bl.pair_key_id(psk).hex(), v["pair_key_id"])
         # and the two roles' tags differ
         self.assertNotEqual(f["pair_confirm_i"].payload, f["pair_confirm_r"].payload)
+
+    def test_session_interop(self):
+        """The C handshake matches ADR 0002, recomputed here from the shared secret."""
+        v = self.vectors
+        self.assertTrue(v["sess_established"])
+        hello = bl.decode(bytes.fromhex(v["sess_hello"]))
+        ack = bl.decode(bytes.fromhex(v["sess_hello_ack"]))
+        auth = bl.decode(bytes.fromhex(v["sess_auth"]))
+        self.assertEqual((hello.type, ack.type, auth.type),
+                         (bl.MSG_HELLO, bl.MSG_HELLO_ACK, bl.MSG_AUTH))
+        psk = bytes.fromhex(v["sess_psk"])
+        shared = bytes.fromhex(v["sess_shared"])
+        t = bl.session_transcript(hello.payload, ack.payload)
+        self.assertEqual(len(t), 3 + 32 + 16 + 32 + 16)
+        # confirm_P closes HELLO_ACK, confirm_C is AUTH
+        self.assertEqual(bl.session_confirm(psk, t, central=False), ack.payload[49:81])
+        self.assertEqual(bl.session_confirm(psk, t, central=True), auth.payload)
+        # the offered range is in the transcript: change it and the tag changes
+        t2 = bl.session_transcript(bytes((0, 9)) + hello.payload[2:], ack.payload)
+        self.assertNotEqual(bl.session_confirm(psk, t2, central=False), ack.payload[49:81])
+        c2p, p2c = bl.session_keys(shared, psk, hello.payload[34:50], ack.payload[33:49],
+                                   ack.payload[0])
+        ok = bl.decode(bytes.fromhex(v["sess_auth_ok"]), p2c)  # MAC checks with p2c
+        self.assertEqual(ok.type, bl.MSG_AUTH_OK)
+        self.assertEqual(ok.seq, 1)
+        req = bl.decode(bytes.fromhex(v["sess_request"]), c2p)  # and c2p for the Flipper
+        self.assertEqual((req.seq, req.tag, req.payload), (1, 0x5A, b"\x01\x02\x03"))
+        with self.assertRaises(ValueError):
+            bl.decode(bytes.fromhex(v["sess_request"]), p2c)
 
 
 if __name__ == "__main__":

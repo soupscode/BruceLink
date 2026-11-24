@@ -19,6 +19,11 @@ typedef struct {
     uint32_t seq;
     uint16_t payload_len;
     const uint8_t* payload; /* points into the source buffer on decode */
+    /* Request tag (header byte 5, covered by the MAC). A request carries a
+     * non-zero tag; its response echoes it, so the requester can drop a
+     * late response to an earlier request. 0 elsewhere. Last member, so
+     * positional initialisers of the older fields keep working. */
+    uint8_t tag;
 } bl_frame_t;
 
 /*

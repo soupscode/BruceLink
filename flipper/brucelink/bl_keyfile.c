@@ -16,6 +16,7 @@
 #define TAG "BruceLinkKey"
 
 #define KEYFILE_PATH APP_DATA_PATH("pairing.key")
+#define KEYFILE_TMP APP_DATA_PATH("pairing.key.tmp")
 #define KEYFILE_TYPE "BruceLink pairing key"
 #define KEYFILE_VERSION 1u
 #define KEY_SLOT FURI_HAL_CRYPTO_ENCLAVE_UNIQUE_KEY_SLOT
@@ -99,7 +100,9 @@ bool bl_keyfile_save(const uint8_t psk[BL_KEY_LEN], const char* peer) {
     FlipperFormat* ff = flipper_format_file_alloc(storage);
     bool ok = false;
     do {
-        if(!flipper_format_file_open_always(ff, KEYFILE_PATH)) break;
+        /* Written next to the old file and renamed over it, so a failed
+         * save leaves the previous pairing intact (review 2026-11-23). */
+        if(!flipper_format_file_open_always(ff, KEYFILE_TMP)) break;
         if(!flipper_format_write_header_cstr(ff, KEYFILE_TYPE, KEYFILE_VERSION)) break;
         if(!flipper_format_write_comment_cstr(
                ff, "Encrypted with this Flipper's own key; useless on any other device."))
@@ -110,8 +113,9 @@ bool bl_keyfile_save(const uint8_t psk[BL_KEY_LEN], const char* peer) {
         if(!flipper_format_write_hex(ff, "Key", enc, sizeof(enc))) break;
         ok = true;
     } while(false);
-    flipper_format_free(ff);
-    if(!ok) storage_simply_remove(storage, KEYFILE_PATH); // never leave half a key file
+    flipper_format_free(ff); /* closes the file */
+    if(ok) ok = storage_common_rename(storage, KEYFILE_TMP, KEYFILE_PATH) == FSE_OK;
+    storage_simply_remove(storage, KEYFILE_TMP); // never leave half a key file
     furi_record_close(RECORD_STORAGE);
     bl_secure_zero(enc, sizeof(enc));
     return ok;

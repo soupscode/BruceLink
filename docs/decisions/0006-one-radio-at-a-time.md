@@ -134,3 +134,31 @@ active jobs:
   the starting session), and the bridge end to end across a simulated
   restart. Not host-testable: RTC retention, the restarts, the boot hook,
   the Wi-Fi scan job on the stick.
+
+## Amendment — review fixes (2026-11-23)
+
+- **Cancel before the restart.** Between `JOB_ACCEPTED` and the restart the
+  StickS3 keeps serving the link for about 300 ms (the reply has to leave).
+  An e-stop or a link loss in that time now cancels the job: the bridge clears
+  the PENDING record and the restart request. Only then does the module
+  commit (`BruceLinkBridge::commitJob`), release BLE and restart; the link
+  drop that follows is the restart itself and cancels nothing. Host-tested
+  (`t_job_cancelled_before_the_restart`).
+- **What is left of "PENDING has no expiry".** A PENDING record now exists
+  only for that 300 ms flush. If the stick crashes or loses power inside it,
+  the next boot runs the job (crash) or forgets it (power loss). Harmless for
+  a scan. Before active jobs exist, a PENDING record must also carry an
+  acceptance time it can be checked against, or be written only at commit.
+- **The finish is not atomic.** `bl_job_record_finish` writes about 500 bytes
+  and then the CRC; a reset in those microseconds leaves an invalid record.
+  The next boot then treats it as no record: no re-run (safe), but no result
+  and no automatic restart of BruceLink, so the Flipper reports that the stick
+  did not come back in time. Accepted as is; a two-slot record would close it.
+- **A job restarts the stick whatever it is doing.** The request comes from
+  the Flipper; the stick's own UI is not asked. Do not start a job while using
+  the stick for something else (recording, writing a file).
+- **No record from an earlier pairing.** Forget pairing and a new pairing
+  clear the job record, so a result is never handed to a different Flipper.
+- **Capture and active ops** are refused on the live link; they are to run as
+  jobs (capture first, task M5.2). Active jobs stay refused (now host-tested,
+  `t_active_job_refused`) until the rules above are implemented and tested.

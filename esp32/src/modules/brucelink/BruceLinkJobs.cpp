@@ -55,6 +55,10 @@ bool jobRestartRequested() {
     return g_restart;
 }
 
+void jobRestartCancel() {
+    g_restart = false;
+}
+
 static bool timeUp(uint32_t deadline) {
     return (int32_t)(millis() - deadline) >= 0;
 }

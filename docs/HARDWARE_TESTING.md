@@ -93,17 +93,13 @@ the same service; a subscribed scanner then receives a `PAIR_COMMIT`, and the
 
 ## 4b. Pairing (ADR 0005)
 
-Needs the step 4 build on the StickS3 and the Flipper app. The merged image at
-`0x0` erases NVS and with it the pairing. To keep a pairing across StickS3
-updates, flash the three parts instead:
-
-```
-esptool --chip esp32s3 --port <port> write-flash \
-  0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
-```
-
-Not `firmware.bin` alone: on 2026-11-23 the app-only file written by itself
-did not boot (see `TEST_RESULTS.md`).
+Needs the step 4 build on the StickS3 and the Flipper app. Flash the merged
+image at `0x0`. It erases NVS and with it the pairing, so pair again after
+every StickS3 update. Do not flash the parts separately (`firmware.bin` alone,
+or bootloader / partitions / firmware at `0x0` / `0x8000` / `0x10000`): both
+were tried on 2026-11-23 and neither booted (`TEST_RESULTS.md`; cause unknown).
+If you want to find out why, that is a separate experiment: keep the merged
+image at hand to recover.
 
 1. Flipper: **Pair**. Expect the instructions screen; the Flipper advertises.
 2. StickS3: **BruceLink → Pair with Flipper**.
@@ -140,7 +136,8 @@ matter: the StickS3 keeps scanning, the Flipper keeps advertising.
 - Verify advertising of the 128-bit service + name `BL`. If nothing shows up,
   look for `set_discoverable failed` in the Flipper log (`ufbt cli` → `log`).
 - Verify the StickS3 central discovers, connects (no pairing), subscribes, and
-  that the Flipper shows `BLE linked` then `connected` within about a second.
+  that the Flipper shows `BLE linked` then `connected` within a few seconds
+  (about 3 s measured; the Flipper gives up at 5 s, the StickS3 at 10 s).
 - Device Info / Capabilities over the air; `STATUS` shows `demo:0`. Wi-Fi Scan
   is a job: step 5b.
 - Flipper-side recovery: power the StickS3 off mid-handshake or mid-request.
@@ -225,16 +222,17 @@ logs `[BruceLink] job: ...` with the memory figures.
 
 ## 8. Coexistence & transfer
 
-- Run handshake capture **while** the BLE link is up; measure BLE drops and
-  capture loss. Decide whether to pause BLE during capture (ADR 0003).
+- Not applicable any more: capture runs as a job with BLE off (ADR 0006),
+  never while the link is up.
 - Transfer a pcap over BLE; verify CRC-32 matches the device-side value; drop
   the link mid-transfer and confirm resume from offset.
 
 ## 9. Active-RF gate (authorized lab only)
 
 - With active ops **disabled**: a deauth `CMD_REQ` must return `not_authorized`.
-- Enable active ops over the authenticated session; set a one-BSSID scope;
-  deauth to that BSSID succeeds, to another is refused (`not_authorized`).
+- Not runnable yet: the StickS3 refuses every active op until active jobs
+  exist (ADR 0006). When they do: enable active ops over the authenticated
+  session; deauth to one specific BSSID succeeds; broadcast is refused.
 - Exceed the rate limit → `rate_limited`.
 - ESTOP mid-op halts it; link loss halts it.
 

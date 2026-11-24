@@ -85,8 +85,10 @@ connection status and recovers from timeouts and link loss.
 Connection-level mutual authentication (PSK + ephemeral ECDH) with forward
 secrecy and replay protection. No per-function tokens. Active (RF-transmitting)
 capabilities are default-off and, once enabled over the authenticated link, pass
-a remote-operation gate: emergency stop, automatic stop on link loss, a
-transmission-rate limiter, and an optional target allowlist. BruceLink adds no
+a remote-operation gate: one specific target (never broadcast), emergency
+stop, automatic stop on link loss, and a transmission-rate limiter (the core
+also has an optional target scope that nothing on the wire sets yet). On the
+StickS3 they are refused until they run as jobs (ADR 0006). BruceLink adds no
 transmit code of its own.
 
 ## What is and isn't verified

@@ -15,10 +15,14 @@
  *   C->P AUTH      : confirm_C(32) = HMAC(PSK, "BLcC" || transcript)
  *   P->C AUTH_OK   : (authenticated frame; establishes the session)
  *
- * transcript = proto_sel || eph_pub_C || nonce_C || eph_pub_P || nonce_P
+ * transcript = proto_min || proto_max || proto_sel
+ *              || eph_pub_C || nonce_C || eph_pub_P || nonce_P
  * master = HKDF-Extract(salt = nonce_C||nonce_P,
  *                       ikm   = ECDH(eph_C,eph_P) || PSK)
- * tx/rx keys = HKDF-Expand(master, "brucelink v1 <dir>", 32) each.
+ * tx/rx keys = HKDF-Expand(master, "brucelink v1 <dir>" || proto_sel, 32)
+ *              each, <dir> = "c2p" / "p2c".
+ * A session that fails wipes its secrets at once; only an established one
+ * seals or opens application frames.
  *
  * The caller owns all transport I/O; this module only produces and
  * consumes frame byte buffers.
@@ -59,6 +63,10 @@ typedef struct {
     uint8_t peer_pk[32];
     uint8_t nonce_local[BL_NONCE_LEN];
     uint8_t nonce_peer[BL_NONCE_LEN];
+    /* The version range HELLO offered: in the transcript, so a range
+     * rewritten on the way (a downgrade) fails the confirm tags. */
+    uint8_t hello_min;
+    uint8_t hello_max;
 
     uint8_t tx_key[BL_KEY_LEN];
     uint8_t rx_key[BL_KEY_LEN];
@@ -67,7 +75,9 @@ typedef struct {
     uint32_t rx_highest; /* highest accepted rx seq (strict increase) */
     bool keys_ready;
 
-    /* failure accounting for lockout policy (enforced by caller) */
+    /* Failed key proofs on this session object (tests read it). Nothing
+     * enforces a lockout: each attempt is a new session, and a wrong proof
+     * ends it at once. */
     uint16_t auth_failures;
 } bl_session_t;
 
@@ -113,7 +123,11 @@ static inline bool bl_session_established(const bl_session_t* s) {
 
 /*
  * Seal an application message: build an authenticated data frame with
- * the next tx counter. Returns encoded length or negative bl_result_t.
+ * the next tx counter. Established sessions only. The counter advances
+ * when the frame is built: one that is never sent leaves a gap, which the
+ * receiver accepts (it only requires seq to increase). Returns encoded length
+ * or negative bl_result_t. bl_session_seal_tag also sets the request tag
+ * (bl_frame_t.tag): a requester's non-zero tag, echoed in its response.
  */
 int bl_session_seal(
     bl_session_t* s,
@@ -123,11 +137,21 @@ int bl_session_seal(
     uint16_t payload_len,
     uint8_t* out,
     size_t out_cap);
+int bl_session_seal_tag(
+    bl_session_t* s,
+    uint8_t type,
+    uint8_t flags,
+    uint8_t tag,
+    const uint8_t* payload,
+    uint16_t payload_len,
+    uint8_t* out,
+    size_t out_cap);
 
 /*
  * Open (verify + anti-replay) a received data frame. On success fills
  * *f with the decoded view (payload points into in). Enforces strictly
- * increasing rx seq. Returns BL_OK, BL_E_MAC, BL_E_REPLAY, BL_E_STATE.
+ * increasing rx seq. Established sessions only. Returns BL_OK, BL_E_MAC,
+ * BL_E_REPLAY, BL_E_STATE.
  */
 int bl_session_open(bl_session_t* s, const uint8_t* in, size_t in_len, bl_frame_t* f);
 

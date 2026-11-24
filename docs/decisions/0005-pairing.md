@@ -1,7 +1,8 @@
 # ADR 0005 — Pairing: key agreement with a 6-digit comparison code
 
-Status: Accepted (2026-11-23) — implemented on both devices; **not yet run on
-hardware**. Replaces the public demo key on real devices (task M5.3).
+Status: Accepted (2026-11-23) — implemented on both devices; **ran on the
+owner's devices** (2026-11-23: pairing completed, and the paired key connected
+after a StickS3 reboot; key-id display, refusal and Forget not yet checked). Replaces the public demo key on real devices (task M5.3).
 
 ## Context
 
@@ -71,9 +72,11 @@ key id = H("BLpair1 key id" | psk)[0..1]   (display only)
 | StickS3 | NVS (`Preferences`, namespace `brucelink`) | Not in `bruce.conf` (printed to serial) and not on LittleFS (readable through Bruce's file browser and web UI), the same place Bruce keeps its U2F secrets. Flash encryption is off, so physical access with a USB cable can read it. |
 
 Flashing the StickS3's merged image (offset 0x0) erases NVS and with it the
-pairing. Flashing its three parts (`bootloader.bin` at 0x0, `partitions.bin` at
-0x8000, `firmware.bin` at 0x10000) writes the same bytes except NVS (0x9000),
-so it keeps the pairing and does not depend on what was on the device.
+pairing. Flashing its parts separately (`bootloader.bin` at 0x0,
+`partitions.bin` at 0x8000, `firmware.bin` at 0x10000) would write the same
+bytes except NVS (0x9000) and so keep the pairing, but on the owner's StickS3 it
+did not boot, twice (2026-11-23, cause unknown). Until one such flash boots,
+updates mean the merged image and pairing again.
 
 ### On the devices
 
@@ -109,3 +112,21 @@ so it keeps the pairing and does not depend on what was on the device.
   Python recomputation of every derived value (`tests/test_protocol.py`).
 - Not host-testable and not yet run: the Flipper's key file (enclave), its
   pairing screen, the StickS3's NVS store and pairing screen.
+
+## Amendment — review notes (2026-11-23)
+
+- **Key file integrity (Flipper).** `pairing.key` is AES-CBC under the
+  enclave key with no MAC; on load the 2-byte key id is checked. A damaged
+  file passes that check about once in 65,536 tries and then fails the
+  handshake, so it is not a way in, only a confusing error. An HMAC over the
+  file would make it exact. The file is written to a temporary name and
+  renamed, so a write cut short does not destroy the old key.
+- **A save that fails after both sides confirmed** leaves the devices out of
+  step: the side that saved has the new key, the other its old one (or none).
+  Each side says so on its own screen ("saving the key failed"); the fix is to
+  pair again.
+- **Pair again while BruceLink is on** switches the running link to pairing
+  mode instead of restarting BLE (a restart needs a fresh 48 kB block the heap
+  may not have), and forgets earlier peer cooldowns. **Forget** refuses to
+  report success unless the bridge task has stopped (so the key is gone from
+  RAM too) and NVS was cleared; it also clears the last job's result.

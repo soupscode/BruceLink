@@ -2,9 +2,63 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — Review fixes (2026-11-23)
+
+From an independent review of the whole repository (four reviewers: protocol
+core, Flipper app, StickS3 glue, cross-cutting). Every fix that can run on the
+host has a regression test that fails on the old code. **Not yet run on
+hardware.** The handshake changed: **update both devices together.**
+
+### Security / protocol
+- The HELLO version range is now in the handshake transcript, so a rewritten
+  range (a downgrade) fails the confirm tags. Before, only the selected
+  version was.
+- Request tags (M4.7): header byte 5 carries a non-zero tag that the response
+  echoes; the Flipper drops a late reply instead of taking it for the answer
+  to the next request.
+- A session only seals and opens frames once established, and wipes its keys
+  the moment it fails. Only an `AUTH_OK` ends the wait for it (a repeated
+  `HELLO_ACK` used to end the handshake).
+- Safety gate: every active op needs one specific target (an op flagged as
+  needing none used to pass without one); the rate check cannot wrap; the
+  unused duration field is gone; the e-stop is cleared only by a new
+  authenticated session, not by a bare link; the demo key refuses captures as
+  well as active ops and jobs.
+- Jobs: an e-stop or a link loss between `JOB_ACCEPTED` and the restart now
+  cancels the job (it used to run at the next boot); the Flipper tracker never
+  fetches on the starting session even if a caller skips the check.
+
+### StickS3
+- Capture and active ops are refused on the live link (they need Wi-Fi; ADR
+  0006). They were already unavailable (placeholder hooks).
+- Rescans every 5 s while a Flipper on cooldown is in range, so it is found
+  again when the cooldown ends (the scan's duplicate filter hid it).
+- "Pair again" while BruceLink is on switches to pairing mode with BLE kept
+  up (no BLE restart, which can fail for memory).
+- Stops cleanly if another Bruce BLE tool releases NimBLE; checks NimBLE,
+  queue and client creation; wipes the key from RAM when its task exits;
+  "Forget pairing" fails rather than leaving the key live when the task does
+  not stop, and also clears the last job's result (as a new pairing does).
+- Installer: checks everything before the first write.
+
+### Flipper (FAP 0.6)
+- Job tracking survives link changes and timeouts; Back from text screens;
+  pairing feedback and key file write (temp file + rename). See the Flipper
+  review fixes in `docs/TEST_RESULTS.md`.
+
+### Tests and docs
+- Python reference recomputes the session handshake (transcript, confirm
+  tags, keys) from the C vectors; the interop suite fails instead of skipping
+  when the C tool does not build. RFC 4231 cases 6–7, RFC 5869 A.2, all seven
+  X25519 low-order points; header tamper and counter end; a test that the demo
+  key never reaches the Flipper app.
+- Withdrawn: flashing the StickS3 in separate parts to keep the pairing (it
+  did not boot either time it was tried).
+
 ## [Unreleased] — One radio at a time (2026-11-23)
 
-Builds on both devices; host-tested end to end; **not yet run on hardware**.
+Runs on the owner's devices (2026-11-23: the Wi-Fi scan job worked, and was
+"much faster" after the speed-ups below).
 
 ### Added
 - **Jobs** (ADR 0006, task M5.7): a tool that needs the StickS3's radio memory
@@ -16,8 +70,9 @@ Builds on both devices; host-tested end to end; **not yet run on hardware**.
     bounds), the boot transitions (a job is never re-run after a reset), the
     payloads, and the Flipper-side tracker. 9 tests; 7 deliberate bugs caught.
   - Bridge: accepts jobs (refused with the demo key, while e-stopped, and for
-    active capabilities), serves results; 4 end-to-end tests across simulated
-    restarts, crash and power loss; 7 deliberate bugs caught.
+    active capabilities; that last refusal had no test until the review fixes
+    above), serves results; 4 end-to-end tests across simulated restarts,
+    crash and power loss; 7 deliberate bugs caught.
   - StickS3: `BruceLinkJobs` (record, boot hook, Wi-Fi scan job stoppable with
     any button); the installer adds a `bruceLinkBoot()` call at the end of
     Bruce's `setup()`.

@@ -54,6 +54,8 @@ public:
     void jobRestart() override {
         // stub: the demo key refuses every job, so this is never reached
     }
+    void jobCancel() override {
+    }
     bool captureBackend(const bl_capture_backend_t** be, void** ctx) override {
         *be = &STUB_CAP;
         *ctx = nullptr;

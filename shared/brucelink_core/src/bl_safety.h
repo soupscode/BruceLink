@@ -16,13 +16,20 @@
  *     operator sets over the already-authenticated link (default OFF);
  *   - an emergency stop that latches the gate closed until reset, and is
  *     engaged automatically on link loss;
- *   - a transmission-rate / duration limiter so a wedged remote session
- *     cannot transmit unbounded. Its window records frames actually sent
- *     and is expired ONLY by elapsed time: enabling/disabling active ops,
- *     resetting the e-stop and starting a new session never clear it;
+ *   - one specific target per active op: never broadcast or multicast, and
+ *     never an op without a target;
+ *   - a transmission-rate limiter so a wedged remote session cannot
+ *     transmit unbounded. Its window records frames actually sent and is
+ *     expired ONLY by elapsed time: enabling/disabling active ops,
+ *     resetting the e-stop and starting a new session never clear it. It
+ *     is a fixed window, so up to twice the per-window number can go out
+ *     across a window boundary. It limits frames, not time: how long one op
+ *     may run is bounded by the bridge (a frame cap per op) and, for jobs,
+ *     by the job's max_s (ADR 0006);
  *   - an OPTIONAL operator-configured target scope (allowlist). When
  *     empty, no scoping is applied; it is a convenience for confining a
- *     test, not an authorization credential.
+ *     test, not an authorization credential. Only the core has it so far:
+ *     nothing on the wire sets it.
  *
  * Passive operations (scans, info, capture RX, file ops) need none of
  * this; they pass whenever the gate is not emergency-stopped.
@@ -53,18 +60,13 @@ typedef struct {
     uint32_t window_ms;
     uint32_t max_frames_per_window;
     uint32_t window_start_ms;
-    uint32_t frames_in_window;
-    uint32_t max_op_duration_ms;
+    uint32_t frames_in_window; /* never above max_frames_per_window */
 } bl_safety_t;
 
 void bl_safety_init(bl_safety_t* g);
 
-/* Configure the transmission limiter (0 leaves a field at its default). */
-void bl_safety_set_limits(
-    bl_safety_t* g,
-    uint32_t window_ms,
-    uint32_t max_frames_per_window,
-    uint32_t max_op_duration_ms);
+/* Configure the transmission limiter (0 leaves a field as it is). */
+void bl_safety_set_limits(bl_safety_t* g, uint32_t window_ms, uint32_t max_frames_per_window);
 
 /*
  * Enable or disable active operations. The CALLER must only invoke this
@@ -110,18 +112,18 @@ void bl_safety_refund(bl_safety_t* g, uint32_t frames);
 
 /*
  * Authorize one operation at time now_ms. Passive ops pass unless
- * emergency-stopped. Active ops require: not e-stopped, active enabled,
- * a specific (unicast, non-zero) target when require_target is set —
- * never broadcast or multicast — the target within the scope when one is
+ * emergency-stopped (target is ignored). Active ops require: not
+ * e-stopped, active enabled, a specific (unicast, non-zero) target —
+ * never none, broadcast or multicast — within the scope when one is
  * configured, and spare budget in the rate window (reserving `frames`).
- * Returns BL_OK, BL_E_DENIED (estopped / disabled / non-specific or
- * missing target / target out of scope), or BL_E_LOCKED (rate limited).
+ * Returns BL_OK, BL_E_DENIED (estopped / disabled / missing or
+ * non-specific target / target out of scope), or BL_E_LOCKED (rate
+ * limited).
  */
 int bl_safety_authorize(
     bl_safety_t* g,
     bl_op_class_t klass,
     const uint8_t target[BL_BSSID_LEN],
-    bool require_target,
     uint32_t frames,
     uint32_t now_ms);
 

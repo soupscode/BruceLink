@@ -62,6 +62,7 @@ typedef struct {
     bl_client_t client; /* session initiator state machine */
     uint32_t link_id; /* last transport link id seen (0 = none) */
     bool connect_pending; /* Connect pressed: start the transport on the next tick */
+    bool pair_pending; /* Pair pressed: start pairing mode on the next tick */
     const char* shown_status; /* transport status text last drawn (compared by pointer) */
     char shown_diag[96]; /* transport counters last drawn */
     bool active_ops_enabled; /* operator opt-in for active ops (default off) */
@@ -80,6 +81,7 @@ typedef struct {
     bool pair_running; /* pair holds an attempt for the current link */
     bool pair_answered; /* the user answered this attempt's code */
     bool pair_done; /* a pairing succeeded and was saved in this pairing session */
+    uint32_t pair_failed_ms; /* when the current attempt failed (drop the link after) */
     const char* pair_last_failure;
 
     /* All protocol work runs on the app thread via the ViewDispatcher

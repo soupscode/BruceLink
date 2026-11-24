@@ -2,7 +2,7 @@
  * BruceLink vectors emitter — prints deterministic wire-format vectors
  * as JSON so an independent implementation (the Python reference) can
  * verify byte-for-byte interoperability of the frame codec, MAC, COBS
- * framing, PCAP headers and CRC32.
+ * framing, PCAP headers, CRC32, the session handshake and pairing.
  * SPDX-License-Identifier: MIT
  */
 #include "../shared/brucelink_core/src/bl_cobs.h"
@@ -10,6 +10,7 @@
 #include "../shared/brucelink_core/src/bl_frame.h"
 #include "../shared/brucelink_core/src/bl_pair.h"
 #include "../shared/brucelink_core/src/bl_pcap.h"
+#include "../shared/brucelink_core/src/bl_session.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -75,15 +76,51 @@ static void emit_pairing(void) {
     printf("  \"pair_done\": %s", (bl_pair_state(&i) == BL_PS_DONE && bl_pair_state(&r) == BL_PS_DONE) ? "true" : "false");
 }
 
+/* A complete session handshake with a fixed key, so the Python reference
+ * can recompute the transcript, both confirm tags and both direction keys
+ * (ADR 0002) and check AUTH_OK's MAC with the derived key. */
+static void emit_session(void) {
+    counter_rng_t rc = {0x21}, rp = {0xA1};
+    uint8_t psk[BL_KEY_LEN];
+    for(unsigned i = 0; i < BL_KEY_LEN; i++) psk[i] = (uint8_t)(0x60 + i);
+    bl_session_t c, p;
+    bl_session_init(&c, BL_ROLE_CENTRAL, psk, counter_rng, &rc);
+    bl_session_init(&p, BL_ROLE_PERIPHERAL, psk, counter_rng, &rp);
+    uint8_t sk_c[32];
+    memcpy(sk_c, c.eph_sk, 32); /* the vector needs it; real code never copies it */
+    uint8_t hello[BL_MAX_MSG], ack[BL_MAX_MSG], auth[BL_MAX_MSG], ok[BL_MAX_MSG],
+        scratch[BL_MAX_MSG], data[BL_MAX_MSG];
+    size_t ackl = 0, authl = 0, okl = 0, none = 0;
+    const int hn = bl_session_start(&c, hello, sizeof(hello));
+    bl_session_handshake_rx(&p, hello, (size_t)hn, ack, sizeof(ack), &ackl);
+    bl_session_handshake_rx(&c, ack, ackl, auth, sizeof(auth), &authl);
+    bl_session_handshake_rx(&p, auth, authl, ok, sizeof(ok), &okl);
+    bl_session_handshake_rx(&c, ok, okl, scratch, sizeof(scratch), &none);
+    /* a tagged request from the central (the Flipper) */
+    static const uint8_t ping[3] = {1, 2, 3};
+    const int dn = bl_session_seal_tag(&c, BL_MSG_PING, 0, 0x5A, ping, sizeof(ping), data, sizeof(data));
+    uint8_t shared[32];
+    bl_x25519(shared, sk_c, p.eph_pk);
+    emit_frame("sess_hello", hello, (size_t)hn);
+    emit_frame("sess_hello_ack", ack, ackl);
+    emit_frame("sess_auth", auth, authl);
+    emit_frame("sess_auth_ok", ok, okl);
+    emit_frame("sess_request", data, dn > 0 ? (size_t)dn : 0);
+    emit_frame("sess_psk", psk, sizeof(psk));
+    emit_frame("sess_shared", shared, sizeof(shared));
+    printf(",\n  \"sess_established\": %s",
+           (bl_session_established(&c) && bl_session_established(&p)) ? "true" : "false");
+}
+
 int main(void) {
     printf("{\n");
 
-    /* 1. MAC'd data frame with a fixed key, counter 7, payload 0..31 */
+    /* 1. MAC'd data frame with a fixed key, counter 7, payload 0..31, tag 0xA5 */
     uint8_t key[BL_KEY_LEN];
     for(unsigned i = 0; i < BL_KEY_LEN; i++) key[i] = (uint8_t)(0x40 + i);
     uint8_t pl[32];
     for(unsigned i = 0; i < 32; i++) pl[i] = (uint8_t)i;
-    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_STATUS, BL_FLAG_RESPONSE, 7, 32, pl};
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_STATUS, BL_FLAG_RESPONSE, 7, 32, pl, 0xA5};
     uint8_t frame[BL_MAX_MSG];
     int fn = bl_frame_encode(&f, key, sizeof(key), frame, sizeof(frame));
     emit_hex("frame_key", key, sizeof(key));
@@ -115,6 +152,9 @@ int main(void) {
 
     /* 5. Pairing (ADR 0005) */
     emit_pairing();
+
+    /* 6. Session handshake (ADR 0002) */
+    emit_session();
     printf("\n");
 
     printf("}\n");

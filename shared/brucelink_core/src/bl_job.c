@@ -351,7 +351,9 @@ bool bl_jobc_want_fetch(const bl_jobc_t* j, bool session_ready) {
 }
 
 int bl_jobc_fetch(bl_jobc_t* j, uint8_t* out, size_t out_cap) {
-    if(j == NULL || j->state != BL_JOBC_RUNNING) return BL_E_STATE;
+    /* Never on the session that started the job (review 2026-11-23: this
+     * relied on callers checking bl_jobc_want_fetch first). */
+    if(j == NULL || j->state != BL_JOBC_RUNNING || !j->link_dropped) return BL_E_STATE;
     const int n = bl_job_encode_result_req(j->job_id, out, out_cap);
     if(n > 0) j->state = BL_JOBC_FETCHING;
     return n;

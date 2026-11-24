@@ -1,4 +1,7 @@
 """tools/install_into_bruce.py against a miniature fake Bruce tree."""
+import contextlib
+import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -228,6 +231,27 @@ class InstallIntoBruce(unittest.TestCase):
         r = run(self.bruce, "--force")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assert_guarded(self.main_cpp.read_text(), "&bruceLinkMenu,")
+
+    def test_name_collision_writes_nothing(self):
+        """Review 2026-11-23: Bruce's files were patched before the file
+        lists were checked, so a collision failed half-installed."""
+        spec = importlib.util.spec_from_file_location("bl_installer", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # the same directory twice: every name collides
+        mod.LIB_SOURCES = mod.LIB_SOURCES + mod.LIB_SOURCES[:1]
+        before = self.snapshot()
+        argv = sys.argv
+        sys.argv = ["install_into_bruce.py", str(self.bruce), "--force"]
+        try:
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                mod.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.bruce / "lib/BruceLink").exists())
+        self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
 
 if __name__ == "__main__":

@@ -20,7 +20,11 @@
  *     inside the StickS3's own 10 s authentication deadline (ADR 0001 §6).
  *     A frame that is not a valid next handshake step is ignored, not
  *     fatal; only the session failing (bad proof, no common version) is.
- *   - Request: one at a time; no response within req_timeout_ms
+ *   - Request: one at a time, tagged (bl_frame_t.tag); a response is only
+ *     surfaced if it carries the pending request's tag, so a reply that
+ *     arrives after its request timed out is dropped instead of being
+ *     taken as the answer to the next one (M4.7). Unsolicited events are
+ *     surfaced as before. No response within req_timeout_ms
  *     (default 10 s: the StickS3 answers a Wi-Fi scan only after the scan
  *     has run) reports BL_CL_EVT_REQUEST_TIMEOUT once and frees the slot.
  *     The session stays up.
@@ -63,6 +67,9 @@ typedef struct {
     uint32_t hs_start_ms;
     uint32_t req_start_ms;
     bool req_pending;
+    uint8_t req_tag; /* tag of the pending request (never 0) */
+    uint8_t next_tag;
+    uint32_t stale_responses; /* responses dropped: not for the pending request */
     int last_error; /* bl_result_t of the last handshake failure */
 } bl_client_t;
 
