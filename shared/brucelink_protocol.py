@@ -236,3 +236,32 @@ def session_keys(shared: bytes, psk: bytes, nonce_c: bytes, nonce_p: bytes,
         return hmac.new(prk, info + bytes((proto_sel, 1)), hashlib.sha256).digest()
 
     return expand(b"brucelink v1 c2p"), expand(b"brucelink v1 p2c")
+
+
+# --- Capture files (bl_files.c, protocol.md "Capture files") ---------------
+
+FILE_NAME_MAX = 63
+FILE_CHUNK_MAX = 448
+FILE_LIST_PAGE = 7
+_NAME_CHARS = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+
+
+def file_name_ok(name: bytes) -> bool:
+    return (5 < len(name) <= FILE_NAME_MAX and name[:1] != b"." and b".." not in name
+            and all(c in _NAME_CHARS for c in name) and name.endswith(b".pcap"))
+
+
+def files_list(total: int, start: int, entries: list[tuple[bytes, int]]) -> bytes:
+    out = bytes((total, start, len(entries)))
+    for name, size in entries:
+        assert file_name_ok(name)
+        out += struct.pack("<IB", size, len(name)) + name
+    return out
+
+
+def files_info(size: int, crc: int, name: bytes) -> bytes:
+    return struct.pack("<IIB", size, crc, len(name)) + name
+
+
+def files_read_req(offset: int, max_len: int, name: bytes) -> bytes:
+    return struct.pack("<IHB", offset, max_len, len(name)) + name

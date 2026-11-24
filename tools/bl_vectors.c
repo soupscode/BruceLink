@@ -7,6 +7,7 @@
  */
 #include "../shared/brucelink_core/src/bl_cobs.h"
 #include "../shared/brucelink_core/src/bl_crypto.h"
+#include "../shared/brucelink_core/src/bl_files.h"
 #include "../shared/brucelink_core/src/bl_frame.h"
 #include "../shared/brucelink_core/src/bl_pair.h"
 #include "../shared/brucelink_core/src/bl_pcap.h"
@@ -112,6 +113,25 @@ static void emit_session(void) {
            (bl_session_established(&c) && bl_session_established(&p)) ? "true" : "false");
 }
 
+/* Capture-file payloads (bl_files), for the Python reference. */
+static void emit_files(void) {
+    uint8_t out[BL_MAX_PAYLOAD];
+    size_t len = 0;
+    bl_files_list_begin(9, 7, out, sizeof(out), &len);
+    bl_files_list_add("HS_A1B2C3D4E5F6_Home.pcap", 25, 1234, out, sizeof(out), &len);
+    bl_files_list_add("HS_0011223344FF.pcap", 20, 70000, out, sizeof(out), &len);
+    emit_frame("files_list", out, len);
+    int n = bl_files_encode_info(1234, 0xCAFEF00Du, "HS_A1B2C3D4E5F6_Home.pcap", 25, out, sizeof(out));
+    emit_frame("files_info", out, n > 0 ? (size_t)n : 0);
+    n = bl_files_encode_read_req(896, 448, "HS_A1B2C3D4E5F6_Home.pcap", 25, out, sizeof(out));
+    emit_frame("files_read_req", out, n > 0 ? (size_t)n : 0);
+    static const char* const names[] = {"HS_A.pcap", "../x.pcap", "a..b.pcap", ".x.pcap", "HS A.pcap", "x.pcap.txt"};
+    printf(",\n  \"files_names_ok\": [");
+    for(size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        printf("%s%s", i ? ", " : "", bl_file_name_ok(names[i], strlen(names[i])) ? "true" : "false");
+    printf("]");
+}
+
 int main(void) {
     printf("{\n");
 
@@ -155,6 +175,9 @@ int main(void) {
 
     /* 6. Session handshake (ADR 0002) */
     emit_session();
+
+    /* 7. Capture files */
+    emit_files();
     printf("\n");
 
     printf("}\n");

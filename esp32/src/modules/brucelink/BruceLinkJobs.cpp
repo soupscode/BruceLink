@@ -234,7 +234,11 @@ static bl_job_outcome_t handshakeJob(
     littleFsSpaceAvailable = true;
 
     const uint32_t t0 = millis();
-    WiFi.mode(WIFI_MODE_STA); // as the scan job; no network is joined
+    WiFi.mode(WIFI_MODE_STA); // as the scan job
+    // Listen only: never join (or rejoin) a saved network, which would
+    // transmit and pin the radio to that network's channel.
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
     size_t hop = 0;
     uint8_t ch = fixed ? fixed : all_wifi_channels[0];
     esp_err_t err = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);

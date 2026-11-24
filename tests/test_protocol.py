@@ -194,6 +194,20 @@ class InteropTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bl.decode(bytes.fromhex(v["sess_request"]), p2c)
 
+    def test_files_interop(self):
+        """The capture-file payloads and the name check agree with protocol.md."""
+        v = self.vectors
+        self.assertEqual(
+            bytes.fromhex(v["files_list"]),
+            bl.files_list(9, 7, [(b"HS_A1B2C3D4E5F6_Home.pcap", 1234), (b"HS_0011223344FF.pcap", 70000)]))
+        self.assertEqual(bytes.fromhex(v["files_info"]),
+                         bl.files_info(1234, 0xCAFEF00D, b"HS_A1B2C3D4E5F6_Home.pcap"))
+        self.assertEqual(bytes.fromhex(v["files_read_req"]),
+                         bl.files_read_req(896, 448, b"HS_A1B2C3D4E5F6_Home.pcap"))
+        names = [b"HS_A.pcap", b"../x.pcap", b"a..b.pcap", b".x.pcap", b"HS A.pcap", b"x.pcap.txt"]
+        self.assertEqual(v["files_names_ok"], [bl.file_name_ok(n) for n in names])
+        self.assertEqual(v["files_names_ok"], [True, False, False, False, False, False])
+
 
 if __name__ == "__main__":
     unittest.main()
