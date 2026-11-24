@@ -1,7 +1,8 @@
 # ADR 0006 — One radio at a time: tools run as jobs between restarts
 
 Status: Accepted (2026-11-23, owner's decision) — implemented for the Wi-Fi
-scan; **not yet run on hardware**. Supersedes ADR 0004 (Wi-Fi next to the BLE
+scan; **the full cycle worked on the owner's devices** (2026-11-23, one run;
+too slow, time not reported; speed-ups below not yet run). Supersedes ADR 0004 (Wi-Fi next to the BLE
 link). Amends ADR 0003 for active operations.
 
 ## Context
@@ -65,6 +66,13 @@ JOB_RESULT_REQ job_id      ─────▶
   then marked *interrupted* and not run again, so a tool that crashes the
   stick cannot start a crash loop, and a transmitting tool cannot be
   restarted by a reset.
+- **Two hooks in Bruce's `setup()`.** `bruceLinkBootEarly()` right after the
+  input task starts: a pending job runs here, before Bruce's boot animation
+  (up to 7 s, `boot_screen_anim`), startup sound, Wi-Fi at startup and serial
+  task, none of which a job needs. On the boot after a job it skips the
+  animation, sound and Wi-Fi at startup for that boot only (RAM, never saved:
+  one radio at a time, and the user is waiting). `bruceLinkBoot()` at the end
+  of `setup()` puts those settings back and starts BruceLink.
 - **Auto-start once.** The job's last restart starts BruceLink at the next
   boot. The flag is cleared before BLE is started, so a later reboot (or a
   crash while starting BLE) leaves BruceLink off as usual.
@@ -108,14 +116,18 @@ active jobs:
 
 - Tools get the same memory as standalone Bruce; a tool that runs out of
   memory fails as it would in Bruce, not by taking the link down with it.
-- Each job costs two restarts and a reconnect: time not yet measured (Bruce's
-  boot animation adds to it unless "instant boot" is set). There is no live
-  view or remote stop during a job.
+- Each job costs two restarts and a reconnect. The first hardware run was
+  too slow for the owner (time not reported); it paid Bruce's boot animation
+  twice (up to 7 s each) and a 300 ms-per-channel scan. Now skipped and
+  120 ms. The result shows the scan time and the stick's boot time, and the
+  Flipper the total, so the next run says where the rest goes (expected: the
+  BLE reconnect and the handshake, about 3 s). There is no live view or remote
+  stop during a job.
 - RTC memory is lost on power-off: a job interrupted by power loss leaves no
   record, and the Flipper reports that the stick did not come back in time.
-- If Bruce's "Wi-Fi at startup" is on, Wi-Fi is connecting while a job runs
-  and when BLE comes back. Bruce's own BLE memory check then frees Wi-Fi if
-  it has to.
+- Bruce's "Wi-Fi at startup" never runs on a job's boots: the job starts
+  before it, and the boot after a job skips it. It is back on the next normal
+  boot.
 - Host-tested: the record (CRC, bounds, every boot transition including the
   crash case), the payloads, the Flipper-side tracker (timeouts, no fetch on
   the starting session), and the bridge end to end across a simulated

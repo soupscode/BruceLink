@@ -11,9 +11,9 @@ What it does (and nothing else):
   3. adds "BruceLink" to Bruce's main menu, first, before Wi-Fi:
        <bruce>/src/core/main_menu.h    include + member
        <bruce>/src/core/main_menu.cpp  entry in the item list
-  4. calls bruceLinkBoot() at the end of setup() in <bruce>/src/main.cpp,
-     which runs a pending BruceLink job and brings the link back after it
-     (ADR 0006)
+  4. calls bruceLinkBootEarly() after the input task starts and
+     bruceLinkBoot() at the end of setup() in <bruce>/src/main.cpp: they run
+     a pending BruceLink job and bring the link back after it (ADR 0006)
      Every added line ends with "// BruceLink". Older versions of this script
      put two entries under Config > Advanced (ConfigMenu.cpp); re-running
      removes those.
@@ -66,9 +66,12 @@ PATCHES = [
     (BRUCE_MAIN, [
         ('#include "core/main_menu.h"\n', "after",
          GUARD + '#include "modules/brucelink/BruceLinkModule.h"' + MARKER + "\n" + END),
+        ("    _late_setup_gpio();\n", "after",
+         GUARD + "    bruceLinkBootEarly(); // a pending job runs here, before the boot animation"
+         + MARKER + "\n" + END),
         ('    if (bruceConfig.startupApp != "" && !startupApp.startApp(bruceConfig.startupApp)) {\n',
          "before",
-         GUARD + "    bruceLinkBoot(); // runs a pending job, or brings the link back after one" + MARKER
+         GUARD + "    bruceLinkBoot(); // after a job: turns BruceLink back on for its result" + MARKER
          + "\n" + END),
     ]),
     (CONFIG_MENU, []),

@@ -38,6 +38,12 @@ MAIN = (
     '#include "core/main_menu.h"\n'
     "#include <globals.h>\n"
     "void setup() {\n"
+    "    _late_setup_gpio();\n"
+    "#if !defined(USE_DUMMY_TFT)\n"
+    "    if (!bruceConfig.instantBoot) {\n"
+    "        boot_screen_anim();\n"
+    "    }\n"
+    "#endif\n"
     "    wakeUpScreen();\n"
     '    if (bruceConfig.startupApp != "" && !startupApp.startApp(bruceConfig.startupApp)) {\n'
     '        bruceConfig.setStartupApp("");\n'
@@ -154,6 +160,10 @@ class InstallIntoBruce(unittest.TestCase):
         self.assert_guarded(main, '#include "modules/brucelink/BruceLinkModule.h"')
         hook = self.assert_guarded(main, "bruceLinkBoot();")
         self.assertIn("startupApp.startApp", main.splitlines()[hook + 2])
+        # the early hook: after the input setup, before the boot animation
+        early = self.assert_guarded(main, "bruceLinkBootEarly();")
+        self.assertEqual(main.splitlines()[early - 2], "    _late_setup_gpio();")
+        self.assertIn("USE_DUMMY_TFT", main.splitlines()[early + 2])
         self.assertTrue((mod / "BruceLinkJobs.cpp").is_file())
 
         once = self.snapshot()

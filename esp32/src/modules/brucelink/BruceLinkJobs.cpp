@@ -30,6 +30,19 @@ namespace brucelink {
 static RTC_NOINIT_ATTR bl_job_record_t g_job;
 static volatile bool g_restart = false;
 
+/* This boot's decision (bruceLinkBootEarly), acted on again at the end of
+ * setup (bruceLinkBoot). */
+static bl_job_boot_t g_boot = BL_JOB_BOOT_NONE;
+static int g_saved_instant_boot = 0;
+static int g_saved_wifi_at_startup = 0;
+
+/* Active scan time per channel. Arduino's default allows up to 300 ms (about
+ * 4 s for 14 channels); 120 ms finds the same networks in under 2 s, and is
+ * what BruceLink's earlier scan used on this hardware. */
+static const uint32_t kScanMsPerChannel = 120;
+/* Show the outcome on the stick's screen this long before restarting. */
+static const uint32_t kFinishShowMs = 150;
+
 bl_job_record_t* jobRecordStorage() {
     return &g_job;
 }
@@ -59,10 +72,11 @@ static void appendFailure(bl_textbuf_t* tb, const char* step, int code, uint32_t
 /* Wi-Fi scan with the radio to itself: the calls Bruce's own scan makes
  * (core/wifi/wifi_common.cpp: WiFi.mode(WIFI_MODE_STA), scanNetworks),
  * asynchronous so a button or the time limit can end it. Strongest first. */
-static bl_job_outcome_t wifiScanJob(bl_textbuf_t* tb, uint32_t deadline) {
+static bl_job_outcome_t wifiScanJob(bl_textbuf_t* tb, uint32_t deadline, uint32_t boot_ms) {
     const uint32_t t0 = millis();
     WiFi.mode(WIFI_MODE_STA);
-    const int started = WiFi.scanNetworks(true /* async */, true /* hidden too */);
+    const int started =
+        WiFi.scanNetworks(true /* async */, true /* hidden too */, false /* active */, kScanMsPerChannel);
     if(started == WIFI_SCAN_FAILED) {
         appendFailure(tb, "start", started, millis() - t0);
         return BL_JOB_FAILED;
@@ -87,10 +101,14 @@ static bl_job_outcome_t wifiScanJob(bl_textbuf_t* tb, uint32_t deadline) {
         WiFi.scanDelete();
         return BL_JOB_FAILED;
     }
+    // Where the time went on the stick, for tuning: the scan itself and how
+    // long Bruce took to boot before the job could start.
     bl_tb_uint(tb, (unsigned)found);
-    bl_tb_str(tb, " networks, ");
+    bl_tb_str(tb, " networks (scan ");
     bl_tb_uint(tb, took);
-    bl_tb_str(tb, " ms\n");
+    bl_tb_str(tb, " ms, boot ");
+    bl_tb_uint(tb, boot_ms);
+    bl_tb_str(tb, " ms)\n");
 
     // Strongest first; the reply holds about 15 lines.
     static const int kMaxSorted = 64;
@@ -122,6 +140,7 @@ static const char* jobName(uint16_t cap_id) {
 /* RUN boot: the record is already sealed as RUNNING, so a crash in here
  * is reported as "interrupted" and never re-run. Ends with a restart. */
 static void runJob(bl_job_record_t* rec) {
+    const uint32_t boot_ms = millis(); // since the app started
     logStep("job: running (BLE not started)");
     drawMainBorderWithTitle("BruceLink job");
     padprintln("");
@@ -138,7 +157,7 @@ static void runJob(bl_job_record_t* rec) {
     const uint32_t deadline = millis() + (uint32_t)rec->max_s * 1000u;
     bl_job_outcome_t outcome;
     switch(rec->cap_id) {
-    case BL_CAP_WIFI_SCAN: outcome = wifiScanJob(&tb, deadline); break;
+    case BL_CAP_WIFI_SCAN: outcome = wifiScanJob(&tb, deadline, boot_ms); break;
     default:
         bl_tb_str(&tb, "This StickS3 build cannot run that job");
         outcome = BL_JOB_FAILED;
@@ -150,23 +169,44 @@ static void runJob(bl_job_record_t* rec) {
     padprintln("");
     padprintln(bl_job_outcome_str((uint8_t)outcome));
     padprintln("Restarting...");
-    delay(400);
+    delay(kFinishShowMs);
     esp_restart();
 }
 
 } // namespace brucelink
 
-void bruceLinkBoot() {
+void bruceLinkBootEarly() {
     using namespace brucelink;
-    switch(bl_job_on_boot(&g_job)) {
-    case BL_JOB_BOOT_RUN: runJob(&g_job); break; // does not return
+    g_boot = bl_job_on_boot(&g_job);
+    switch(g_boot) {
+    case BL_JOB_BOOT_RUN:
+        // Before Bruce's boot animation (up to 7 s), sound, Wi-Fi at
+        // startup and serial task: none of them are needed for the job.
+        runJob(&g_job); // does not return
+        break;
     case BL_JOB_BOOT_LINK:
-        // The job's result is waiting: bring the link back without a menu
-        // trip. resume_link is already cleared, so this happens once.
-        logStep("job: back from a job, starting BruceLink");
-        if(moduleStart() != kModuleStarted) logStep("job: BruceLink did not start");
+        // This boot only brings the link back for the job's result. Skip
+        // the boot animation and sound, and Bruce's Wi-Fi at startup (one
+        // radio at a time: BLE starts at the end of setup). RAM only, put
+        // back in bruceLinkBoot(); nothing is saved.
+        g_saved_instant_boot = bruceConfig.instantBoot;
+        g_saved_wifi_at_startup = bruceConfig.wifiAtStartup;
+        bruceConfig.instantBoot = 1;
+        bruceConfig.wifiAtStartup = 0;
         break;
     default: break;
     }
+}
+
+void bruceLinkBoot() {
+    using namespace brucelink;
+    if(g_boot != BL_JOB_BOOT_LINK) return;
+    g_boot = BL_JOB_BOOT_NONE;
+    bruceConfig.instantBoot = g_saved_instant_boot;
+    bruceConfig.wifiAtStartup = g_saved_wifi_at_startup;
+    // The job's result is waiting: bring the link back without a menu
+    // trip. resume_link is already cleared, so this happens once.
+    logStep("job: back from a job, starting BruceLink");
+    if(moduleStart() != kModuleStarted) logStep("job: BruceLink did not start");
 }
 #endif // !LITE_VERSION

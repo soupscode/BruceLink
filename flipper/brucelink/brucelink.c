@@ -170,9 +170,15 @@ static void bl_job_finish_text(BruceLinkApp* app, const char* result, size_t len
     const size_t cap = sizeof(app->job_text);
     if(j->state == BL_JOBC_DONE) {
         if(len > BL_JOB_RESULT_MAX) len = BL_JOB_RESULT_MAX;
-        int w = 0;
-        if(j->outcome != BL_JOB_DONE) w = snprintf(t, cap, "%s\n\n", bl_job_outcome_str(j->outcome));
+        /* Total time on the Flipper's clock: from pressing the item to the
+         * result, both restarts and the reconnect included. */
+        const unsigned long took_ds = bl_jobc_elapsed_ms(j, furi_get_tick()) / 100u;
+        int w = snprintf(t, cap, "Took %lu.%lu s\n", took_ds / 10u, took_ds % 10u);
         if(w < 0) w = 0;
+        if(j->outcome != BL_JOB_DONE) {
+            const int o = snprintf(t + w, cap - (size_t)w, "%s\n\n", bl_job_outcome_str(j->outcome));
+            if(o > 0) w += o;
+        }
         if((size_t)w + len >= cap) len = cap - (size_t)w - 1;
         memcpy(t + w, result, len);
         t[(size_t)w + len] = 0;

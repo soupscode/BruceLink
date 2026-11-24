@@ -649,6 +649,20 @@ needs, and logs the figures.
   no name for: the Flipper was still running v0.3. The job path itself has
   not run yet.
 
+### 2026-11-23 — First job on hardware: Wi-Fi scan with BLE off (`9f37f46`, app v0.4)
+
+- **The full cycle worked** (owner: "that worked"): the Flipper started the
+  job, the StickS3 restarted, scanned, restarted, turned BruceLink back on, and
+  the Flipper fetched and showed the result. So RTC memory kept the record
+  across both restarts, the boot hook ran, and auto-start worked.
+- **Too slow** for the owner; total time not reported. Known cost at the time:
+  Bruce's boot animation runs for up to 7 s on every boot (twice per job), and
+  the scan allowed up to 300 ms per channel.
+
+Response (next build): the job runs before the animation, the boot after a
+job skips it (and Wi-Fi at startup), scan 120 ms per channel, delays trimmed,
+and the result reports scan time, stick boot time and the Flipper's total.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,

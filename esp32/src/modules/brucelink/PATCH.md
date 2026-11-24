@@ -35,9 +35,11 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does three th
   module itself (9 lines, all ending in `// BruceLink`). Bruce's own "hide
   apps" setting can hide it like any other item. An older version of the
   installer put two entries under Config → Advanced; re-running removes them.
-- adds one call, `bruceLinkBoot()`, at the end of `setup()` in `src/main.cpp`
-  (right before Bruce's startup app), plus its include (6 lines, same guard and
-  marker). On a normal boot it does nothing.
+- adds two calls to `setup()` in `src/main.cpp`, plus their include (9 lines,
+  same guard and marker): `bruceLinkBootEarly()` right after
+  `_late_setup_gpio()` (a job runs there, before the boot animation) and
+  `bruceLinkBoot()` right before Bruce's startup app (turns BruceLink back on
+  after a job). On a normal boot both do nothing.
 
 That is the whole change to Bruce so far: no existing Bruce function is modified.
 

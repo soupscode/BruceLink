@@ -42,8 +42,14 @@ bool moduleLinked();
 /* BruceLink's submenu (main menu > BruceLink). Returns on Esc or "Main Menu". */
 void bruceLinkMenu();
 
-/* Called once at the end of Bruce's setup() (installed by
- * tools/install_into_bruce.py). Runs a pending job with BLE never started
- * and restarts, or brings BruceLink back after a job (ADR 0006); on any
- * other boot it does nothing. */
+/* Jobs (ADR 0006); both installed by tools/install_into_bruce.py into
+ * Bruce's setup(), and doing nothing on a normal boot.
+ *  - bruceLinkBootEarly(): right after the input task starts, before the
+ *    boot animation. Runs a pending job with BLE never started, then
+ *    restarts; after a job, skips the animation and Wi-Fi at startup for
+ *    this boot.
+ *  - bruceLinkBoot(): at the end of setup(). After a job, puts those
+ *    settings back and turns BruceLink on so the Flipper can fetch the
+ *    result. */
+void bruceLinkBootEarly();
 void bruceLinkBoot();

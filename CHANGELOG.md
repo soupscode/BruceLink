@@ -26,6 +26,11 @@ Builds on both devices; host-tested end to end; **not yet run on hardware**.
 
 ### Changed
 - **The Wi-Fi scan is a job**; nothing uses Wi-Fi while the link is up.
+- **Faster jobs** (first hardware run was too slow): the job runs before
+  Bruce's boot animation (up to 7 s), the boot after a job skips the
+  animation, sound and Wi-Fi at startup, the scan uses 120 ms per channel
+  instead of up to 300, and fixed delays were cut (800 → 450 ms). The result
+  shows the scan and boot times; the Flipper (v0.5) shows the total.
 
 ### Removed
 - ADR 0004's inline Wi-Fi path (`BruceLinkWifi.cpp`, `wifiStartAllowed`,

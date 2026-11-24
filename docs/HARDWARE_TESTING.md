@@ -184,9 +184,12 @@ logs `[BruceLink] job: ...` with the memory figures.
    Flipper / Any button: stop**, scans, shows `done / Restarting...`, restarts
    again and turns BruceLink on by itself (main-menu icon dots filled).
 2. The Flipper reconnects, shows `StickS3 is back. Fetching the result...`,
-   then the networks (strongest first) and vibrates. **Measure** the total time
-   from pressing Wi-Fi Scan to the list (the Flipper gives up at 80 s; that
-   allowance is an estimate).
+   then the networks (strongest first) and vibrates. The result starts with
+   `Took N s` (Flipper, whole cycle) and `n networks (scan X ms, boot Y ms)`
+   (stick: the scan, and Bruce's boot before the job). **Note all three.**
+   Neither restart should show Bruce's boot animation, and the stick should
+   not join Wi-Fi on the boot after the job even if "Wi-Fi at startup" is on;
+   a normal reboot afterwards must play it and join as usual.
 3. Compare with Bruce's own scan on the StickS3: same networks, roughly.
 4. **Stop on the stick:** start a scan and press a StickS3 button while it
    shows "Any button: stop". The Flipper must report `stopped on the StickS3`.

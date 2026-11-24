@@ -141,7 +141,7 @@ static void pairingStep(bool linked_now, bool was_linked) {
 
 /* A job was accepted (ADR 0006): let the reply leave, release BLE so the
  * Flipper sees the link drop, and restart into the job. */
-static const uint32_t kJobReplyFlushMs = 500;
+static const uint32_t kJobReplyFlushMs = 300;
 static void restartForJob() {
     logStep("job: accepted, restarting into it");
     vTaskDelay(pdMS_TO_TICKS(kJobReplyFlushMs));
