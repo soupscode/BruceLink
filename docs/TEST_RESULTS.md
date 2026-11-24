@@ -637,6 +637,18 @@ not restarted; a cancelled pairing returns to the old key the same way.
 returning. A failed start now shows the largest free block and the 48 kB it
 needs, and logs the figures.
 
+### 2026-11-23 — `9f37f46` (jobs) on the StickS3 (owner's devices)
+
+- Flashed with the three-part command (bootloader / partitions / app): **did
+  not boot**. Command output and serial log not yet reported; second
+  non-merged flash that failed (see `b635b03` app-only above).
+- Flashed as the merged image at `0x0`: **boots**; paired again; Device Info
+  works.
+- Wi-Fi Scan from the Flipper: `StickS3 refused: unknown wire error`. That is
+  the v0.3 app (no jobs) receiving the new `use_job` error (16), which it has
+  no name for: the Flipper was still running v0.3. The job path itself has
+  not run yet.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,
