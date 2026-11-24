@@ -111,9 +111,13 @@ did not boot (see `TEST_RESULTS.md`).
    StickS3's name and vibrates.
 3. Check the codes match. Answer **Yes** on both, in either order.
 4. Expect `Paired with <name>, key XXXX` on both, with the **same key id**. The
-   StickS3 then starts BruceLink in normal mode; on the Flipper press Back,
-   then **Connect**: `connected` within a few seconds, status `Key XXXX, not
-   encrypted`.
+   StickS3 then says `BruceLink ON > looking for Flipper` (it switches to
+   normal mode without restarting BLE; serial: `module: pairing mode -> normal,
+   BLE kept up`); on the Flipper press Back, then **Connect**: `connected`
+   within a few seconds, status `Key XXXX, not encrypted`.
+   - If a start ever says `Not enough memory for BLE: largest block N kB,
+     needs 48`, note N and the `[RAM]` / `[BruceLink]` serial lines, then
+     reboot and **Turn on**.
 5. Refusal: pair again and answer **No** on one side. Both must report it and
    keep the old pairing (Connect still works with it).
 6. Wrong peer: on a StickS3 that is not in pairing mode, the Flipper's Pair

@@ -31,7 +31,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Serial transport | 📐 | COBS layer done & tested; UART driver not wired |
 | BLE transport (Flipper peripheral profile) | 🟡 | implemented; host-tested parser/client; run on hardware 2026-11-23 (owner-reported): against a phone scanner, then linked with the StickS3 — handshake completes, Device Info works |
 | Link confidentiality | ⬜ | frames authenticated, not encrypted (ADR 0001 amendment; M4.6) |
-| Pairing (ADR 0005) | 🟡 | core: 13 host tests incl. man in the middle + Python recomputation; bridge pairing mode: 5 host tests; Flipper and StickS3 screens + key storage build; **not yet run on hardware**. The Flipper app contains no demo key; the StickS3 knows it only to refuse it |
+| Pairing (ADR 0005) | 🟡 | core: 13 host tests incl. man in the middle + Python recomputation; bridge pairing mode: 5 host tests. **Ran on hardware (owner-reported, 2026-11-23): pairing completed on both devices; after a StickS3 reboot the paired key connects and Device Info + Wi-Fi scan work.** Connecting straight after pairing failed for lack of memory on the StickS3's BLE restart (fix: switch modes without restarting BLE; built, not yet run). Key-id display, refusal and Forget not yet checked. The Flipper app contains no demo key; the StickS3 knows it only to refuse it |
 
 ## Native application (Milestone 4)
 
@@ -51,7 +51,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Bruce module + installer | 🟡 runs on the StickS3 (owner-reported: link established, off/on works); coexistence with other Bruce features not yet checked |
 | BruceLink on Bruce's main menu (icon, Turn on/off, Pair, Forget) | 🟡 builds and links in Bruce 1.17; installer host-tested (8 tests, incl. upgrade from the Config → Advanced entries); not yet run |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
-| Pairing-key provisioning | 🟡 pairing (ADR 0005) builds in Bruce; key in NVS; not yet run |
+| Pairing-key provisioning | ✅ pairing (ADR 0005) ran on the StickS3; key kept in NVS across a reboot and used for the session (owner-reported) |
 
 ## Phase 2 — capture & research capabilities
 

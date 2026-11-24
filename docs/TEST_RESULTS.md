@@ -564,9 +564,38 @@ NVS. Code that runs at boot and is new since the last build that ran
 plus static constructors of the bridge; nothing found that could fail. An
 emulator boot test was not run.
 
+The merged image boots; see below.
+
 Response: the docs no longer recommend `firmware.bin` alone. To keep NVS,
 flash bootloader, partition table and app at `0x0` / `0x8000` / `0x10000`,
 which needs nothing from what was on the device.
+
+### 2026-11-23 — First pairing on hardware, `b635b03` merged image (owner's devices)
+
+- **Pairing completed** on the Flipper (app v0.3) and the StickS3 (owner:
+  "paired"). Whether both showed the same key id was not reported.
+- **Connecting afterwards failed**, with a memory error on the StickS3 (owner:
+  "can't connect - uses too much memory"; exact text and serial not reported).
+- **After a reboot of the StickS3, Turn on and Connect work** with the paired
+  key, and Device Info and the Wi-Fi scan work over that session. So the key
+  survives a reboot in NVS on the StickS3 and in the Flipper's key file, both
+  sides derived the same key (the session authenticates with it), and the
+  paired bridge runs normally.
+
+Reading: after storing the key, `b635b03` stopped BLE (pairing mode) and
+started it again (normal mode). Starting BLE goes through Bruce's
+`radioHasMemForBle()`, which wants one free DMA-capable block of 48 kB. That
+held at boot (pairing mode started), so it is the restart that fell short:
+memory allocated while BLE was up (the key store's NVS write happens then)
+can sit inside the region BLE gives back and split it. Not confirmed; the
+figures were not captured.
+
+Response (next build): after pairing, the bridge task leaves pairing mode in
+place (`endPairing` + `setKey`, host-tested in `test_bridge.cpp`), so BLE is
+not restarted; a cancelled pairing returns to the old key the same way.
+`moduleStop` waits 100 ms for the idle task to free the task's stack before
+returning. A failed start now shows the largest free block and the 48 kB it
+needs, and logs the figures.
 
 ## Not yet tested (requires the local hardware session)
 

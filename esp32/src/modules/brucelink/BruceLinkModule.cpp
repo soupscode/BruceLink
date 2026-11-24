@@ -69,6 +69,28 @@ static PairView g_pv;
 /* UI -> task: the user's answer for attempt g_answer_attempt (-1: none). */
 static volatile int8_t g_answer = -1;
 static volatile uint32_t g_answer_attempt = 0;
+/* UI -> task: leave pairing mode and run sessions with g_switch_key, keeping
+ * BLE up (see switchToNormal). The key is guarded by g_pair_mux. */
+static volatile bool g_switch_pending = false;
+static uint8_t g_switch_key[BL_KEY_LEN];
+
+/* On the bridge task. */
+static void applySwitch() {
+    uint8_t key[BL_KEY_LEN];
+    portENTER_CRITICAL(&g_pair_mux);
+    memcpy(key, g_switch_key, BL_KEY_LEN);
+    bl_secure_zero(g_switch_key, sizeof(g_switch_key));
+    bl_secure_zero(&g_pv, sizeof(g_pv));
+    portEXIT_CRITICAL(&g_pair_mux);
+    // A pairing link still up is dropped without a cooldown; the next link
+    // is a session with this key (host-tested in test_bridge.cpp).
+    g_bridge.endPairing();
+    g_bridge.setKey(key);
+    bl_secure_zero(key, sizeof(key));
+    g_pairing_mode = false;
+    g_switch_pending = false;
+    logStep("module: pairing mode -> normal, BLE kept up");
+}
 
 static void pairingStep(bool linked_now, bool was_linked) {
     if(linked_now && !was_linked) {
@@ -118,6 +140,7 @@ static void pairingStep(bool linked_now, bool was_linked) {
 static void bridgeTask(void*) {
     bool was_linked = false;
     while(g_run) {
+        if(g_switch_pending) applySwitch();
         g_transport.loop();
         const bool linked = g_transport.connected();
         if(linked != was_linked) logStep(linked ? "module: Flipper linked" : "module: link down");
@@ -141,10 +164,17 @@ static ModuleStartResult startTask(const uint8_t* psk) {
     // One BLE stack, one owner: Bruce's BLE API, BadBLE, scanners etc. each
     // init/deinit NimBLE themselves.
     if(NimBLEDevice::isInitialized()) return kModuleBleBusy;
-    if(!radioHasMemForBle()) return kModuleNoMemory;
+    if(!radioHasMemForBle()) {
+        logStep("module: not enough memory for BLE (needs a 48 kB dma block)");
+        return kModuleNoMemory;
+    }
     if(g_stopped == nullptr) g_stopped = xSemaphoreCreateBinary();
     if(g_stopped == nullptr) return kModuleNoMemory;
 
+    g_switch_pending = false;
+    portENTER_CRITICAL(&g_pair_mux);
+    bl_secure_zero(g_switch_key, sizeof(g_switch_key));
+    portEXIT_CRITICAL(&g_pair_mux);
     g_transport.begin(&g_bridge, psk, &g_backend);
     g_pairing_mode = psk == nullptr;
     if(g_pairing_mode) {
@@ -188,10 +218,16 @@ bool moduleStop() {
     // seconds). If the task still has not exited, it stays registered as
     // running, so a second task is never started alongside it.
     if(xSemaphoreTake(g_stopped, pdMS_TO_TICKS(15000)) != pdTRUE) return false;
+    // The task deletes itself right after giving the semaphore; its stack
+    // and NimBLE's host task are freed by the idle task. Let that happen
+    // before anyone starts a radio again (BLE needs a 48 kB block).
+    vTaskDelay(pdMS_TO_TICKS(100));
     g_task = nullptr;
     g_pairing_mode = false;
+    g_switch_pending = false;
     portENTER_CRITICAL(&g_pair_mux);
     bl_secure_zero(&g_pv, sizeof(g_pv));
+    bl_secure_zero(g_switch_key, sizeof(g_switch_key));
     portEXIT_CRITICAL(&g_pair_mux);
     logStep("module: stopped, BLE released");
     return true;
@@ -244,6 +280,27 @@ static void formatCode(uint32_t code, char out[8]) {
     snprintf(out, 8, "%03u %03u", (unsigned)(code / 1000u), (unsigned)(code % 1000u));
 }
 
+/* "Not enough memory" with the figures: BLE needs one free block this big.
+ * A reboot gives the heap back in one piece. */
+static void showNoMemory() {
+    char msg[80];
+    snprintf(msg, sizeof(msg), "Not enough memory for BLE: largest block %u kB, needs %u. Reboot, then retry",
+             (unsigned)(radioLargestDmaBlock() / 1024), (unsigned)(RADIO_BLE_MIN_DMA_BLOCK / 1024));
+    displayError(msg, true);
+}
+
+/* Leave pairing mode for normal sessions with `psk` without restarting BLE.
+ * Stopping and starting again needs a fresh 48 kB DMA block, which the heap
+ * may no longer have after a BLE session (hardware, 2026-11-23: paired, then
+ * "not enough memory" on the restart). The bridge task applies it on its
+ * next loop. */
+static void switchToNormal(const uint8_t psk[BL_KEY_LEN]) {
+    portENTER_CRITICAL(&g_pair_mux);
+    memcpy(g_switch_key, psk, BL_KEY_LEN);
+    portEXIT_CRITICAL(&g_pair_mux);
+    g_switch_pending = true;
+}
+
 /* Returns true if a new pairing was stored. */
 static bool runPairing() {
     const bool was_running = moduleRunning();
@@ -254,10 +311,12 @@ static bool runPairing() {
     switch(startTask(nullptr)) {
     case kModuleStarted: break;
     case kModuleBleBusy: displayError("BLE in use, turn the other BLE feature off", true); return false;
-    default: displayError("Not enough memory for BLE", true); return false;
+    default: showNoMemory(); return false;
     }
 
     bool stored = false;
+    char done_msg[64] = "";
+    const char* error = nullptr;
     const char* last_failure = nullptr;
     uint32_t asked_attempt = 0; // 0: none asked yet
     uint32_t seen_attempt = 0;
@@ -278,14 +337,11 @@ static bool runPairing() {
             portEXIT_CRITICAL(&g_pair_mux);
             stored = keyStoreSave(v.key, v.peer);
             bl_secure_zero(v.key, sizeof(v.key));
-            char msg[64];
             if(stored) {
-                snprintf(msg, sizeof(msg), "Paired with %s, key %02X%02X", v.peer, v.key_id[0], v.key_id[1]);
-                moduleStop();
-                displaySuccess(msg, true);
+                snprintf(done_msg, sizeof(done_msg), "Paired with %s, key %02X%02X", v.peer, v.key_id[0],
+                         v.key_id[1]);
             } else {
-                moduleStop();
-                displayError("Paired, but saving the key failed", true);
+                error = "Paired, but saving the key failed";
             }
             break;
         }
@@ -317,20 +373,32 @@ static bool runPairing() {
             drawWaiting(last_failure);
         }
         if(v.attempt == 0 && millis() - started > kPairingFindMs) {
-            moduleStop();
-            displayError("No Flipper in pairing mode found", true);
+            error = "No Flipper in pairing mode found";
             break;
         }
         delay(20);
     }
-    if(moduleRunning()) moduleStop(); // ESC, or left via returnToMenu
 
-    // Back to how it was, with the new key if there is one.
-    if(stored || was_running) {
-        if(moduleStart() == kModuleStarted) {
-            displayInfo("BruceLink ON (not encrypted)", true);
+    // Leave pairing mode. With a key to run (the new one, or the old one if
+    // BruceLink was on before) BLE stays up; otherwise it is released.
+    bool on = false;
+    if(moduleRunning()) {
+        uint8_t psk[BL_KEY_LEN];
+        char peer[BL_PAIR_NAME_MAX + 1];
+        if((stored || was_running) && keyStoreLoad(psk, peer)) {
+            switchToNormal(psk);
+            on = true;
+        } else {
+            moduleStop();
         }
+        bl_secure_zero(psk, sizeof(psk));
     }
+    if(stored) {
+        displaySuccess(done_msg, true);
+    } else if(error != nullptr) {
+        displayError(error, true);
+    }
+    if(on) displayInfo("BruceLink ON > looking for Flipper (not encrypted)", true);
     return stored;
 }
 
@@ -347,7 +415,7 @@ static void toggleModule() {
         break;
     case kModuleNotPaired: displayError("BruceLink: not paired. Pair with Flipper first", true); break;
     case kModuleBleBusy: displayError("BruceLink: BLE in use, turn the other BLE feature off", true); break;
-    case kModuleNoMemory: displayError("BruceLink: not enough memory for BLE", true); break;
+    case kModuleNoMemory: showNoMemory(); break;
     default: break;
     }
 }

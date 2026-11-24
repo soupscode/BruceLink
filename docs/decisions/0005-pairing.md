@@ -84,7 +84,11 @@ so it keeps the pairing and does not depend on what was on the device.
 - StickS3: **BruceLink** on Bruce's main menu (first item) → **Pair with
   Flipper** / **Forget pairing** / **Turn on**. Turning on requires a pairing;
   the demo key is not used on the device. After a successful pairing BruceLink
-  starts in normal mode with the new key. (First version: two entries under
+  switches to normal mode with the new key **without restarting BLE**: a
+  restart needs a fresh 48 kB free block (Bruce's `radioHasMemForBle`), and on
+  hardware the first version's stop-and-start after pairing failed for lack of
+  memory. Leaving a failed or cancelled pairing goes back to the old key the
+  same way if BruceLink was on before. (First version: two entries under
   Config → Advanced; moved to the main menu on the owner's request.)
 
 ## Consequences
