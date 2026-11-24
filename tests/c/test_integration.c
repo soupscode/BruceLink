@@ -1,8 +1,10 @@
 /* Full-stack integration: two authenticated sessions exchange messages
  * through a fragmenting, fault-injecting simulated transport.
- * Exercises session + fragmentation + reassembly together and proves
- * that dropped/duplicated/reordered/corrupted traffic is never accepted
- * as valid, while a clean channel delivers every message.
+ * Exercises session + fragmentation + reassembly together and shows that
+ * dropped, duplicated or corrupted traffic is never accepted as valid,
+ * while a clean channel delivers every message. Reordering is not
+ * simulated here; the strict seq check that rejects it is tested in
+ * test_protocol_core.c / test_client.c.
  * SPDX-License-Identifier: MIT */
 #include "../../shared/brucelink_core/src/bl_reasm.h"
 #include "../../shared/brucelink_core/src/bl_session.h"

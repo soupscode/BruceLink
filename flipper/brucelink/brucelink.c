@@ -80,12 +80,19 @@ static void bl_send(BruceLinkApp* app, const uint8_t* frame, size_t len) {
     if(app->transport) (void)app->transport->api->send(app->transport, frame, len);
 }
 
+static void bl_job_link_down(BruceLinkApp* app);
+
 static void bl_stop_transport(BruceLinkApp* app) {
     if(app->transport == NULL) return;
     app->transport->api->free(app->transport); /* stops it first */
     app->transport = NULL;
     app->link_id = 0;
     bl_client_link_down(&app->client);
+    /* No link means no use for the client's copy of the key until the next
+     * Connect, which sets it again. */
+    bl_secure_zero(&app->client, sizeof(app->client));
+    bl_client_init(&app->client, NULL, bl_rng, NULL);
+    bl_job_link_down(app);
 }
 
 /* (Re)start the BLE transport. The handshake begins by itself, from the
@@ -136,6 +143,136 @@ static void bl_request(
     }
 }
 
+/* ------------------------------------------------- jobs (ADR 0006) */
+
+static void bl_job_draw(BruceLinkApp* app) {
+    if(app->screen != BlScreenJob) return;
+    const bl_jobc_t* j = &app->job;
+    const uint32_t s = bl_jobc_elapsed_ms(j, furi_get_tick()) / 1000u;
+    const uint32_t limit_s = (uint32_t)j->max_s + BL_JOB_RESTART_ALLOWANCE_MS / 1000u;
+    switch(j->state) {
+    case BL_JOBC_STARTING: snprintf(app->text, sizeof(app->text), "Asking the StickS3..."); break;
+    case BL_JOBC_RUNNING:
+        snprintf(
+            app->text, sizeof(app->text),
+            "Running on the StickS3.\nIt restarts to free its\nradio: the link drops and\ncomes back by itself.\n\n%lu s (gives up at %lu s)",
+            (unsigned long)s, (unsigned long)limit_s);
+        break;
+    case BL_JOBC_FETCHING:
+        snprintf(app->text, sizeof(app->text), "StickS3 is back.\nFetching the result...\n\n%lu s", (unsigned long)s);
+        break;
+    case BL_JOBC_DONE:
+    case BL_JOBC_FAILED: bl_show_text(app, app->job_title, app->job_text); return;
+    default: app->text[0] = 0; break;
+    }
+    app->job_drawn_s = s;
+    bl_show_text(app, app->job_title, app->text);
+}
+
+/* The job ended: keep its screen text, whatever screen is up now. */
+static void bl_job_finish_text(BruceLinkApp* app, const char* result, size_t len) {
+    const bl_jobc_t* j = &app->job;
+    app->job_unseen = app->screen != BlScreenJob;
+    char* t = app->job_text;
+    const size_t cap = sizeof(app->job_text);
+    if(j->state == BL_JOBC_DONE) {
+        if(len > BL_JOB_RESULT_MAX) len = BL_JOB_RESULT_MAX;
+        /* Total time on the Flipper's clock: from pressing the item to the
+         * result, both restarts and the reconnect included. */
+        const unsigned long took_ds = bl_jobc_elapsed_ms(j, furi_get_tick()) / 100u;
+        int w = snprintf(t, cap, "Took %lu.%lu s\n", took_ds / 10u, took_ds % 10u);
+        if(w < 0) w = 0;
+        if(j->outcome != BL_JOB_DONE) {
+            const int o = snprintf(t + w, cap - (size_t)w, "%s\n\n", bl_job_outcome_str(j->outcome));
+            if(o > 0) w += o;
+        }
+        if((size_t)w + len >= cap) len = cap - (size_t)w - 1;
+        memcpy(t + w, result, len);
+        t[(size_t)w + len] = 0;
+        return;
+    }
+    switch(j->fail) {
+    case BL_JOBC_F_REFUSED: snprintf(t, cap, "StickS3 refused:\n%s", bl_wire_err_str(j->err)); break;
+    case BL_JOBC_F_NO_ANSWER: snprintf(t, cap, "No answer from the StickS3."); break;
+    case BL_JOBC_F_TIMEOUT:
+        snprintf(
+            t, cap, "The StickS3 did not come\nback within %lu s.\nIs it on, with BruceLink on?",
+            (unsigned long)((uint32_t)j->max_s + BL_JOB_RESTART_ALLOWANCE_MS / 1000u));
+        break;
+    case BL_JOBC_F_LOST: snprintf(t, cap, "The StickS3 no longer has\nthis job (lost power?)."); break;
+    default: snprintf(t, cap, "Unexpected reply from\nthe StickS3."); break;
+    }
+}
+
+/* The job may have just ended because of `before` -> now: report it once,
+ * like every other ending (screen text, redraw, vibration). */
+static void bl_job_after(BruceLinkApp* app, bl_jobc_state_t before) {
+    if(before == app->job.state || app->job.state != BL_JOBC_FAILED) return;
+    bl_job_finish_text(app, NULL, 0);
+    bl_job_draw(app);
+    notification_message(app->notifications, &sequence_error);
+}
+
+/* The link the job started on is gone (dropped, or the transport stopped). */
+static void bl_job_link_down(BruceLinkApp* app) {
+    const bl_jobc_state_t before = app->job.state;
+    bl_jobc_link_down(&app->job);
+    bl_job_after(app, before);
+}
+
+/* Seal and send a job request; false if the request slot is taken. */
+static bool bl_job_send(BruceLinkApp* app, uint8_t type, const uint8_t* pl, size_t len) {
+    uint8_t out[BL_HDR_LEN + 16 + BL_MAC_TAG_LEN];
+    const int n = bl_client_request(&app->client, type, pl, (uint16_t)len, furi_get_tick(), out, sizeof(out));
+    if(n < 0) return false;
+    bl_send(app, out, (size_t)n);
+    return true;
+}
+
+static void bl_job_begin(BruceLinkApp* app, const char* title, uint16_t cap_id) {
+    app->screen = BlScreenJob;
+    const bl_jobc_state_t st = app->job.state;
+    const bool active = st == BL_JOBC_STARTING || st == BL_JOBC_RUNNING || st == BL_JOBC_FETCHING;
+    if(app->job.cap_id == cap_id && (active || app->job_unseen)) {
+        app->job_unseen = false;
+        bl_job_draw(app); /* still running, or finished while away: show it */
+        return;
+    }
+    app->job_title = title;
+    if(!bl_client_ready(&app->client)) {
+        bl_show_text(app, title, "not connected\nUse Connect first.");
+        return;
+    }
+    uint8_t pl[8];
+    const int n = bl_jobc_start(&app->job, cap_id, 0, NULL, 0, furi_get_tick(), pl, sizeof(pl));
+    if(n < 0 || !bl_job_send(app, BL_MSG_JOB_START, pl, (size_t)n)) {
+        bl_jobc_init(&app->job);
+        bl_show_text(app, title, "busy: still waiting for the\nprevious reply");
+        return;
+    }
+    bl_job_draw(app);
+}
+
+/* Every tick: follow the job through the restarts. */
+static void bl_job_tick(BruceLinkApp* app, uint32_t now) {
+    bl_jobc_t* j = &app->job;
+    if(bl_jobc_want_fetch(j, bl_client_ready(&app->client))) {
+        uint8_t pl[8];
+        const bl_jobc_t before = *j;
+        const int n = bl_jobc_fetch(j, pl, sizeof(pl));
+        if(n > 0 && !bl_job_send(app, BL_MSG_JOB_RESULT_REQ, pl, (size_t)n)) {
+            *j = before; /* slot taken: try again next tick */
+        }
+        bl_job_draw(app);
+    }
+    const bl_jobc_state_t before = j->state;
+    bl_jobc_tick(j, now);
+    bl_job_after(app, before);
+    if(j->state == BL_JOBC_STARTING || j->state == BL_JOBC_RUNNING || j->state == BL_JOBC_FETCHING) {
+        if(bl_jobc_elapsed_ms(j, now) / 1000u != app->job_drawn_s) bl_job_draw(app);
+    }
+}
+
 /* Render a CAPS payload as a text list. */
 static void bl_render_caps(BruceLinkApp* app, const uint8_t* buf, size_t len) {
     if(bl_caps_validate(buf, len) < 0) {
@@ -173,11 +310,23 @@ static void bl_show_payload(BruceLinkApp* app, const char* title, const bl_frame
 
 /* An authenticated message from the StickS3. */
 static void bl_on_message(BruceLinkApp* app, const bl_frame_t* f) {
+    const char* result = NULL;
+    size_t result_len = 0;
+    if(bl_jobc_on_response(
+           &app->job, f->type, f->payload, f->payload_len, furi_get_tick(), &result, &result_len)) {
+        if(app->job.state == BL_JOBC_DONE || app->job.state == BL_JOBC_FAILED) {
+            bl_job_finish_text(app, result, result_len);
+            notification_message(
+                app->notifications,
+                app->job.state == BL_JOBC_DONE ? &sequence_success : &sequence_error);
+        }
+        bl_job_draw(app);
+        return;
+    }
     if(app->screen != BlScreenRequest) return; /* user moved on */
     switch(f->type) {
     case BL_MSG_DEVICE_INFO: bl_show_payload(app, "Device Info", f); break;
     case BL_MSG_CAPS: bl_render_caps(app, f->payload, f->payload_len); break;
-    case BL_MSG_CMD_RESP: bl_show_payload(app, "Wi-Fi Scan", f); break;
     case BL_MSG_ERROR: {
         uint16_t code = f->payload_len >= 2 ?
                             (uint16_t)(f->payload[0] | (f->payload[1] << 8)) :
@@ -209,10 +358,19 @@ static void bl_on_frame(const uint8_t* frame, size_t len, void* ctx) {
 
 static void bl_pairing_tick(BruceLinkApp* app);
 
+static void bl_pair_start_mode(BruceLinkApp* app);
+
 static void bl_tick(void* ctx) {
     BruceLinkApp* app = ctx;
+    if(app->pair_pending) {
+        /* Like Connect: switching BLE profiles blocks for a few seconds,
+         * so it runs here, after the screen has changed. */
+        app->pair_pending = false;
+        bl_pair_start_mode(app);
+    }
     if(app->pair_mode) {
         bl_pairing_tick(app);
+        bl_job_tick(app, furi_get_tick()); /* a job still gives up in time */
         return;
     }
     if(app->connect_pending) {
@@ -223,8 +381,11 @@ static void bl_tick(void* ctx) {
         bl_connect(app);
     }
     BlTransport* t = app->transport;
-    if(t == NULL) return;
     const uint32_t now = furi_get_tick();
+    if(t == NULL) {
+        bl_job_tick(app, now);
+        return;
+    }
 
     t->api->poll(t, bl_on_frame, app);
 
@@ -233,6 +394,7 @@ static void bl_tick(void* ctx) {
     if(link != app->link_id) {
         app->link_id = link;
         bl_client_link_down(&app->client);
+        bl_job_link_down(app); /* normally: the StickS3 is restarting for it */
         if(link != 0) {
             /* Start authenticating immediately: the StickS3 drops links
              * that are not authenticated within its deadline. */
@@ -251,7 +413,10 @@ static void bl_tick(void* ctx) {
         t->api->drop_link(t);
         bl_refresh_connection(app);
         break;
-    case BL_CL_EVT_REQUEST_TIMEOUT:
+    case BL_CL_EVT_REQUEST_TIMEOUT: {
+        const bl_jobc_state_t before = app->job.state;
+        bl_jobc_request_timed_out(&app->job);
+        bl_job_after(app, before);
         if(app->screen == BlScreenRequest) {
             /* Say what the link saw, so a lost reply can be told apart
              * from a StickS3 that never answered. */
@@ -261,8 +426,11 @@ static void bl_tick(void* ctx) {
             bl_show_text(app, app->req_title ? app->req_title : "BruceLink", app->text);
         }
         break;
+    }
     default: break;
     }
+
+    bl_job_tick(app, now);
 
     /* The transport's own state (advertising / connecting / linked) changes
      * without the link id changing, e.g. when a central connects but has
@@ -424,6 +592,10 @@ static void bl_pair_keep(BruceLinkApp* app) {
     app->pair_done = true;
     app->key_state = BlKeyfileOk;
     bl_secure_zero(psk, sizeof(psk));
+    /* Nothing more to send: our confirm already went out. The screen uses
+     * app->peer / app->key_id from here on. */
+    bl_pair_wipe(&app->pair);
+    app->pair_running = false;
 }
 
 static void bl_build_menu(BruceLinkApp* app);
@@ -479,13 +651,23 @@ static void bl_pairing_tick(BruceLinkApp* app) {
     }
 
     const bl_pair_state_t st = bl_pair_state(&app->pair);
+    /* One attempt per link. A failed one has sent its abort; a second later
+     * drop the link so advertising resumes and the next link gets a fresh
+     * attempt (a central that stays connected would otherwise hold the
+     * only link). pair_failed_ms is set below on the tick it failed. */
+    if(st == BL_PS_FAILED && st == before && now - app->pair_failed_ms > 1000u) {
+        t->api->drop_link(t);
+        return;
+    }
     if(st == before) return;
     if(st == BL_PS_DONE) {
         bl_pair_keep(app);
         bl_build_menu(app); /* "Forget pairing" appears */
-        notification_message(app->notifications, &sequence_success);
+        notification_message(
+            app->notifications, app->pair_done ? &sequence_success : &sequence_error);
     } else if(st == BL_PS_FAILED) {
         app->pair_last_failure = bl_pair_fail_text(&app->pair);
+        app->pair_failed_ms = now;
         notification_message(app->notifications, &sequence_error);
     } else if(st == BL_PS_COMPARE) {
         notification_message(app->notifications, &sequence_single_vibro);
@@ -524,15 +706,25 @@ static bool bl_custom_event_cb(void* ctx, uint32_t event) {
         if(st == BL_PS_DONE) { /* the StickS3 had already confirmed */
             bl_pair_keep(app);
             bl_build_menu(app);
-            notification_message(app->notifications, &sequence_success);
+            notification_message(
+                app->notifications, app->pair_done ? &sequence_success : &sequence_error);
         } else if(st == BL_PS_FAILED) {
             app->pair_last_failure = bl_pair_fail_text(&app->pair);
+            app->pair_failed_ms = furi_get_tick();
         }
         bl_pair_draw(app);
         return true;
     }
     case BlEvtForgetYes:
-        bl_keyfile_forget();
+        if(!bl_keyfile_forget()) {
+            widget_reset(app->pair_widget);
+            widget_add_text_scroll_element(
+                app->pair_widget, 2, 2, 124, 60,
+                "Could not delete the key\nfile (SD card?).\nStill paired.\n\nBack: menu");
+            notification_message(app->notifications, &sequence_error);
+            return true;
+        }
+        bl_jobc_init(&app->job); /* no key, no way to fetch a result */
         bl_secure_zero(app->psk, sizeof(app->psk));
         memset(app->key_id, 0, sizeof(app->key_id));
         app->peer[0] = '\0';
@@ -553,10 +745,14 @@ static bool bl_custom_event_cb(void* ctx, uint32_t event) {
     }
 }
 
-/* Back on the pairing / forget screens (they have no "previous" view, so
- * the dispatcher asks us): stop pairing, release the radio, go to the menu. */
+/* Back on the text, pairing and forget screens (they have no "previous"
+ * view, so the dispatcher asks us): stop pairing if it runs, release its
+ * radio, and go to the menu with no screen current. The text view used to
+ * have its own "previous" callback, which left app->screen pointing at the
+ * hidden view (review 2026-11-23: a job result then counted as seen). */
 static bool bl_navigation_cb(void* ctx) {
     BruceLinkApp* app = ctx;
+    app->pair_pending = false;
     bl_pair_end_mode(app);
     app->screen = BlScreenNone;
     view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
@@ -585,8 +781,9 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     case MenuWifiScan: {
-        const uint8_t cap[2] = {(uint8_t)(BL_CAP_WIFI_SCAN & 0xFF), (uint8_t)(BL_CAP_WIFI_SCAN >> 8)};
-        bl_request(app, "Wi-Fi Scan", BL_MSG_CMD_REQ, cap, sizeof(cap));
+        /* Runs as a job: the StickS3 restarts to give the scan its radio
+         * (ADR 0006). */
+        bl_job_begin(app, "Wi-Fi Scan", BL_CAP_WIFI_SCAN);
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     }
@@ -595,7 +792,11 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     case MenuPair:
-        bl_pair_start_mode(app);
+        app->screen = BlScreenPairing;
+        widget_reset(app->pair_widget);
+        widget_add_string_element(app->pair_widget, 2, 2, AlignLeft, AlignTop, FontPrimary, "Pairing");
+        widget_add_text_scroll_element(app->pair_widget, 2, 16, 124, 46, "starting...");
+        app->pair_pending = true; /* done by the next tick */
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewPair);
         break;
     case MenuForget:
@@ -683,7 +884,6 @@ static BruceLinkApp* bl_app_alloc(void) {
     view_dispatcher_add_view(app->view_dispatcher, BlViewMenu, submenu_get_view(app->submenu));
 
     app->widget = widget_alloc();
-    view_set_previous_callback(widget_get_view(app->widget), bl_back_to_menu_cb);
     view_dispatcher_add_view(app->view_dispatcher, BlViewText, widget_get_view(app->widget));
 
     app->settings = variable_item_list_alloc();

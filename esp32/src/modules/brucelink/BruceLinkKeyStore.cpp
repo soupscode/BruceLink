@@ -60,11 +60,12 @@ bool keyStoreSave(const uint8_t psk[BL_KEY_LEN], const char* peer) {
     return ok;
 }
 
-void keyStoreForget() {
+bool keyStoreForget() {
     Preferences p;
-    if(!p.begin(kNamespace, false)) return;
-    p.clear();
+    if(!p.begin(kNamespace, false)) return false;
+    const bool ok = p.clear();
     p.end();
+    return ok;
 }
 
 bool keyStoreInfo(char peer[BL_PAIR_NAME_MAX + 1], uint8_t key_id[BL_PAIR_KEY_ID_LEN]) {

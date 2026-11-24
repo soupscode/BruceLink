@@ -90,7 +90,8 @@ physical control (the button):
   review round: re-sending "enable" before each op, or reconnecting, refilled
   the budget — 320 frames against a 64-frame limit);
 - an **optional** operator target scope (BSSID allowlist) to confine a test —
-  a convenience, not a credential. Active ops need a **specific unicast**
+  a convenience, not a credential. (2026-11-23: implemented in the core only;
+  no wire message sets it yet, so `target_not_allowed` cannot occur.) Active ops need a **specific unicast**
   target: broadcast and multicast BSSIDs are refused (the first version only
   rejected a NULL pointer, which the wire format never produces).
 
@@ -99,8 +100,8 @@ start; a new authenticated session resets the gate with active ops disabled.
 A capture whose backend fails is stopped and flushed at once (exactly-once
 stop), never left with the radio in promiscuous mode or the file open.
 
-No per-function token. Active capabilities carry `REQUIRES_AUTH` purely to route
-them through this gate. The gate decides policy; it never emits RF — the actual
+No per-function token. Active capabilities carry `BL_CAP_F_ACTIVE_RF` purely to
+route them through this gate. The gate decides policy; it never emits RF — the actual
 transmission stays in Bruce (`send_raw_frame`), unchanged.
 
 ## Consequences / what needs a Bruce patch
@@ -119,7 +120,7 @@ BruceLink does not add any new offensive capability: the transmit primitives
 already exist in Bruce and the operator already runs them from the device. The
 remote frontend *adds* controls that the local UI lacks (authenticated link,
 default-off active ops, link-loss auto-stop, rate limit, optional target scope).
-Active modes are advertised `REQUIRES_AUTH` + `HW_UNVERIFIED` and are to be used
+Active modes are advertised `ACTIVE_RF` + `HW_UNVERIFIED` and are to be used
 only in authorized, isolated lab environments.
 
 ## Amendment — demo key (2026-11-23)
@@ -138,3 +139,30 @@ the demo key (the compile check, a misconfigured build). Being paired lifts only
 that lock: the session-level enable, e-stop, rate limit and unicast-only target
 rules apply in full, and in the current Bruce build the transmit hook still
 reports "not available" (nothing is sent).
+
+## Amendment — active operations as jobs (2026-11-23, ADR 0006)
+
+Tools that need the radio now run as jobs, between two restarts of the
+StickS3 with the BLE link down. The gate above assumes a live link (session
+enable, remote e-stop, auto-stop on link loss), which a job does not have. For
+active jobs ADR 0006 replaces those with: the gate applied when the job is
+accepted, a hard duration cap enforced on the StickS3, any button on the
+StickS3 as the stop, and no re-run after a reset. Until that is implemented
+and tested, the bridge refuses active jobs (`capability_disabled`).
+
+## Amendment — review fixes (2026-11-23)
+
+- Every active op needs one specific target. The gate no longer takes a
+  "requires target" argument: an op without a target is refused like a
+  broadcast one.
+- The rate limiter counts frames, not time; the unused per-op duration field
+  is gone. One op is bounded by the bridge's frame cap (16) and, for jobs, by
+  `max_s` (ADR 0006). The window is fixed, so up to twice the per-window
+  number can go out across a boundary (128 frames with the defaults).
+- The gate is reset when a session is **established**, not when a BLE link
+  comes up, so a link that never authenticates cannot clear an e-stop.
+- The bridge's own state (and with it the rate window) starts fresh when the
+  bridge starts, which on the StickS3 includes every restart for a job. With a
+  1 s window this changes nothing in practice.
+- Capture and active ops are refused on the StickS3's live link (ADR 0006);
+  the demo key refuses captures too.

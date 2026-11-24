@@ -11,18 +11,16 @@ void bl_safety_init(bl_safety_t* g) {
     memset(g, 0, sizeof(*g));
     g->window_ms = 1000; /* 1s window */
     g->max_frames_per_window = 64; /* conservative default */
-    g->max_op_duration_ms = 30000; /* 30s max single active op */
 }
 
-void bl_safety_set_limits(
-    bl_safety_t* g,
-    uint32_t window_ms,
-    uint32_t max_frames_per_window,
-    uint32_t max_op_duration_ms) {
+void bl_safety_set_limits(bl_safety_t* g, uint32_t window_ms, uint32_t max_frames_per_window) {
     if(g == NULL) return;
     if(window_ms) g->window_ms = window_ms;
-    if(max_frames_per_window) g->max_frames_per_window = max_frames_per_window;
-    if(max_op_duration_ms) g->max_op_duration_ms = max_op_duration_ms;
+    if(max_frames_per_window) {
+        g->max_frames_per_window = max_frames_per_window;
+        /* a lower limit applies to what this window already sent */
+        if(g->frames_in_window > max_frames_per_window) g->frames_in_window = max_frames_per_window;
+    }
 }
 
 int bl_safety_enable_active(bl_safety_t* g, bool enable) {
@@ -104,7 +102,6 @@ int bl_safety_authorize(
     bl_safety_t* g,
     bl_op_class_t klass,
     const uint8_t target[BL_BSSID_LEN],
-    bool require_target,
     uint32_t frames,
     uint32_t now_ms) {
     if(g == NULL) return BL_E_ARG;
@@ -113,17 +110,17 @@ int bl_safety_authorize(
 
     /* active path */
     if(!g->active_enabled) return BL_E_DENIED;
-    if(require_target) {
-        /* never broadcast/multicast: the target must be one specific station */
-        if(!bl_safety_bssid_is_specific(target)) return BL_E_DENIED;
-        if(!target_in_scope(g, target)) return BL_E_DENIED;
-    } else if(target != NULL && !target_in_scope(g, target)) {
-        return BL_E_DENIED;
-    }
-    /* fixed-window rate limit */
+    /* One specific station, always (review 2026-11-23: an op flagged as
+     * needing no target used to pass with none, which is how a broadcast
+     * would look). */
+    if(!bl_safety_bssid_is_specific(target)) return BL_E_DENIED;
+    if(!target_in_scope(g, target)) return BL_E_DENIED;
+    /* fixed-window rate limit; written so a huge `frames` cannot wrap
+     * (review 2026-11-23: frames_in_window + frames could) */
     roll_window(g, now_ms);
     if(frames == 0) frames = 1;
-    if(g->frames_in_window + frames > g->max_frames_per_window) return BL_E_LOCKED;
+    if(g->frames_in_window >= g->max_frames_per_window) return BL_E_LOCKED;
+    if(frames > g->max_frames_per_window - g->frames_in_window) return BL_E_LOCKED;
     g->frames_in_window += frames;
     return BL_OK;
 }

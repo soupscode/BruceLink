@@ -92,9 +92,9 @@ static void t_safety_default_deny(void) {
     bl_safety_init(&g);
     uint8_t bssid[6] = {0xde, 0xad, 0xbe, 0xef, 0x00, 0x01};
     /* passive always ok */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, false, 0, 1000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, 0, 1000), BL_OK);
     /* active with nothing enabled -> denied (default-off) */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bssid, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bssid, 1, 1000), BL_E_DENIED);
 }
 
 static void t_safety_enable_and_scope(void) {
@@ -110,33 +110,33 @@ static void t_safety_enable_and_scope(void) {
     uint8_t allowed[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
     uint8_t other[6] = {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
     /* with no scope, any specific target passes */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, other, true, 1, 1000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, other, 1, 1000), BL_OK);
     /* broadcast (no target) is never allowed for an active op */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, NULL, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, NULL, 1, 1000), BL_E_DENIED);
 
     /* operator confines the test to one target */
     uint8_t list[1][6];
     memcpy(list[0], allowed, 6);
     CHECK_EQ_INT(bl_safety_set_allowlist(&g, list, 1), BL_OK);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, allowed, true, 1, 1000), BL_OK);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, other, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, allowed, 1, 1000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, other, 1, 1000), BL_E_DENIED);
 
     /* disabling active ops denies again */
     bl_safety_enable_active(&g, false);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, allowed, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, allowed, 1, 1000), BL_E_DENIED);
 }
 
 static void t_safety_rate_limit(void) {
     bl_safety_t g;
     bl_safety_init(&g);
-    bl_safety_set_limits(&g, 1000, 10, 30000);
+    bl_safety_set_limits(&g, 1000, 10);
     bl_safety_enable_active(&g, true);
     uint8_t t[6] = {0x02, 1, 1, 1, 1, 1}; /* unicast */
     /* 10 frames in the window OK, 11th blocked */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 10, 5000), BL_OK);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5100), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 10, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 5100), BL_E_LOCKED);
     /* next window resets budget */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 6200), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 6200), BL_OK);
 }
 
 static void t_safety_estop_and_link_loss(void) {
@@ -147,12 +147,12 @@ static void t_safety_estop_and_link_loss(void) {
     CHECK(bl_safety_is_estopped(&g));
     CHECK(!bl_safety_active_ready(&g));
     /* even passive ops are refused while estopped (fail safe) */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, false, 0, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, 0, 1000), BL_E_DENIED);
     /* re-enabling active is refused until reset */
     CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_E_DENIED);
     bl_safety_reset(&g);
     CHECK(!bl_safety_is_estopped(&g));
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, false, 0, 1000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, 0, 1000), BL_OK);
 
     /* link loss engages the e-stop automatically */
     bl_safety_enable_active(&g, true);
@@ -177,14 +177,14 @@ static void t_safety_rejects_non_specific_targets(void) {
     CHECK(!bl_safety_bssid_is_specific(zero));
     CHECK(!bl_safety_bssid_is_specific(NULL));
     CHECK(bl_safety_bssid_is_specific(uni));
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, true, 1, 1000), BL_E_DENIED);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, mcast, true, 1, 1000), BL_E_DENIED);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, zero, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, mcast, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, zero, 1, 1000), BL_E_DENIED);
     /* even an operator scope that lists broadcast cannot authorize it */
     uint8_t list[1][6];
     memcpy(list[0], bcast, 6);
     bl_safety_set_allowlist(&g, list, 1);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, true, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, 1, 1000), BL_E_DENIED);
     /* a denied attempt consumes no budget */
     bl_safety_set_allowlist(&g, NULL, 0);
     CHECK_EQ_INT(bl_safety_budget(&g, 1000), g.max_frames_per_window);
@@ -196,24 +196,24 @@ static void t_safety_rejects_non_specific_targets(void) {
 static void t_safety_budget_and_refund(void) {
     bl_safety_t g;
     bl_safety_init(&g);
-    bl_safety_set_limits(&g, 1000, 20, 30000);
+    bl_safety_set_limits(&g, 1000, 20);
     bl_safety_enable_active(&g, true);
     uint8_t t[6] = {0x02, 1, 2, 3, 4, 5};
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 20);
     /* reserve 16, only 4 actually sent -> refund 12 */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 16, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 16, 5000), BL_OK);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 4);
     bl_safety_refund(&g, 12);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 16);
     /* reserving more than remains is refused */
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 17, 5000), BL_E_LOCKED);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 16, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 17, 5000), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 16, 5000), BL_OK);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
     /* over-refund clamps at an empty window, never wraps */
     bl_safety_refund(&g, 1000);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 20);
     /* window roll restores the full budget */
-    bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 20, 5000);
+    bl_safety_authorize(&g, BL_OP_ACTIVE, t, 20, 5000);
     CHECK_EQ_INT(bl_safety_budget(&g, 5999), 0);
     CHECK_EQ_INT(bl_safety_budget(&g, 6000), 20);
 }
@@ -224,10 +224,10 @@ static void t_safety_budget_and_refund(void) {
 static void t_safety_window_survives_enable_and_reset(void) {
     bl_safety_t g;
     bl_safety_init(&g);
-    bl_safety_set_limits(&g, 1000, 20, 30000);
+    bl_safety_set_limits(&g, 1000, 20);
     uint8_t t[6] = {0x02, 1, 2, 3, 4, 5};
     bl_safety_enable_active(&g, true);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 20, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 20, 5000), BL_OK);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
     /* re-enable while enabled, and disable/enable */
     CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
@@ -235,13 +235,13 @@ static void t_safety_window_survives_enable_and_reset(void) {
     bl_safety_enable_active(&g, false);
     bl_safety_enable_active(&g, true);
     CHECK_EQ_INT(bl_safety_budget(&g, 5000), 0);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5000), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 5000), BL_E_LOCKED);
     /* e-stop + reset (what a new session does) keeps the history too */
     bl_safety_estop(&g);
     bl_safety_reset(&g);
     bl_safety_enable_active(&g, true);
     CHECK_EQ_INT(bl_safety_budget(&g, 5500), 0);
-    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, true, 1, 5500), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 5500), BL_E_LOCKED);
     /* link loss + reset, same */
     bl_safety_on_link_loss(&g);
     bl_safety_reset(&g);
@@ -413,7 +413,76 @@ static void t_capture_null_backend(void) {
     CHECK_EQ_INT(bl_capture_stop(&m), BL_OK);
 }
 
+/* Review 2026-11-23: frames_in_window + frames wrapped for a huge
+ * request, so it passed the limit and the window counter wrapped too. */
+static void t_safety_frames_cannot_wrap(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    bl_safety_set_limits(&g, 1000, 20);
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    uint8_t t[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 5, 5000), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 0xFFFFFFFDu, 5000), BL_E_LOCKED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 0xFFFFFFFFu, 5000), BL_E_LOCKED);
+    CHECK_EQ_INT((long)g.frames_in_window, 5);
+    CHECK_EQ_INT((long)bl_safety_budget(&g, 5000), 15);
+    /* lowering the limit applies to the frames already sent */
+    bl_safety_set_limits(&g, 0, 3);
+    CHECK_EQ_INT((long)bl_safety_budget(&g, 5000), 0);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 5000), BL_E_LOCKED);
+}
+
+/* Review 2026-11-23: an active op could pass with no target when the
+ * caller said it needed none (the old require_target=false), which is
+ * what a broadcast looks like. Every active op now names one station. */
+static void t_safety_active_needs_a_target(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t list[1][6] = {{0x02, 0x11, 0x22, 0x33, 0x44, 0x55}};
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, NULL, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, 1, 1000), BL_E_DENIED);
+    /* a broadcast address in the scope does not make it specific */
+    memcpy(list[0], bcast, 6);
+    CHECK_EQ_INT(bl_safety_set_allowlist(&g, list, 1), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, bcast, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT((long)g.frames_in_window, 0); /* nothing reserved by a refusal */
+    /* passive ops never need one */
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_PASSIVE, NULL, 0, 1000), BL_OK);
+}
+
+/* Review 2026-11-23 (mutation): the e-stop/reset tests passed with
+ * active_enabled left on by either, as estopped alone denied. After an
+ * e-stop and a reset, active ops stay off until enabled again. */
+static void t_safety_estop_reset_leaves_active_off(void) {
+    bl_safety_t g;
+    bl_safety_init(&g);
+    uint8_t t[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    bl_safety_estop(&g);
+    CHECK(!g.active_enabled);
+    bl_safety_reset(&g);
+    CHECK(!g.estopped);
+    CHECK(!g.active_enabled);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 1000), BL_E_DENIED);
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 1000), BL_OK);
+    /* link loss likewise */
+    bl_safety_on_link_loss(&g);
+    bl_safety_reset(&g);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 1000), BL_E_DENIED);
+    /* and a reset alone (a new session) turns active ops off */
+    CHECK_EQ_INT(bl_safety_enable_active(&g, true), BL_OK);
+    bl_safety_reset(&g);
+    CHECK(!g.active_enabled);
+    CHECK_EQ_INT(bl_safety_authorize(&g, BL_OP_ACTIVE, t, 1, 1000), BL_E_DENIED);
+}
+
 void run_capability_tests(void) {
+    RUN(t_safety_estop_reset_leaves_active_off);
+    RUN(t_safety_frames_cannot_wrap);
+    RUN(t_safety_active_needs_a_target);
     RUN(t_registry_roundtrip);
     RUN(t_pcap_global_header_bytes);
     RUN(t_pcap_record_header_bytes);

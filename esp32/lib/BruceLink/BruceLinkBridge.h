@@ -21,6 +21,7 @@
 extern "C" {
 #include "bl_capability.h"
 #include "bl_capture.h"
+#include "bl_job.h"
 #include "bl_pair.h"
 #include "bl_reasm.h"
 #include "bl_safety.h"
@@ -51,8 +52,20 @@ public:
      * terminated) and return its length (< cap). The bridge clamps the
      * reported length to the text actually present. */
     virtual size_t deviceInfo(char* out, size_t cap) = 0;
-    /* Passive Wi-Fi scan rendered as text lines; same contract. */
-    virtual size_t wifiScan(char* out, size_t cap) = 0;
+    /* The job record kept across restarts (ADR 0006): RTC memory that is
+     * not initialised at boot, on the StickS3. Never nullptr. The bridge
+     * writes a new job into it and reads finished results from it. */
+    virtual bl_job_record_t* jobRecord() = 0;
+    /* Restart the device to run the job now in jobRecord(), after the
+     * reply that was just sent has left. Must not restart synchronously:
+     * the caller keeps serving the link until it is about to restart, then
+     * calls BruceLinkBridge::commitJob() and restarts only if that returns
+     * true. */
+    virtual void jobRestart() = 0;
+    /* The accepted job was cancelled before the restart (an e-stop or the
+     * link dropping first): forget the restart request. The bridge has
+     * already cleared the record. */
+    virtual void jobCancel() = 0;
     /* Provide the capture backend vtable + context; false if this build has
      * no capture support (capture requests then report "disabled"). */
     virtual bool captureBackend(const bl_capture_backend_t** be, void** ctx) = 0;
@@ -89,8 +102,9 @@ public:
         size_t mtu);
 
     /* Call when a BLE link is established: fresh session from the
-     * provisioned key, cleared reassembly, safety gate reset (e-stop
-     * cleared, active ops disabled until re-enabled). */
+     * provisioned key, cleared reassembly. The safety gate is reset (e-stop
+     * cleared, active ops disabled until re-enabled) only once that
+     * session is authenticated, never by a bare link. */
     void onConnect();
     /* Call when the BLE link drops: fail-safe (e-stop, stop capture),
      * then discard session secrets. The provisioned key is kept. */
@@ -136,6 +150,31 @@ public:
     bool pairing() const {
         return pairing_;
     }
+    /* ADR 0006: the device is about to restart into the job it accepted.
+     * Returns false if there is none any more: it was cancelled by an
+     * e-stop or a link loss since JOB_ACCEPTED (the record is cleared then,
+     * so the job never runs). After true, a link loss is the restart
+     * itself and cancels nothing. Call from the task that owns the bridge. */
+    bool commitJob();
+    /* Replace the capability registry (nullptr: the built-in one). For
+     * host tests of capabilities this build does not have yet, e.g. an
+     * active job, which must be refused (ADR 0006). */
+    void setRegistry(const bl_capability_registry_t* reg);
+
+    /* A job accepted and not yet committed or cancelled. */
+    bool jobPending() const {
+        return job_accepted_ && !job_committed_;
+    }
+
+    /* Wipe the provisioned key (the module calls it when its task exits:
+     * a stopped bridge keeps no key in RAM). Links are then dropped. */
+    void clearKey();
+    /* The e-stop is latched (link loss latches it; only a new
+     * authenticated session clears it). */
+    bool estopped() const {
+        return bl_safety_is_estopped(&safety_);
+    }
+
     /* A new key, e.g. from pairing. Takes effect from the next link. */
     void setKey(const uint8_t psk[BL_KEY_LEN]);
 
@@ -177,6 +216,9 @@ private:
     void sendStatus();
 
     void onPairFrame(const uint8_t* frame, size_t len);
+    void handleJobStart(const bl_frame_t* f);
+    void handleJobResult(const bl_frame_t* f);
+    void cancelPendingJob(); /* e-stop / link loss before commitJob() */
 
     uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */
     bool have_psk_;
@@ -192,12 +234,16 @@ private:
     bool link_up_;
     uint32_t link_up_ms_; /* backend time of the last onConnect() */
 
+    uint8_t req_tag_; /* tag of the request being answered (echoed) */
     bool pairing_; /* pairing mode */
     bool pair_link_; /* pair_ belongs to the current or last link */
     bool pair_foreign_; /* the peer sent something that is not pairing */
     bool pair_taken_; /* the result of this attempt was handed out (and wiped) */
     bool penalize_; /* verdict for the last needsDisconnect() */
     bool clean_drop_; /* drop the current link, unpenalised (left pairing mode) */
+    bool job_accepted_; /* JOB_ACCEPTED sent; the restart is coming */
+    bool job_committed_; /* commitJob() returned true */
+    const bl_capability_registry_t* registry_;
     char pair_name_[BL_PAIR_NAME_MAX + 1];
     bl_pair_t pair_;
 };

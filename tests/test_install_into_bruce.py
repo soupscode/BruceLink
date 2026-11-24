@@ -1,4 +1,7 @@
 """tools/install_into_bruce.py against a miniature fake Bruce tree."""
+import contextlib
+import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -9,7 +12,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools" / "install_into_bruce.py"
 
 # The lines of Bruce 1.17's files the installer anchors on, in their real
-# order (src/core/main_menu.h, main_menu.cpp, menu_items/ConfigMenu.cpp).
+# order (src/core/main_menu.h, main_menu.cpp, src/main.cpp,
+# menu_items/ConfigMenu.cpp).
 MAIN_H = (
     "#include <MenuItemInterface.h>\n"
     '#include "menu_items/BleMenu.h"\n'
@@ -33,6 +37,22 @@ MAIN_CPP = (
     "    };\n"
     "}\n"
 )
+MAIN = (
+    '#include "core/main_menu.h"\n'
+    "#include <globals.h>\n"
+    "void setup() {\n"
+    "    _late_setup_gpio();\n"
+    "#if !defined(USE_DUMMY_TFT)\n"
+    "    if (!bruceConfig.instantBoot) {\n"
+    "        boot_screen_anim();\n"
+    "    }\n"
+    "#endif\n"
+    "    wakeUpScreen();\n"
+    '    if (bruceConfig.startupApp != "" && !startupApp.startApp(bruceConfig.startupApp)) {\n'
+    '        bruceConfig.setStartupApp("");\n'
+    "    }\n"
+    "}\n"
+)
 CONFIG = (
     '#include "ConfigMenu.h"\n'
     '#include "core/wifi/wifi_common.h"\n'
@@ -43,6 +63,14 @@ CONFIG = (
     "#endif\n"
     "        };\n"
     "}\n"
+)
+STICKS3_INI = (
+    "[env:m5stack-sticks3]\n"
+    "build_flags =\n"
+    "\t${env.build_flags}\n"
+    "\n"
+    "\t-Iboards/m5stack-sticks3\n"
+    "\t-DUSB_as_HID=1  ;uncomment to enable\n"
 )
 # What the previous version of the installer left in ConfigMenu.cpp.
 CONFIG_OLD_INSTALL = CONFIG.replace(
@@ -69,23 +97,28 @@ class InstallIntoBruce(unittest.TestCase):
         self.main_h = self.bruce / "src/core/main_menu.h"
         self.main_cpp = self.bruce / "src/core/main_menu.cpp"
         self.config = self.bruce / "src/core/menu_items/ConfigMenu.cpp"
+        self.main = self.bruce / "src/main.cpp"
+        self.ini = self.bruce / "boards/m5stack-sticks3/m5stack-sticks3.ini"
         self.config.parent.mkdir(parents=True)
+        self.ini.parent.mkdir(parents=True)
         self.write(MAIN_H, MAIN_CPP, CONFIG)
         (self.bruce / "platformio.ini").write_text("[platformio]\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def write(self, h, cpp, config, eol="\n"):
-        for path, text in ((self.main_h, h), (self.main_cpp, cpp), (self.config, config)):
+    def write(self, h, cpp, config, eol="\n", main=MAIN, ini=STICKS3_INI):
+        for path, text in ((self.main_h, h), (self.main_cpp, cpp), (self.config, config),
+                           (self.main, main), (self.ini, ini)):
             path.write_bytes(text.replace("\n", eol).encode())
 
     def snapshot(self):
-        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config)]
+        return [p.read_bytes() for p in (self.main_h, self.main_cpp, self.config, self.main, self.ini)]
 
     def assert_pristine(self, eol="\n"):
         self.assertEqual(
-            self.snapshot(), [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG)])
+            self.snapshot(),
+            [t.replace("\n", eol).encode() for t in (MAIN_H, MAIN_CPP, CONFIG, MAIN, STICKS3_INI)])
         self.assertFalse((self.bruce / "lib/BruceLink").exists())
         self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
@@ -135,6 +168,24 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertEqual(cpp.splitlines()[entry + 2], "        &wifiMenu,")
         # nothing in Config any more
         self.assertEqual(self.config.read_text(), CONFIG)
+        # the boot hook: declared, and called right before Bruce's startup app
+        main = self.main.read_text()
+        self.assert_guarded(main, '#include "modules/brucelink/BruceLinkModule.h"')
+        hook = self.assert_guarded(main, "bruceLinkBoot();")
+        self.assertIn("startupApp.startApp", main.splitlines()[hook + 2])
+        # the early hook: after the input setup, before the boot animation
+        early = self.assert_guarded(main, "bruceLinkBootEarly();")
+        self.assertEqual(main.splitlines()[early - 2], "    _late_setup_gpio();")
+        self.assertIn("USE_DUMMY_TFT", main.splitlines()[early + 2])
+        self.assertTrue((mod / "BruceLinkJobs.cpp").is_file())
+        # the NimBLE-in-PSRAM forced include, right after the inherited flags,
+        # pointing at a header the library copy has
+        ini = self.ini.read_text().splitlines()
+        i = ini.index("\t${env.build_flags}")
+        self.assertEqual(ini[i + 1], "\t-I lib/BruceLink ; BruceLink")
+        self.assertEqual(ini[i + 2], "\t-include bl_nimble_psram.h ; BruceLink")
+        self.assertEqual(sum("bl_nimble_psram" in l for l in ini), 1)
+        self.assertTrue((lib / "bl_nimble_psram.h").is_file())
 
         once = self.snapshot()
         r = run(self.bruce, "--force")  # second run changes nothing
@@ -149,8 +200,10 @@ class InstallIntoBruce(unittest.TestCase):
     def test_crlf_checkout_keeps_its_line_endings(self):
         self.write(MAIN_H, MAIN_CPP, CONFIG, eol="\r\n")
         self.assertEqual(run(self.bruce, "--force").returncode, 0)
-        for raw in self.snapshot()[:2]:
-            self.assertIn(b"bruceLinkMenu", raw)
+        snap = self.snapshot()
+        self.assertIn(b"bruceLinkBoot", snap[3])
+        for raw in snap[:2] + snap[3:]:
+            self.assertIn(b"BruceLink", raw)
             self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))  # no bare LF introduced
         self.assertEqual(run(self.bruce, "--force", "--uninstall").returncode, 0)
         self.assert_pristine(eol="\r\n")
@@ -182,12 +235,50 @@ class InstallIntoBruce(unittest.TestCase):
         self.assertFalse((self.bruce / "lib/BruceLink").exists())  # nothing half-installed
         self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
+    def test_unknown_main_layout_is_reported_not_guessed(self):
+        self.write(MAIN_H, MAIN_CPP, CONFIG, main=MAIN.replace("startupApp.startApp", "runStartup"))
+        before = self.snapshot()
+        r = run(self.bruce, "--force")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("bruceLinkBoot", r.stderr)  # says what to add
+        self.assertEqual(self.snapshot(), before)  # the menu files are not touched either
+
+    def test_unknown_board_ini_is_reported_not_guessed(self):
+        self.write(MAIN_H, MAIN_CPP, CONFIG, ini=STICKS3_INI.replace("${env.build_flags}", "${common.flags}"))
+        before = self.snapshot()
+        r = run(self.bruce, "--force")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("bl_nimble_psram.h", r.stderr)  # says what to add
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.bruce / "lib/BruceLink").exists())
+
     def test_without_config_menu(self):
         """ConfigMenu.cpp is only cleaned; a tree without it still installs."""
         self.config.unlink()
         r = run(self.bruce, "--force")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assert_guarded(self.main_cpp.read_text(), "&bruceLinkMenu,")
+
+    def test_name_collision_writes_nothing(self):
+        """Review 2026-11-23: Bruce's files were patched before the file
+        lists were checked, so a collision failed half-installed."""
+        spec = importlib.util.spec_from_file_location("bl_installer", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # the same directory twice: every name collides
+        mod.LIB_SOURCES = mod.LIB_SOURCES + mod.LIB_SOURCES[:1]
+        before = self.snapshot()
+        argv = sys.argv
+        sys.argv = ["install_into_bruce.py", str(self.bruce), "--force"]
+        try:
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                mod.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.bruce / "lib/BruceLink").exists())
+        self.assertFalse((self.bruce / "src/modules/brucelink").exists())
 
 
 if __name__ == "__main__":

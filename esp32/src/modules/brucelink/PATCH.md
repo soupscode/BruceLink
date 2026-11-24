@@ -11,7 +11,7 @@ python3 tools/install_into_bruce.py /path/to/bruce-firmware     # from the Bruce
 cd /path/to/bruce-firmware && pio run -e m5stack-sticks3
 ```
 
-The installer (idempotent; `--uninstall` reverses it; host-tested) does three things:
+The installer (idempotent; `--uninstall` reverses it; host-tested) does five things:
 
 - copies `esp32/lib/BruceLink/` + `shared/brucelink_core/src/` to Bruce's
   `lib/BruceLink/` (bridge core, NimBLE central transport, shared protocol core).
@@ -24,8 +24,9 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does three th
     pairing screen; a task that owns the bridge and transport.
   - `BruceLinkKeyStore.{h,cpp}` — the pairing key in NVS.
   - `BruceBackendImpl.{h,cpp}` — the `BruceBackend`: calls Bruce's own functions.
-  - `BruceLinkWifi.{h,cpp}` — Wi-Fi scan next to the live BLE link: a reduced,
-    transient driver start, because Bruce's full start does not fit (ADR 0004).
+  - `BruceLinkJobs.{h,cpp}` — jobs (ADR 0006): the job record in RTC memory,
+    the boot hook that runs a job with BLE off or brings the link back after
+    one, and the Wi-Fi scan job (Bruce's own `WiFi.mode` + `scanNetworks`).
   - `bruce_brucelink_hooks.h` — the headless hooks BruceLink needs from Bruce.
   - `bruce_brucelink_hooks_unavailable.cpp` — placeholder hook bodies (below).
 - adds **BruceLink to Bruce's main menu**, first, before Wi-Fi: an include and
@@ -34,31 +35,51 @@ The installer (idempotent; `--uninstall` reverses it; host-tested) does three th
   module itself (9 lines, all ending in `// BruceLink`). Bruce's own "hide
   apps" setting can hide it like any other item. An older version of the
   installer put two entries under Config → Advanced; re-running removes them.
+- adds two calls to `setup()` in `src/main.cpp`, plus their include (9 lines,
+  same guard and marker): `bruceLinkBootEarly()` right after
+  `_late_setup_gpio()` (a job runs there, before the boot animation) and
+  `bruceLinkBoot()` right before Bruce's startup app (turns BruceLink back on
+  after a job, or after "restart into BruceLink"). On a normal boot both do
+  nothing.
+- adds two build flags to the StickS3 environment in
+  `boards/m5stack-sticks3/m5stack-sticks3.ini` (both ending in `; BruceLink`):
+  `-I lib/BruceLink` and `-include bl_nimble_psram.h`. The header puts
+  NimBLE's host buffers (about 16 kB, allocated at BLE start) in PSRAM instead
+  of internal RAM, for BruceLink and for Bruce's own BLE tools. A `-D` flag
+  cannot do this: NimBLE-Arduino reads the prebuilt `sdkconfig.h`, which would
+  set internal RAM again. Checked in the compile-check object code (the
+  allocator asks for PSRAM, caps `0x404`); not yet run on hardware.
 
 That is the whole change to Bruce so far: no existing Bruce function is modified.
 
 ### What this build does and does not do
 
-- Works without further Bruce changes: device info, Wi-Fi scan, capabilities, status.
+- Works without further Bruce changes: device info, capabilities, status, and
+  the Wi-Fi scan as a job.
 - **Capture and active operations report "not available".** They need the sniffer
   hooks in the next section, which are not written yet;
   `bruce_brucelink_hooks_unavailable.cpp` makes every one of them refuse.
 - **Pairing** (ADR 0005): **BruceLink → Pair with Flipper**. The key is kept in
   NVS (`BruceLinkKeyStore`), never in `bruce.conf` or on LittleFS. **Turn on**
-  refuses without one. Flashing the merged image at `0x0` erases NVS and the
-  pairing. To keep it, flash the merged image's three parts in one command:
-  `write-flash 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
-  (NVS sits between them, at `0x9000`). `firmware.bin` alone at `0x10000`
-  boots only on top of a BruceLink merged image (same partition table).
+  refuses without one. Updating the StickS3 currently means the merged image
+  at `0x0`, which erases NVS and the pairing: pair again after each update.
+  Flashing the parts separately (with or without bootloader and partitions)
+  would keep NVS but did not boot either time it was tried (2026-11-23, cause
+  unknown; `docs/TEST_RESULTS.md`), so it is not recommended until one boots.
 - One BLE stack, one owner: **Turn on** refuses while another Bruce BLE
   feature (BLE API, BadBLE, scanners) has NimBLE initialised, and those features
   will fail or disturb the link if started while BruceLink is on. Turn BruceLink
   off first.
-- The Wi-Fi scan runs on the bridge task. If Bruce has Wi-Fi up it scans through
-  that; otherwise it starts the driver itself for the duration of the scan and
-  releases it. It refuses if one of Bruce's own Wi-Fi tools holds the driver.
+- **Jobs (ADR 0006):** nothing uses Wi-Fi while the link is up. A Wi-Fi scan
+  from the Flipper restarts the StickS3, scans with BLE off (screen: "BruceLink
+  job", any button stops it), restarts again and turns BruceLink back on by
+  itself; the Flipper then fetches the result. The job record is in RTC memory:
+  a power-off loses it. A reset during a job marks it interrupted; it is never
+  re-run. Bruce's boot animation adds to each restart unless "instant boot" is
+  on.
 - After BruceLink has been switched off it may refuse to start again until
-  reboot (`not enough memory for BLE`), especially once Bruce's Wi-Fi was used.
+  reboot (`not enough memory for BLE`); the message shows the largest free
+  block and the 48 kB BLE needs.
 
 ## Remaining upstream edits (not done: task M5.2)
 
@@ -93,10 +114,10 @@ That is the whole change to Bruce so far: no existing Bruce function is modified
 
 ## Coexistence note
 
-`sniffer_start_headless` brings up Wi-Fi promiscuous while the NimBLE link is
-held. Bruce configures no `esp_coex` preferences. Measure BLE stability + capture
-loss during concurrent operation on hardware; if poor, pause BLE notifications
-during capture or add an `esp_coex_preference_set` call (see ADR 0003).
+Superseded by ADR 0006: a capture will run as a job, with BLE off, so Wi-Fi
+promiscuous never shares the radio memory with the NimBLE link. The hooks
+below still apply; they are called from the job boot instead of the bridge
+task.
 
 ## Flashing
 

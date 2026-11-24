@@ -21,6 +21,11 @@ static const char INFO_P2C[] = "brucelink v1 p2c"; /* key peripheral->central */
 /* AUTH payload: confirm(32) */
 #define HS_AUTH_LEN (BL_SHA256_LEN)
 
+/* hello_min | hello_max | proto_sel | pub_c | nonce_c | pub_p | nonce_p.
+ * Every HELLO / HELLO_ACK field is in it (review 2026-11-23: the offered
+ * range was not, so a rewritten HELLO could downgrade the version). */
+#define TRANSCRIPT_LEN (3u + 32u + BL_NONCE_LEN + 32u + BL_NONCE_LEN)
+
 static void build_transcript(
     const bl_session_t* s,
     uint8_t proto_sel,
@@ -28,9 +33,10 @@ static void build_transcript(
     const uint8_t nonce_c[BL_NONCE_LEN],
     const uint8_t pub_p[32],
     const uint8_t nonce_p[BL_NONCE_LEN],
-    uint8_t out[1 + 32 + BL_NONCE_LEN + 32 + BL_NONCE_LEN]) {
-    (void)s;
+    uint8_t out[TRANSCRIPT_LEN]) {
     size_t o = 0;
+    out[o++] = s->hello_min;
+    out[o++] = s->hello_max;
     out[o++] = proto_sel;
     memcpy(out + o, pub_c, 32);
     o += 32;
@@ -106,6 +112,31 @@ static void confirm_tag(
     bl_hmac_final(&c, out);
 }
 
+/* A failed session can do nothing more: wipe its secrets now rather than
+ * when the caller gets round to closing it. */
+static int session_fail(bl_session_t* s, int rc) {
+    bl_secure_zero(s->psk, sizeof(s->psk));
+    bl_secure_zero(s->eph_sk, sizeof(s->eph_sk));
+    bl_secure_zero(s->tx_key, sizeof(s->tx_key));
+    bl_secure_zero(s->rx_key, sizeof(s->rx_key));
+    s->keys_ready = false;
+    s->state = BL_SS_FAILED;
+    return rc;
+}
+
+/* Verify and accept a sealed frame: keys must exist, the caller decides
+ * which states may do this. */
+static int session_open_frame(bl_session_t* s, const uint8_t* in, size_t in_len, bl_frame_t* f) {
+    if(!s->keys_ready) return BL_E_STATE;
+    int rc = bl_frame_decode(in, in_len, s->rx_key, BL_KEY_LEN, f);
+    if(rc != BL_OK) return rc;
+    if(f->version != BL_WIRE_VERSION) return BL_E_VERSION;
+    /* strictly increasing counter: rejects replays and reorders */
+    if(f->seq <= s->rx_highest) return BL_E_REPLAY;
+    s->rx_highest = f->seq;
+    return BL_OK;
+}
+
 int bl_session_init(
     bl_session_t* s,
     bl_role_t role,
@@ -129,8 +160,10 @@ int bl_session_start(bl_session_t* s, uint8_t* out, size_t out_cap) {
     if(s == NULL) return BL_E_ARG;
     if(s->role != BL_ROLE_CENTRAL || s->state != BL_SS_INIT) return BL_E_STATE;
     uint8_t payload[HS_HELLO_LEN];
-    payload[0] = BL_PROTO_MIN;
-    payload[1] = BL_PROTO_MAX;
+    s->hello_min = BL_PROTO_MIN;
+    s->hello_max = BL_PROTO_MAX;
+    payload[0] = s->hello_min;
+    payload[1] = s->hello_max;
     memcpy(payload + 2, s->eph_pk, 32);
     memcpy(payload + 2 + 32, s->nonce_local, BL_NONCE_LEN);
     bl_frame_t f = {
@@ -167,23 +200,19 @@ int bl_session_handshake_rx(
     if(rc != BL_OK) return rc;
     if(f.version != BL_WIRE_VERSION) return BL_E_VERSION;
 
-    uint8_t transcript[1 + 32 + BL_NONCE_LEN + 32 + BL_NONCE_LEN];
+    uint8_t transcript[TRANSCRIPT_LEN];
 
     switch(s->state) {
     case BL_SS_WAIT_HELLO: { /* peripheral */
         if(f.type != BL_MSG_HELLO || f.payload_len != HS_HELLO_LEN) return BL_E_STATE;
-        uint8_t proto = pick_proto(f.payload[0], f.payload[1]);
-        if(proto == 0) {
-            s->state = BL_SS_FAILED;
-            return BL_E_VERSION;
-        }
+        s->hello_min = f.payload[0];
+        s->hello_max = f.payload[1];
+        uint8_t proto = pick_proto(s->hello_min, s->hello_max);
+        if(proto == 0) return session_fail(s, BL_E_VERSION);
         memcpy(s->peer_pk, f.payload + 2, 32);
         memcpy(s->nonce_peer, f.payload + 2 + 32, BL_NONCE_LEN);
         rc = derive_keys(s, proto);
-        if(rc != BL_OK) {
-            s->state = BL_SS_FAILED;
-            return rc;
-        }
+        if(rc != BL_OK) return session_fail(s, rc);
         /* transcript uses central's pub/nonce then peripheral's */
         build_transcript(
             s, proto, s->peer_pk, s->nonce_peer, s->eph_pk, s->nonce_local, transcript);
@@ -211,18 +240,12 @@ int bl_session_handshake_rx(
     case BL_SS_WAIT_HELLO_ACK: { /* central */
         if(f.type != BL_MSG_HELLO_ACK || f.payload_len != HS_ACK_LEN) return BL_E_STATE;
         uint8_t proto = f.payload[0];
-        if(proto < BL_PROTO_MIN || proto > BL_PROTO_MAX) {
-            s->state = BL_SS_FAILED;
-            return BL_E_VERSION;
-        }
+        if(proto < BL_PROTO_MIN || proto > BL_PROTO_MAX) return session_fail(s, BL_E_VERSION);
         memcpy(s->peer_pk, f.payload + 1, 32);
         memcpy(s->nonce_peer, f.payload + 1 + 32, BL_NONCE_LEN);
         const uint8_t* confirm_p = f.payload + 1 + 32 + BL_NONCE_LEN;
         rc = derive_keys(s, proto);
-        if(rc != BL_OK) {
-            s->state = BL_SS_FAILED;
-            return rc;
-        }
+        if(rc != BL_OK) return session_fail(s, rc);
         build_transcript(
             s, proto, s->eph_pk, s->nonce_local, s->peer_pk, s->nonce_peer, transcript);
         uint8_t expect_p[BL_SHA256_LEN];
@@ -230,8 +253,7 @@ int bl_session_handshake_rx(
         if(!bl_ct_equal(expect_p, confirm_p, BL_SHA256_LEN)) {
             bl_secure_zero(expect_p, sizeof(expect_p));
             s->auth_failures++;
-            s->state = BL_SS_FAILED;
-            return BL_E_AUTH;
+            return session_fail(s, BL_E_AUTH);
         }
         bl_secure_zero(expect_p, sizeof(expect_p));
         /* send AUTH with confirm_C */
@@ -266,29 +288,27 @@ int bl_session_handshake_rx(
         if(!bl_ct_equal(expect_c, f.payload, BL_SHA256_LEN)) {
             bl_secure_zero(expect_c, sizeof(expect_c));
             s->auth_failures++;
-            s->state = BL_SS_FAILED;
-            return BL_E_AUTH;
+            return session_fail(s, BL_E_AUTH);
         }
         bl_secure_zero(expect_c, sizeof(expect_c));
         /* emit authenticated AUTH_OK as first sealed frame */
         s->state = BL_SS_ESTABLISHED;
         int n = bl_session_seal(s, BL_MSG_AUTH_OK, BL_FLAG_RESPONSE, NULL, 0, out, out_cap);
-        if(n < 0) {
-            s->state = BL_SS_FAILED;
-            return n;
-        }
+        if(n < 0) return session_fail(s, n);
         *out_len = (size_t)n;
         return BL_OK;
     }
     case BL_SS_WAIT_AUTH_OK: { /* central: AUTH_OK is a sealed data frame */
+        /* Only an AUTH_OK can end the handshake, well or badly. Anything
+         * else (a repeated HELLO_ACK, noise) is ignored like in the other
+         * states (review 2026-11-23: it used to be terminal). */
+        if(f.type != BL_MSG_AUTH_OK) return BL_E_STATE;
         bl_frame_t df;
-        rc = bl_session_open(s, in, in_len, &df);
+        rc = session_open_frame(s, in, in_len, &df);
         if(rc != BL_OK) {
             if(rc == BL_E_MAC) s->auth_failures++;
-            s->state = BL_SS_FAILED;
-            return rc;
+            return session_fail(s, rc);
         }
-        if(df.type != BL_MSG_AUTH_OK) return BL_E_STATE;
         s->state = BL_SS_ESTABLISHED;
         return BL_OK;
     }
@@ -304,9 +324,22 @@ int bl_session_seal(
     uint16_t payload_len,
     uint8_t* out,
     size_t out_cap) {
+    return bl_session_seal_tag(s, type, flags, 0, payload, payload_len, out, out_cap);
+}
+
+int bl_session_seal_tag(
+    bl_session_t* s,
+    uint8_t type,
+    uint8_t flags,
+    uint8_t tag,
+    const uint8_t* payload,
+    uint16_t payload_len,
+    uint8_t* out,
+    size_t out_cap) {
     if(s == NULL) return BL_E_ARG;
-    if(!s->keys_ready || s->state == BL_SS_FAILED || s->state == BL_SS_CLOSED)
-        return BL_E_STATE;
+    /* Only an established session sends (the responder's AUTH_OK is sealed
+     * right after it becomes established). */
+    if(!s->keys_ready || s->state != BL_SS_ESTABLISHED) return BL_E_STATE;
     if(s->tx_counter == 0xFFFFFFFFu) return BL_E_STATE; /* counter exhausted */
     bl_frame_t f = {
         .version = BL_WIRE_VERSION,
@@ -314,7 +347,8 @@ int bl_session_seal(
         .flags = flags,
         .seq = s->tx_counter,
         .payload_len = payload_len,
-        .payload = payload};
+        .payload = payload,
+        .tag = tag};
     int n = bl_frame_encode(&f, s->tx_key, BL_KEY_LEN, out, out_cap);
     if(n < 0) return n;
     s->tx_counter++;
@@ -323,14 +357,10 @@ int bl_session_seal(
 
 int bl_session_open(bl_session_t* s, const uint8_t* in, size_t in_len, bl_frame_t* f) {
     if(s == NULL || f == NULL) return BL_E_ARG;
-    if(!s->keys_ready) return BL_E_STATE;
-    int rc = bl_frame_decode(in, in_len, s->rx_key, BL_KEY_LEN, f);
-    if(rc != BL_OK) return rc;
-    if(f->version != BL_WIRE_VERSION) return BL_E_VERSION;
-    /* strictly increasing counter: rejects replays and reorders */
-    if(f->seq <= s->rx_highest) return BL_E_REPLAY;
-    s->rx_highest = f->seq;
-    return BL_OK;
+    /* Not before the peer has proved the key (review 2026-11-23: keys
+     * exist from HELLO on, so a half-done session used to open frames). */
+    if(s->state != BL_SS_ESTABLISHED) return BL_E_STATE;
+    return session_open_frame(s, in, in_len, f);
 }
 
 void bl_session_close(bl_session_t* s) {

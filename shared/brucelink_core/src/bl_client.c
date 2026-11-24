@@ -82,8 +82,14 @@ int bl_client_rx(
 
     int rc = bl_session_open(&c->session, in, in_len, msg);
     if(rc != BL_OK) return rc; /* forged, replayed or corrupt: ignore it */
+    if(msg->flags & BL_FLAG_RESPONSE) {
+        if(!c->req_pending || msg->tag != c->req_tag) {
+            c->stale_responses++; /* late answer to an earlier request */
+            return BL_OK;
+        }
+        c->req_pending = false;
+    }
     *have_msg = true;
-    if(msg->flags & BL_FLAG_RESPONSE) c->req_pending = false;
     return BL_OK;
 }
 
@@ -98,8 +104,12 @@ int bl_client_request(
     if(c == NULL || out == NULL) return BL_E_ARG;
     if(c->state != BL_CL_READY) return BL_E_STATE;
     if(c->req_pending) return BL_E_BUSY;
-    int n = bl_session_seal(&c->session, type, BL_FLAG_NONE, payload, payload_len, out, out_cap);
+    /* 1..255, then back to 1: 0 means "no tag" */
+    const uint8_t tag = (c->next_tag >= 255u) ? 1u : (uint8_t)(c->next_tag + 1u);
+    int n = bl_session_seal_tag(&c->session, type, BL_FLAG_NONE, tag, payload, payload_len, out, out_cap);
     if(n < 0) return n;
+    c->next_tag = tag;
+    c->req_tag = tag;
     c->req_pending = true;
     c->req_start_ms = now_ms;
     return n;

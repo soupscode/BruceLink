@@ -18,9 +18,12 @@
 #include "BruceLinkFormat.h"
 #include "BruceLinkPeerGuard.h"
 
+#include <new> // placement new (destructor wipe test)
+
 extern "C" {
 #include "bl_client.h"
 #include "bl_demo_key.h"
+#include "bl_job.h"
 #include "bl_reasm.h"
 #include "bl_textbuf.h"
 #include "bl_uuid.h"
@@ -53,7 +56,7 @@ struct MockBackend : public BruceBackend {
     uint32_t last_max = 0;
     uint32_t max_seen = 0;
     long total_sent = 0;
-    int send_mode = 0; /* 0 = send max_frames, 1 = send fixed, 2 = overrun */
+    int send_mode = 0; /* 0 = send max_frames, 1 = send fixed, 2 = overrun, 3 = error */
     int send_fixed = 0;
     /* text */
     bool lie_about_length = false;
@@ -64,12 +67,21 @@ struct MockBackend : public BruceBackend {
         bl_tb_str(&tb, "mock-dev");
         return lie_about_length ? cap + 100 : tb.len;
     }
-    size_t wifiScan(char* out, size_t cap) override {
-        bl_textbuf_t tb;
-        bl_tb_init(&tb, out, cap);
-        bl_tb_str(&tb, "1 networks\n");
-        brucelink::formatWifiApLine(&tb, "Home", -50, 6);
-        return tb.len;
+    /* the record a restart keeps (RTC memory on the StickS3) */
+    bl_job_record_t rec;
+    int restarts = 0;
+    MockBackend() {
+        bl_job_record_clear(&rec);
+    }
+    bl_job_record_t* jobRecord() override {
+        return &rec;
+    }
+    void jobRestart() override {
+        restarts++;
+    }
+    int cancels = 0;
+    void jobCancel() override {
+        cancels++;
     }
     static int cStart(void* c, bl_capture_mode_t, uint8_t) {
         MockBackend* m = static_cast<MockBackend*>(c);
@@ -110,6 +122,7 @@ struct MockBackend : public BruceBackend {
         if(send_mode == 0) sent = (int)max_frames;
         if(send_mode == 1) sent = send_fixed;
         if(send_mode == 2) sent = (int)max_frames + 5;
+        if(send_mode == 3) sent = -1; /* Bruce's transmit failed */
         total_sent += sent;
         return sent;
     }
@@ -232,6 +245,16 @@ struct Harness {
         uint8_t a[2] = {mode, ch};
         return request(BL_MSG_CAP_START, a, 2);
     }
+    std::vector<Msg> jobStart(uint16_t cap, uint16_t max_s = 0, const std::vector<uint8_t>& args = {}) {
+        uint8_t p[64];
+        int n = bl_job_encode_start(cap, max_s, args.data(), args.size(), p, sizeof(p));
+        return request(BL_MSG_JOB_START, p, (uint16_t)n);
+    }
+    std::vector<Msg> jobResult(uint32_t id) {
+        uint8_t p[4];
+        bl_job_encode_result_req(id, p, sizeof(p));
+        return request(BL_MSG_JOB_RESULT_REQ, p, sizeof(p));
+    }
     std::string status() {
         auto r = request(BL_MSG_STATUS_REQ);
         return (r.size() == 1 && r[0].type == BL_MSG_STATUS) ? r[0].text() : std::string("?");
@@ -284,8 +307,10 @@ static void t_pr1_estop_blocks_capture_start() {
     CHECK(r.size() == 1 && r[0].type == BL_MSG_ESTOP);
     CHECK(isError(h.capStart(BL_CAP_MODE_HANDSHAKE, 6), BL_ERR_ESTOPPED));
     CHECK_EQ_INT(h.be.start_calls, 0);
-    /* passive radio command also refused; read-only status still served */
-    CHECK(isError(h.cmd(BL_CAP_WIFI_SCAN), BL_ERR_ESTOPPED));
+    /* a radio job is refused too (and nothing restarts); read-only status
+     * still served */
+    CHECK(isError(h.jobStart(BL_CAP_WIFI_SCAN), BL_ERR_ESTOPPED));
+    CHECK_EQ_INT(h.be.restarts, 0);
     CHECK(contains(h.status(), "estop:1"));
     /* the latch lasts for the session; a new session starts reset */
     h.bridge.onDisconnect();
@@ -563,7 +588,7 @@ static void t_codex2_bad_proof_requests_disconnect() {
     CHECK_EQ_INT(h.drain().size(), 1); /* bridge answered HELLO_ACK */
     uint8_t forged[32];
     memset(forged, 0x77, sizeof(forged));
-    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_AUTH, 0, 0, sizeof(forged), forged};
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_AUTH, 0, 0, sizeof(forged), forged, 0};
     n = bl_frame_encode(&f, nullptr, 0, b, sizeof(b));
     h.toBridge(b, (size_t)n);
     CHECK(!h.bridge.established());
@@ -751,10 +776,11 @@ static void t_e2e_client_handshake_and_requests() {
     CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_DEVICE_INFO);
     CHECK(l.msgs.size() == 1 && l.msgs[0].text() == "mock-dev");
 
+    /* the Wi-Fi scan only runs as a job now (ADR 0006) */
     const uint8_t cap[2] = {(uint8_t)(BL_CAP_WIFI_SCAN & 0xFF), (uint8_t)(BL_CAP_WIFI_SCAN >> 8)};
     CHECK(l.request(BL_MSG_CMD_REQ, cap, sizeof(cap)) > 0);
-    CHECK(l.msgs.size() == 2 && l.msgs[1].type == BL_MSG_CMD_RESP);
-    CHECK(l.msgs.size() == 2 && contains(l.msgs[1].text(), "Home"));
+    CHECK(l.msgs.size() == 2 && l.msgs[1].type == BL_MSG_ERROR && l.msgs[1].err() == BL_ERR_USE_JOB);
+    CHECK_EQ_INT(l.h.be.restarts, 0);
 
     /* the capability list is the largest reply: multi-chunk both ways */
     CHECK(l.request(BL_MSG_CAPS_REQ) > 0);
@@ -865,6 +891,130 @@ static void t_demo_key_never_enables_active_ops() {
     CHECK(l.msgs.size() == 3 && contains(l.msgs[2].text(), "demo:1"));
     CHECK(l.request(BL_MSG_DEVICE_INFO_REQ) > 0); /* passive still served */
     CHECK(l.msgs.size() == 4 && l.msgs[3].type == BL_MSG_DEVICE_INFO);
+    /* nor a capture (review 2026-11-23: it was allowed) */
+    const uint8_t cap[2] = {(uint8_t)BL_CAP_MODE_HANDSHAKE, 6};
+    CHECK(l.request(BL_MSG_CAP_START, cap, sizeof(cap)) > 0);
+    CHECK(l.msgs.size() == 5 && l.msgs[4].type == BL_MSG_ERROR);
+    CHECK(l.msgs.size() == 5 && l.msgs[4].err() == BL_ERR_NOT_AUTHORIZED);
+    CHECK_EQ_INT(l.h.be.start_calls, 0);
+}
+
+/* Review 2026-11-23: onConnect() reset the gate, so any BLE link, even one
+ * that never authenticated, cleared a latched e-stop. Only an established
+ * session may. Also: enable, drop, reconnect -> active ops are off again. */
+static void t_estop_cleared_only_by_a_session() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    auto r = h.cmd(brucelink::kCtrlEnableActive, {1});
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+    h.bridge.onDisconnect(); /* link loss latches the e-stop */
+    CHECK(h.bridge.estopped());
+    h.bridge.onConnect(); /* a bare link: no handshake */
+    CHECK(h.bridge.estopped());
+    h.be.now += brucelink::kAuthTimeoutMs;
+    CHECK(h.bridge.needsDisconnect());
+    h.bridge.onDisconnect();
+    CHECK(h.bridge.estopped());
+    CHECK(h.connect()); /* an authenticated session clears it... */
+    CHECK(!h.bridge.estopped());
+    CHECK(contains(h.status(), "active:0")); /* ...with active ops off */
+    CHECK(isError(h.cmd(BL_CAP_DEAUTH, activeArgs()), BL_ERR_NOT_AUTHORIZED));
+    CHECK_EQ_INT(h.be.active_calls, 0);
+}
+
+/* Review 2026-11-23 (mutation): deleting bl_capture_stop from onDisconnect
+ * or from the ESTOP handler passed every test. */
+static void t_capture_stops_on_link_loss_and_estop() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    auto r = h.capStart(BL_CAP_MODE_HANDSHAKE, 6);
+    CHECK(r.size() == 1 && r[0].type != BL_MSG_ERROR);
+    const int before = h.be.stop_calls;
+    h.bridge.onDisconnect();
+    CHECK_EQ_INT(h.be.stop_calls, before + 1);
+
+    Harness e;
+    e.begin();
+    CHECK(e.connect());
+    r = e.capStart(BL_CAP_MODE_HANDSHAKE, 6);
+    CHECK(r.size() == 1 && r[0].type != BL_MSG_ERROR);
+    const int b2 = e.be.stop_calls;
+    e.request(BL_MSG_ESTOP);
+    CHECK_EQ_INT(e.be.stop_calls, b2 + 1);
+    CHECK(contains(e.status(), "estop:1"));
+}
+
+static uint32_t acceptedId(const std::vector<Msg>& r, uint16_t* max_s); /* jobs section */
+
+/* Review 2026-11-23 (mutation): the active-job refusal was never run (no
+ * active capability is a job yet). A build that adds one must refuse it. */
+static void t_active_job_refused() {
+    static const bl_capability_desc_t caps[] = {
+        {0x7001, "test.active.job", BL_OP_ACTIVE, BL_CAP_F_JOB | BL_CAP_F_ACTIVE_RF | BL_CAP_F_REQUIRES_TARGET, 1},
+        {0x7002, "test.rf.job", BL_OP_PASSIVE, BL_CAP_F_JOB | BL_CAP_F_ACTIVE_RF, 1},
+        {BL_CAP_WIFI_SCAN, "wifi.scan", BL_OP_PASSIVE, BL_CAP_F_JOB, 1},
+    };
+    static const bl_capability_registry_t reg = {caps, sizeof(caps) / sizeof(caps[0])};
+    Harness h;
+    h.begin();
+    h.bridge.setRegistry(&reg);
+    CHECK(h.connect());
+    auto r = h.cmd(brucelink::kCtrlEnableActive, {1}); /* even with active ops on */
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+    CHECK(isError(h.jobStart(0x7001), BL_ERR_CAPABILITY_DISABLED));
+    CHECK(isError(h.jobStart(0x7002), BL_ERR_CAPABILITY_DISABLED)); /* flag alone is enough */
+    CHECK_EQ_INT(h.be.restarts, 0);
+    CHECK(!bl_job_record_valid(&h.be.rec));
+    CHECK(acceptedId(h.jobStart(BL_CAP_WIFI_SCAN), nullptr) != 0); /* a passive job still runs */
+    h.bridge.setRegistry(nullptr);
+}
+
+/* Review 2026-11-23 (mutation): the refund after a failed transmit was not
+ * observable. Four failed ops reserve the whole 64-frame window unless
+ * they are refunded; the fifth must still get its 16 frames. */
+static void t_failed_active_op_is_refunded() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    auto r = h.cmd(brucelink::kCtrlEnableActive, {1});
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+    h.be.send_mode = 3;
+    for(int i = 0; i < 4; i++) CHECK(isError(h.cmd(BL_CAP_DEAUTH, activeArgs()), BL_ERR_INTERNAL));
+    h.be.send_mode = 0;
+    r = h.cmd(BL_CAP_DEAUTH, activeArgs());
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CMD_RESP);
+    CHECK_EQ_INT((long)h.be.max_seen, 16);
+}
+
+/* The destructor wipes the provisioned key from the bridge's memory. */
+static void t_destructor_wipes_key() {
+    alignas(BruceLinkBridge) static unsigned char mem[sizeof(BruceLinkBridge)];
+    MockBackend be;
+    uint8_t psk[BL_KEY_LEN];
+    memset(psk, 0xC7, sizeof(psk));
+    BruceLinkBridge* b = new(mem) BruceLinkBridge();
+    b->begin(psk, &be, &Harness::tx, nullptr, 64);
+    auto has_key = [&]() {
+        for(size_t i = 0; i + BL_KEY_LEN <= sizeof(mem); i++)
+            if(memcmp(mem + i, psk, BL_KEY_LEN) == 0) return true;
+        return false;
+    };
+    CHECK(has_key());
+    b->~BruceLinkBridge();
+    CHECK(!has_key());
+}
+
+/* A module that stops its task wipes the bridge's key: no session after. */
+static void t_clear_key() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    h.bridge.onDisconnect();
+    h.bridge.clearKey();
+    CHECK(!h.connect());
+    CHECK(h.bridge.needsDisconnect());
 }
 
 /* ...and a bridge with its own key is unaffected. */
@@ -878,52 +1028,321 @@ static void t_real_key_reports_not_demo() {
     CHECK(contains(h.status(), "active:1"));
 }
 
-/* Hardware finding, 2026-11-23: starting Wi-Fi next to the live BLE link ran
- * out of internal RAM inside esp_wifi_init and killed the bridge. Wi-Fi is
- * now only started when it should fit; otherwise the Flipper is told why. */
-static void t_wifi_start_guard() {
-    using namespace brucelink;
-    const size_t F = kWifiStartMinFreeInternal, B = kWifiStartMinDmaBlock;
-    CHECK(wifiStartAllowed(false, F, B)); /* exactly enough */
-    CHECK(wifiStartAllowed(false, 200u * 1024u, 60u * 1024u));
-    CHECK(!wifiStartAllowed(false, F - 1, B)); /* total too small */
-    CHECK(!wifiStartAllowed(false, F, B - 1)); /* too fragmented */
-    CHECK(!wifiStartAllowed(false, 0, 0));
-    /* plenty in total but no usable block, and the reverse */
-    CHECK(!wifiStartAllowed(false, 300u * 1024u, 4u * 1024u));
-    CHECK(!wifiStartAllowed(false, 20u * 1024u, 20u * 1024u));
-    /* Wi-Fi that Bruce already brought up needs nothing more */
-    CHECK(wifiStartAllowed(true, 0, 0));
-    /* The thresholds must stay above what is known to fail on the device:
-     * Bruce's own 15 kB block check passed and a Wi-Fi start with 47,979
-     * bytes free still ran out of memory. And they must not exceed what
-     * the device has with BLE up and the Flipper linked (61,675 free,
-     * 31,732 block), or no Wi-Fi feature could ever start over the link. */
-    CHECK(B > 15u * 1024u);
-    CHECK(F > 47979u);
-    CHECK(!wifiStartAllowed(false, 47979u, 31732u));
-    CHECK(wifiStartAllowed(false, 61675u, 31732u));
-    /* Measured cost of the reduced, transient scan on the device (ee58380):
-     * internal RAM fell from 61,639 to 25,911 at its lowest (35,728 bytes,
-     * including the one-time default event loop); the DMA block from 31,732
-     * to 16,372. The threshold must cover that cost with margin left over
-     * for the BLE stack, which is still sending while the scan runs. */
-    const size_t kMeasuredScanPeak = 61639u - 25911u;
-    CHECK(F >= kMeasuredScanPeak + 12u * 1024u);
+/* ---------------------------------------------------- jobs (ADR 0006) */
 
-    char buf[160];
-    bl_textbuf_t tb;
-    bl_tb_init(&tb, buf, sizeof(buf));
-    CHECK(formatWifiNoMemory(&tb, 40u * 1024u + 900u, 20u * 1024u));
-    std::string s(buf, tb.len);
-    CHECK(s == "Wi-Fi can't start with BLE on\nfree 40k need 52k\nblock 20k need 16k");
-    /* atomic: a buffer that cannot hold it gets nothing */
-    char tiny[24];
-    bl_tb_init(&tb, tiny, sizeof(tiny));
-    bl_tb_str(&tb, "x");
-    CHECK(!formatWifiNoMemory(&tb, 1, 1));
-    CHECK(std::string(tiny, tb.len) == "x");
-    CHECK(!formatWifiNoMemory(nullptr, 1, 1));
+static uint32_t acceptedId(const std::vector<Msg>& r, uint16_t* max_s = nullptr) {
+    uint32_t id = 0;
+    uint16_t ms = 0;
+    if(r.size() != 1 || r[0].type != BL_MSG_JOB_ACCEPTED) return 0;
+    if(bl_job_parse_accepted(r[0].payload.data(), r[0].payload.size(), &id, &ms) != BL_OK) return 0;
+    if(max_s) *max_s = ms;
+    return id;
+}
+
+static void t_job_refusals() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    CHECK(isError(h.jobStart(0x7777), BL_ERR_UNKNOWN_CAPABILITY));
+    CHECK(isError(h.jobStart(BL_CAP_DEVICE_INFO), BL_ERR_BAD_ARG)); /* answered inline */
+    CHECK(isError(h.jobStart(BL_CAP_DEAUTH), BL_ERR_BAD_ARG)); /* not a job (yet) */
+    CHECK(isError(h.jobStart(BL_CAP_WIFI_SCAN, 61), BL_ERR_BAD_ARG)); /* over its limit */
+    CHECK(isError(h.jobStart(BL_CAP_WIFI_SCAN, 0, {1}), BL_ERR_BAD_ARG)); /* takes no args */
+    CHECK(isError(h.request(BL_MSG_JOB_START, (const uint8_t*)"\x10", 1), BL_ERR_BAD_ARG));
+    CHECK(isError(h.cmd(BL_CAP_WIFI_SCAN), BL_ERR_USE_JOB));
+    CHECK(isError(h.jobResult(1), BL_ERR_NOT_FOUND)); /* nothing stored */
+    CHECK(isError(h.request(BL_MSG_JOB_RESULT_REQ, (const uint8_t*)"\x01\x02", 2), BL_ERR_BAD_ARG));
+    CHECK_EQ_INT(h.be.restarts, 0);
+    CHECK(!bl_job_record_valid(&h.be.rec)); /* nothing written */
+
+    /* the public demo key: no job (a job restarts the device) */
+    Harness d;
+    memcpy(d.psk, BRUCELINK_DEMO_PSK, BL_KEY_LEN);
+    d.begin();
+    CHECK(d.connect());
+    CHECK(isError(d.jobStart(BL_CAP_WIFI_SCAN), BL_ERR_NOT_AUTHORIZED));
+    CHECK_EQ_INT(d.be.restarts, 0);
+    CHECK(!bl_job_record_valid(&d.be.rec));
+}
+
+static void t_job_accept_and_busy() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    uint16_t ms = 0;
+    const uint32_t id = acceptedId(h.jobStart(BL_CAP_WIFI_SCAN), &ms);
+    CHECK(id != 0);
+    CHECK_EQ_INT(ms, 20); /* the capability's default */
+    CHECK_EQ_INT(h.be.restarts, 1);
+    CHECK(bl_job_record_valid(&h.be.rec));
+    CHECK_EQ_INT(h.be.rec.state, BL_JOB_S_PENDING);
+    CHECK_EQ_INT(h.be.rec.job_id, id);
+    CHECK_EQ_INT(h.be.rec.cap_id, BL_CAP_WIFI_SCAN);
+    /* before the restart happens: one job at a time, no result yet */
+    CHECK(isError(h.jobStart(BL_CAP_WIFI_SCAN), BL_ERR_BUSY));
+    CHECK(isError(h.jobResult(id), BL_ERR_BUSY));
+    CHECK_EQ_INT(h.be.restarts, 1);
+    CHECK_EQ_INT(h.be.rec.job_id, id); /* untouched */
+    /* an explicit limit is kept */
+    Harness h2;
+    h2.begin();
+    CHECK(h2.connect());
+    CHECK(acceptedId(h2.jobStart(BL_CAP_WIFI_SCAN, 60), &ms) != 0);
+    CHECK_EQ_INT(ms, 60);
+}
+
+/* The whole job, Flipper client + tracker against the bridge, across the
+ * StickS3's two restarts (a new bridge each boot, the record carried over
+ * as RTC memory would carry it). */
+struct JobLink {
+    Harness* h = nullptr;
+    bl_client_t cl;
+    bl_jobc_t job;
+    uint32_t rng = 0x10B;
+    uint32_t now = 1000;
+    uint8_t key[BL_KEY_LEN];
+    std::vector<Msg> msgs;
+    const char* text = nullptr;
+    size_t text_len = 0;
+    std::string result;
+
+    JobLink() {
+        memset(key, 0x6b, sizeof(key)); /* a paired key */
+        h = new Harness();
+        memcpy(h->psk, key, BL_KEY_LEN);
+        h->begin();
+        bl_client_init(&cl, key, central_rng, &rng);
+        bl_jobc_init(&job);
+    }
+    ~JobLink() {
+        delete h;
+    }
+    /* esp_restart(): a fresh bridge; only the record survives */
+    void restartStick() {
+        bl_job_record_t keep;
+        memcpy(&keep, &h->be.rec, sizeof(keep));
+        delete h;
+        h = new Harness();
+        memcpy(h->psk, key, BL_KEY_LEN);
+        memcpy(&h->be.rec, &keep, sizeof(keep));
+        h->begin();
+    }
+    void toBridge(const uint8_t* f, size_t n) {
+        unsigned i = 0;
+        int done = 0;
+        while(!done) {
+            uint8_t c[BL_BLE_CHUNK_MAX];
+            size_t cl_len = 0;
+            done = bl_frag_chunk(f, n, BL_BLE_CHUNK_DEFAULT, i++, c, sizeof(c), &cl_len);
+            if(done < 0) return;
+            h->bridge.onChunk(c, cl_len);
+        }
+    }
+    void pump() {
+        for(int guard = 0; guard < 8; guard++) {
+            auto frames = h->drain();
+            if(frames.empty()) return;
+            for(auto& fr : frames) {
+                uint8_t reply[BL_CLIENT_HS_FRAME_MAX];
+                size_t rl = 0;
+                bl_frame_t m;
+                bool have = false;
+                (void)bl_client_rx(&cl, fr.data(), fr.size(), reply, sizeof(reply), &rl, &m, &have);
+                if(have) {
+                    msgs.push_back(Msg{m.type, std::vector<uint8_t>(m.payload, m.payload + m.payload_len)});
+                    /* what the app does with every response */
+                    if(bl_jobc_on_response(&job, m.type, m.payload, m.payload_len, now, &text, &text_len) &&
+                       text)
+                        result.assign(text, text_len);
+                }
+                if(rl) toBridge(reply, rl);
+            }
+        }
+    }
+    void linkUp() {
+        h->bridge.onConnect();
+        uint8_t hello[BL_CLIENT_HS_FRAME_MAX];
+        int n = bl_client_link_up(&cl, now, hello, sizeof(hello));
+        if(n > 0) toBridge(hello, (size_t)n);
+        pump();
+    }
+    void linkDown() {
+        h->bridge.onDisconnect();
+        bl_client_link_down(&cl);
+        bl_jobc_link_down(&job);
+        h->chunks.clear();
+    }
+    /* what the module's restartForJob() does: commit, then drop the link */
+    void restartsForJob() {
+        CHECK(h->bridge.commitJob());
+        linkDown();
+    }
+    bool send(uint8_t type, const uint8_t* pl, size_t len) {
+        uint8_t out[BL_MAX_MSG];
+        int n = bl_client_request(&cl, type, pl, (uint16_t)len, now, out, sizeof(out));
+        if(n <= 0) return false;
+        toBridge(out, (size_t)n);
+        pump();
+        return true;
+    }
+    /* the app's tick: fetch as soon as a new session is up */
+    void tick() {
+        if(bl_jobc_want_fetch(&job, bl_client_ready(&cl))) {
+            uint8_t p[8];
+            int n = bl_jobc_fetch(&job, p, sizeof(p));
+            if(n > 0) send(BL_MSG_JOB_RESULT_REQ, p, (size_t)n);
+        }
+        bl_jobc_tick(&job, now);
+    }
+};
+
+static void t_job_e2e_across_restarts() {
+    JobLink l;
+    l.linkUp();
+    CHECK(bl_client_ready(&l.cl));
+    uint8_t p[16];
+    int n = bl_jobc_start(&l.job, BL_CAP_WIFI_SCAN, 0, nullptr, 0, l.now, p, sizeof(p));
+    CHECK(n > 0 && l.send(BL_MSG_JOB_START, p, (size_t)n));
+    CHECK_EQ_INT(l.job.state, BL_JOBC_RUNNING);
+    CHECK_EQ_INT(l.h->be.restarts, 1);
+    const uint32_t id = l.job.job_id;
+    CHECK(id != 0 && id == l.h->be.rec.job_id);
+    l.tick(); /* same session: no fetch */
+    CHECK_EQ_INT(l.job.state, BL_JOBC_RUNNING);
+
+    /* boot 1: run the job with the link down */
+    l.restartsForJob();
+    l.restartStick();
+    CHECK_EQ_INT(bl_job_on_boot(&l.h->be.rec), BL_JOB_BOOT_RUN);
+    const char scan[] = "2 networks, 2210 ms\nHome -50dBm ch6\nCafe -71dBm ch11\n";
+    bl_job_record_finish(&l.h->be.rec, BL_JOB_DONE, scan, sizeof(scan) - 1);
+    l.now += 9000;
+    l.tick();
+    CHECK_EQ_INT(l.job.state, BL_JOBC_RUNNING); /* still waiting, no session */
+
+    /* boot 2: BruceLink comes back by itself */
+    l.restartStick();
+    CHECK_EQ_INT(bl_job_on_boot(&l.h->be.rec), BL_JOB_BOOT_LINK);
+    l.now += 9000;
+    l.linkUp(); /* new session with the paired key */
+    CHECK(bl_client_ready(&l.cl));
+    l.tick(); /* fetches */
+    CHECK_EQ_INT(l.job.state, BL_JOBC_DONE);
+    CHECK_EQ_INT(l.job.outcome, BL_JOB_DONE);
+    CHECK(l.result == scan);
+
+    /* asking again (a lost reply) works; another id does not */
+    uint8_t q[4];
+    bl_job_encode_result_req(id, q, sizeof(q));
+    l.msgs.clear();
+    CHECK(l.send(BL_MSG_JOB_RESULT_REQ, q, sizeof(q)));
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_JOB_RESULT);
+    bl_job_encode_result_req(id + 1, q, sizeof(q));
+    l.msgs.clear();
+    CHECK(l.send(BL_MSG_JOB_RESULT_REQ, q, sizeof(q)));
+    CHECK(l.msgs.size() == 1 && l.msgs[0].type == BL_MSG_ERROR && l.msgs[0].err() == BL_ERR_NOT_FOUND);
+    /* a later reboot is a normal boot; the result is still kept */
+    l.linkDown();
+    l.restartStick();
+    CHECK_EQ_INT(bl_job_on_boot(&l.h->be.rec), BL_JOB_BOOT_NONE);
+    CHECK(bl_job_record_valid(&l.h->be.rec));
+}
+
+static void t_job_e2e_crash_and_power_loss() {
+    /* the tool crashes the StickS3: reported as interrupted, not re-run */
+    JobLink a;
+    a.linkUp();
+    uint8_t p[16];
+    int n = bl_jobc_start(&a.job, BL_CAP_WIFI_SCAN, 0, nullptr, 0, a.now, p, sizeof(p));
+    a.send(BL_MSG_JOB_START, p, (size_t)n);
+    a.restartsForJob();
+    a.restartStick();
+    CHECK_EQ_INT(bl_job_on_boot(&a.h->be.rec), BL_JOB_BOOT_RUN);
+    a.restartStick(); /* panic */
+    CHECK_EQ_INT(bl_job_on_boot(&a.h->be.rec), BL_JOB_BOOT_LINK);
+    a.linkUp();
+    a.tick();
+    CHECK_EQ_INT(a.job.state, BL_JOBC_DONE);
+    CHECK_EQ_INT(a.job.outcome, BL_JOB_INTERRUPTED);
+    CHECK(contains(a.result, "not run again"));
+
+    /* power lost: RTC memory is gone, the StickS3 has no such job */
+    JobLink b;
+    b.linkUp();
+    n = bl_jobc_start(&b.job, BL_CAP_WIFI_SCAN, 0, nullptr, 0, b.now, p, sizeof(p));
+    b.send(BL_MSG_JOB_START, p, (size_t)n);
+    b.restartsForJob();
+    b.restartStick();
+    memset(&b.h->be.rec, 0xA5, sizeof(b.h->be.rec)); /* RTC after power-on */
+    CHECK_EQ_INT(bl_job_on_boot(&b.h->be.rec), BL_JOB_BOOT_NONE);
+    b.linkUp(); /* the user turned BruceLink on again */
+    b.tick();
+    CHECK(b.job.state == BL_JOBC_FAILED && b.job.fail == BL_JOBC_F_LOST);
+
+    /* never comes back at all: the Flipper gives up at max_s + allowance */
+    JobLink c;
+    c.linkUp();
+    n = bl_jobc_start(&c.job, BL_CAP_WIFI_SCAN, 0, nullptr, 0, c.now, p, sizeof(p));
+    c.send(BL_MSG_JOB_START, p, (size_t)n);
+    c.restartsForJob();
+    c.now += 20000u + BL_JOB_RESTART_ALLOWANCE_MS - 1;
+    c.tick();
+    CHECK_EQ_INT(c.job.state, BL_JOBC_RUNNING);
+    c.now += 1;
+    c.tick();
+    CHECK(c.job.state == BL_JOBC_FAILED && c.job.fail == BL_JOBC_F_TIMEOUT);
+}
+
+/* Review 2026-11-23: an e-stop or link loss after JOB_ACCEPTED but before
+ * the restart left the record PENDING, so the job ran at the next boot. */
+static void t_job_cancelled_before_the_restart() {
+    /* e-stop from the Flipper while the stick flushes the reply */
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    CHECK(acceptedId(h.jobStart(BL_CAP_WIFI_SCAN)) != 0);
+    CHECK(h.bridge.jobPending());
+    auto r = h.request(BL_MSG_ESTOP);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_ESTOP);
+    CHECK_EQ_INT(h.be.cancels, 1);
+    CHECK(!bl_job_record_valid(&h.be.rec));
+    CHECK(!h.bridge.commitJob()); /* so the module does not restart */
+    CHECK(!h.bridge.jobPending());
+    CHECK_EQ_INT(bl_job_on_boot(&h.be.rec), BL_JOB_BOOT_NONE); /* and a reboot runs nothing */
+
+    /* the link drops before the device commits */
+    Harness g;
+    g.begin();
+    CHECK(g.connect());
+    CHECK(acceptedId(g.jobStart(BL_CAP_WIFI_SCAN)) != 0);
+    g.bridge.onDisconnect();
+    CHECK_EQ_INT(g.be.cancels, 1);
+    CHECK(!bl_job_record_valid(&g.be.rec));
+    CHECK(!g.bridge.commitJob());
+
+    /* committed: the drop is the restart itself and cancels nothing */
+    Harness k;
+    k.begin();
+    CHECK(k.connect());
+    const uint32_t id = acceptedId(k.jobStart(BL_CAP_WIFI_SCAN));
+    CHECK(id != 0);
+    CHECK(k.bridge.commitJob());
+    CHECK(!k.bridge.commitJob()); /* once */
+    k.bridge.onDisconnect();
+    CHECK_EQ_INT(k.be.cancels, 0);
+    CHECK(bl_job_record_valid(&k.be.rec) && k.be.rec.state == BL_JOB_S_PENDING && k.be.rec.job_id == id);
+
+    /* an e-stop with no job pending touches no record */
+    Harness m;
+    m.begin();
+    CHECK(m.connect());
+    bl_job_record_create(&m.be.rec, 9, BL_CAP_WIFI_SCAN, 20, nullptr, 0);
+    bl_job_record_finish(&m.be.rec, BL_JOB_DONE, "x", 1);
+    m.request(BL_MSG_ESTOP);
+    m.bridge.onDisconnect();
+    CHECK_EQ_INT(m.be.cancels, 0);
+    CHECK(bl_job_record_valid(&m.be.rec) && m.be.rec.state == BL_JOB_S_FINISHED);
+    CHECK(!m.bridge.commitJob());
 }
 
 /* ----------------------------------------------- pairing mode (ADR 0005) */
@@ -1166,7 +1585,18 @@ int main() {
     RUN(t_e2e_link_loss_mid_request);
     RUN(t_demo_key_never_enables_active_ops);
     RUN(t_real_key_reports_not_demo);
-    RUN(t_wifi_start_guard);
+    printf("[jobs]\n");
+    RUN(t_job_refusals);
+    RUN(t_job_accept_and_busy);
+    RUN(t_estop_cleared_only_by_a_session);
+    RUN(t_capture_stops_on_link_loss_and_estop);
+    RUN(t_active_job_refused);
+    RUN(t_failed_active_op_is_refunded);
+    RUN(t_destructor_wipes_key);
+    RUN(t_clear_key);
+    RUN(t_job_cancelled_before_the_restart);
+    RUN(t_job_e2e_across_restarts);
+    RUN(t_job_e2e_crash_and_power_loss);
     printf("[pairing]\n");
     RUN(t_pair_bridge_happy_path);
     RUN(t_pair_bridge_rejections);

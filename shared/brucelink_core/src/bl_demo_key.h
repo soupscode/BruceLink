@@ -1,16 +1,15 @@
 /*
- * BruceLink shared core — demo pairing key (both devices).
+ * BruceLink shared core — the public demo key.
  *
  * !!! DEMO KEY — PUBLIC, PROVIDES NO SECURITY !!!
  *
- * The session is authenticated with a 32-byte key shared by the Flipper and
- * the StickS3. Real per-device provisioning (task M5.3: the StickS3 generates
- * a key, the Flipper is given it out of band) is not implemented yet, so both
- * sides currently compile in this fixed key, which is published in the
- * repository. Until M5.3 lands, anyone can authenticate as either device.
- * The app says so on its Connection and About screens.
- *
- * Defined once here so the two sides cannot drift apart.
+ * Real devices use the key from pairing (ADR 0005). This key is published
+ * in the repository, so a session made with it authenticates nobody. It is
+ * used as a key only by the host tests and the ESP32 compile check. The
+ * StickS3 carries it only to refuse it: its key store rejects it, and a
+ * bridge holding it refuses every active op, job and capture. The Flipper
+ * app does not contain it at all (tests/test_demo_key.py checks the sources
+ * and the built .fap).
  * SPDX-License-Identifier: MIT
  */
 #pragma once

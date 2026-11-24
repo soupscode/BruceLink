@@ -1,8 +1,15 @@
 # ADR 0004 — Wi-Fi next to the BLE link on the StickS3
 
-Status: Accepted (2026-11-23) — implemented; the scan path **returned networks
-over the air** on the owner's devices (one run). Numbers marked *measured* come
-from the owner's device.
+Status: **Superseded by ADR 0006** (2026-11-23). The reduced, transient Wi-Fi
+start below worked on the owner's devices, but left about 1.8 kB to spare and
+cannot protect tools that allocate as they run; the owner chose to run such
+tools between restarts with BLE off instead. The code (`BruceLinkWifi.cpp`,
+`wifiStartAllowed`) was removed; it is in git history (`993437b`). The
+measurements here are what ADR 0006 is based on.
+
+Original status: Accepted (2026-11-23) — implemented; the scan path **returned
+networks over the air** on the owner's devices (one run). Numbers marked
+*measured* come from the owner's device.
 
 ## Context
 

@@ -93,17 +93,13 @@ the same service; a subscribed scanner then receives a `PAIR_COMMIT`, and the
 
 ## 4b. Pairing (ADR 0005)
 
-Needs the step 4 build on the StickS3 and the Flipper app. The merged image at
-`0x0` erases NVS and with it the pairing. To keep a pairing across StickS3
-updates, flash the three parts instead:
-
-```
-esptool --chip esp32s3 --port <port> write-flash \
-  0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
-```
-
-Not `firmware.bin` alone: on 2026-11-23 the app-only file written by itself
-did not boot (see `TEST_RESULTS.md`).
+Needs the step 4 build on the StickS3 and the Flipper app. Flash the merged
+image at `0x0`. It erases NVS and with it the pairing, so pair again after
+every StickS3 update. Do not flash the parts separately (`firmware.bin` alone,
+or bootloader / partitions / firmware at `0x0` / `0x8000` / `0x10000`): both
+were tried on 2026-11-23 and neither booted (`TEST_RESULTS.md`; cause unknown).
+If you want to find out why, that is a separate experiment: keep the merged
+image at hand to recover.
 
 1. Flipper: **Pair**. Expect the instructions screen; the Flipper advertises.
 2. StickS3: **BruceLink → Pair with Flipper**.
@@ -111,9 +107,13 @@ did not boot (see `TEST_RESULTS.md`).
    StickS3's name and vibrates.
 3. Check the codes match. Answer **Yes** on both, in either order.
 4. Expect `Paired with <name>, key XXXX` on both, with the **same key id**. The
-   StickS3 then starts BruceLink in normal mode; on the Flipper press Back,
-   then **Connect**: `connected` within a few seconds, status `Key XXXX, not
-   encrypted`.
+   StickS3 then says `BruceLink ON > looking for Flipper` (it switches to
+   normal mode without restarting BLE; serial: `module: pairing mode -> normal,
+   BLE kept up`); on the Flipper press Back, then **Connect**: `connected`
+   within a few seconds, status `Key XXXX, not encrypted`.
+   - If a start ever says `Not enough memory for BLE: largest block N kB,
+     needs 48`, note N and the `[RAM]` / `[BruceLink]` serial lines, then
+     reboot and **Turn on**.
 5. Refusal: pair again and answer **No** on one side. Both must report it and
    keep the old pairing (Connect still works with it).
 6. Wrong peer: on a StickS3 that is not in pairing mode, the Flipper's Pair
@@ -136,8 +136,10 @@ matter: the StickS3 keeps scanning, the Flipper keeps advertising.
 - Verify advertising of the 128-bit service + name `BL`. If nothing shows up,
   look for `set_discoverable failed` in the Flipper log (`ufbt cli` → `log`).
 - Verify the StickS3 central discovers, connects (no pairing), subscribes, and
-  that the Flipper shows `BLE linked` then `connected` within about a second.
-- Device Info / Capabilities / Wi-Fi Scan over the air; `STATUS` shows `demo:0`.
+  that the Flipper shows `BLE linked` then `connected` within a few seconds
+  (about 3 s measured; the Flipper gives up at 5 s, the StickS3 at 10 s).
+- Device Info / Capabilities over the air; `STATUS` shows `demo:0`. Wi-Fi Scan
+  is a job: step 5b.
 - Flipper-side recovery: power the StickS3 off mid-handshake or mid-request.
   Expect `no reply (timed out)` after 10 s for a request, `link lost` when the
   link drops, and a fresh handshake when the StickS3 returns.
@@ -148,11 +150,8 @@ matter: the StickS3 keeps scanning, the Flipper keeps advertising.
   joined, with the raw Offset field and length of the last one). Note them
   when something fails. `mtu 0` means the MTU event never reached the Flipper
   (it then sends 20-byte chunks).
-- The StickS3's Wi-Fi scan reply now carries its duration, or the reason it
-  failed; the same line goes to the USB serial log.
 - **Measure** (the timeouts are estimates): time from `BLE linked` to
-  `connected` (two X25519 operations on the Flipper; budget 5 s), and how long
-  Bruce takes to answer a Wi-Fi scan (budget 10 s).
+  `connected` (two X25519 operations on the Flipper; budget 5 s).
 - Questions the source could not settle (from the independent review):
   does the subscription event fire on every reconnect; does the MTU event
   fire on the Flipper with the negotiated value (otherwise chunks stay at
@@ -172,6 +171,39 @@ matter: the StickS3 keeps scanning, the Flipper keeps advertising.
   (it must send `HELLO` on subscription), and that a `HELLO` sent immediately
   after subscription is not lost (transport ordering fix).
 
+## 5b. Jobs: Wi-Fi scan with BLE off (ADR 0006)
+
+Paired and connected (step 4b). Keep the StickS3's USB serial open: each step
+logs `[BruceLink] job: ...` with the memory figures.
+
+1. Flipper: **Wi-Fi Scan**. Expect `Running on the StickS3...` with a seconds
+   counter. The StickS3 restarts, shows **BruceLink job / Wi-Fi scan for the
+   Flipper / Any button: stop**, scans, shows `done / Restarting...`, restarts
+   again and turns BruceLink on by itself (main-menu icon dots filled).
+2. The Flipper reconnects, shows `StickS3 is back. Fetching the result...`,
+   then the networks (strongest first) and vibrates. The result starts with
+   `Took N s` (Flipper, whole cycle) and `n networks (scan X ms, boot Y ms)`
+   (stick: the scan, and Bruce's boot before the job). **Note all three.**
+   Neither restart should show Bruce's boot animation, and the stick should
+   not join Wi-Fi on the boot after the job even if "Wi-Fi at startup" is on;
+   a normal reboot afterwards must play it and join as usual.
+3. Compare with Bruce's own scan on the StickS3: same networks, roughly.
+4. **Stop on the stick:** start a scan and press a StickS3 button while it
+   shows "Any button: stop". The Flipper must report `stopped on the StickS3`.
+5. **Crash safety** (optional): during the job boot, press the StickS3's reset
+   (or pull USB power on a stick without battery). After it comes back with
+   BruceLink on, the Flipper must report `interrupted ... not run again`, and
+   the stick must not start the scan again. With power fully cut (RTC lost) the
+   Flipper reports that the StickS3 no longer has the job, or gives up at 80 s.
+6. A normal reboot afterwards must leave BruceLink **off** (auto-start is once,
+   after a job only).
+7. Back out of the Wi-Fi Scan screen while a job runs, then open Wi-Fi Scan
+   again: it must show the same job, not start another. Back out again and
+   wait until it has finished: opening Wi-Fi Scan must show that result once;
+   the time after, it starts a new scan.
+8. If "Wi-Fi at startup" is on in Bruce: check the job still runs and BruceLink
+   comes back (Bruce's BLE memory check may disconnect Wi-Fi to make room).
+
 ## 6. Protocol functions over BLE
 
 - PING/PONG, DEVICE_INFO, CAPS, STATUS round-trips.
@@ -190,16 +222,17 @@ matter: the StickS3 keeps scanning, the Flipper keeps advertising.
 
 ## 8. Coexistence & transfer
 
-- Run handshake capture **while** the BLE link is up; measure BLE drops and
-  capture loss. Decide whether to pause BLE during capture (ADR 0003).
+- Not applicable any more: capture runs as a job with BLE off (ADR 0006),
+  never while the link is up.
 - Transfer a pcap over BLE; verify CRC-32 matches the device-side value; drop
   the link mid-transfer and confirm resume from offset.
 
 ## 9. Active-RF gate (authorized lab only)
 
 - With active ops **disabled**: a deauth `CMD_REQ` must return `not_authorized`.
-- Enable active ops over the authenticated session; set a one-BSSID scope;
-  deauth to that BSSID succeeds, to another is refused (`not_authorized`).
+- Not runnable yet: the StickS3 refuses every active op until active jobs
+  exist (ADR 0006). When they do: enable active ops over the authenticated
+  session; deauth to one specific BSSID succeeds; broadcast is refused.
 - Exceed the rate limit → `rate_limited`.
 - ESTOP mid-op halts it; link loss halts it.
 

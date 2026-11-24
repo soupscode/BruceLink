@@ -24,15 +24,11 @@ extern "C" {
 #define BL_OFF_VERSION 2
 #define BL_OFF_TYPE 3
 #define BL_OFF_FLAGS 4
-#define BL_OFF_RSVD 5
+#define BL_OFF_TAG 5 /* request tag: echoed by the response (bl_frame_t.tag) */
 #define BL_OFF_SEQ 6 /* u32 LE: per-session monotonic counter */
-#define BL_OFF_REQID 10 /* u16 LE: request/response correlation (part of seq? no) */
-/* NOTE: header is 12 bytes: magic(2) ver(1) type(1) flags(1) rsvd(1) seq(4) reqid(2) lenHi?
- * Layout (12 bytes):
- *   [0]=B [1]=L [2]=ver [3]=type [4]=flags [5]=reserved
+/* Layout (12 bytes), all covered by the MAC:
+ *   [0]=B [1]=L [2]=ver [3]=type [4]=flags [5]=request tag
  *   [6..9]=seq (u32 LE) [10..11]=payload_len (u16 LE)
- * request_id is carried in the first 2 payload bytes for request/response
- * message types (see bl_msg_* helpers), keeping the header fixed-size.
  */
 #define BL_OFF_LEN 10
 
@@ -78,6 +74,13 @@ typedef enum {
     BL_MSG_CMD_REQ = 0x20, /* invoke a registered capability by id */
     BL_MSG_CMD_RESP = 0x21,
 
+    /* Jobs (ADR 0006): a tool that runs between two restarts of the
+     * StickS3, with the link down. */
+    BL_MSG_JOB_START = 0x22, /* C->P: cap_id + max_s + args */
+    BL_MSG_JOB_ACCEPTED = 0x23, /* P->C: job_id + max_s; the link drops next */
+    BL_MSG_JOB_RESULT_REQ = 0x24, /* C->P: job_id (on a later session) */
+    BL_MSG_JOB_RESULT = 0x25, /* P->C: job_id + outcome + text */
+
     /* --- capture subsystem (phase 2) --- */
     BL_MSG_CAP_START = 0x40,
     BL_MSG_CAP_STOP = 0x41,
@@ -105,7 +108,7 @@ typedef enum {
     BL_ERR_BAD_ARG = 5,
     BL_ERR_UNKNOWN_CAPABILITY = 6,
     BL_ERR_CAPABILITY_DISABLED = 7, /* e.g. active TX not authorized */
-    BL_ERR_NOT_AUTHORIZED = 8, /* authorization token missing/invalid */
+    BL_ERR_NOT_AUTHORIZED = 8, /* active ops not enabled in this session, or the demo key */
     BL_ERR_TARGET_NOT_ALLOWED = 9, /* target not on allowlist */
     BL_ERR_RATE_LIMITED = 10,
     BL_ERR_BUSY = 11,
@@ -113,6 +116,7 @@ typedef enum {
     BL_ERR_NOT_FOUND = 13,
     BL_ERR_ESTOPPED = 14, /* refused: emergency stop engaged */
     BL_ERR_INTERNAL = 15,
+    BL_ERR_USE_JOB = 16, /* this capability runs as a job (JOB_START) */
 } bl_wire_err_t;
 
 const char* bl_wire_err_str(uint16_t e);

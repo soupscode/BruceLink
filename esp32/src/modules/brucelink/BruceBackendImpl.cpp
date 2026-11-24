@@ -3,11 +3,11 @@
  * Status: see docs/STATUS.md (compile status in the Bruce tree, hardware).
  * SPDX-License-Identifier: MIT
  */
+#if !defined(LITE_VERSION) // like the rest of the module: not in LITE builds
 #include "BruceBackendImpl.h"
 
 #include <BruceLinkFormat.h>
-#include "BruceLinkWifi.h"
-#include "bruce_brucelink_hooks.h" // thin headless hooks added by the BruceLink patch
+#include "BruceLinkJobs.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -61,51 +61,30 @@ void logStep(const char* what) {
     Serial.flush();
 }
 
-size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
-    // Lines are appended whole or not at all; SSIDs are sanitized. How Wi-Fi
-    // is brought up next to the BLE link is in BruceLinkWifi.
-    bl_textbuf_t tb;
-    bl_tb_init(&tb, out, cap);
-    wifiScanInto(&tb);
-    return tb.len;
+bl_job_record_t* BruceBackendImpl::jobRecord() {
+    return jobRecordStorage(); // RTC memory: survives the restart (BruceLinkJobs)
 }
 
-// --- capture backend: drives Bruce's existing sniffer via headless hooks ---
+void BruceBackendImpl::jobRestart() {
+    jobRestartRequest(); // the bridge task restarts once the reply has left
+}
 
-static int cap_start(void*, bl_capture_mode_t mode, uint8_t channel) {
-    return bruce_brucelink_sniffer_start((int)mode, channel) ? BL_OK : BL_E_NO_RESOURCE;
+void BruceBackendImpl::jobCancel() {
+    jobRestartCancel(); // e-stop or link loss first: no restart, no job
 }
-static int cap_set_channel(void*, uint8_t channel) {
-    return bruce_brucelink_sniffer_set_channel(channel) ? BL_OK : BL_E_ARG;
-}
-static int cap_poll(void*, bl_capture_counts_t* c) {
-    BruceSnifferStatus s;
-    if(!bruce_brucelink_sniffer_status(&s)) return BL_E_STATE;
-    c->packets = s.packets;
-    c->eapol = s.eapol;
-    c->handshakes = s.handshakes;
-    c->beacons = s.beacons;
-    c->deauth = s.deauth;
-    c->free_bytes = s.free_bytes;
-    // Bruce stops promiscuous when LittleFS fills (sniffer.cpp:950); surface it.
-    return s.storage_full ? BL_E_NO_RESOURCE : BL_OK;
-}
-static int cap_stop(void*) {
-    bruce_brucelink_sniffer_stop();
-    return BL_OK;
-}
-static int cap_mode_available(void*, bl_capture_mode_t mode) {
-    // Full raw pcap is SD-gated upstream (sniffer_full_mode_available).
-    if(mode == BL_CAP_MODE_RAW) return bruce_brucelink_raw_mode_available() ? 1 : 0;
-    return 1;
-}
-static const bl_capture_backend_t kCaptureBackend = {
-    cap_start, cap_set_channel, cap_poll, cap_stop, cap_mode_available};
+
+// --- capture and active ops: refused on the live link (ADR 0006) ---------
+//
+// Both need Wi-Fi, and nothing uses Wi-Fi while the BLE link is up (one radio
+// at a time; the two stacks do not fit in the StickS3's internal RAM
+// together). They are to run as jobs (task M5.2: handshake capture first).
+// Until then the bridge reports capture as disabled and an active op as
+// failed, whatever the hooks in bruce_brucelink_hooks.h would do.
 
 bool BruceBackendImpl::captureBackend(const bl_capture_backend_t** be, void** ctx) {
-    *be = &kCaptureBackend;
+    *be = nullptr;
     *ctx = nullptr;
-    return true;
+    return false;
 }
 
 int BruceBackendImpl::activeOp(
@@ -113,13 +92,11 @@ int BruceBackendImpl::activeOp(
     const uint8_t* target,
     uint8_t channel,
     uint32_t max_frames) {
-    // The bridge has already passed the remote safety gate and reserved
-    // max_frames from the rate window. Forward to Bruce's EXISTING transmit
-    // primitive with that hard cap; BruceLink builds no frames.
-    switch(cap_id) {
-    case BL_CAP_DEAUTH: return bruce_brucelink_deauth(target, channel, max_frames);
-    default: return -1; // not exposed
-    }
+    (void)cap_id;
+    (void)target;
+    (void)channel;
+    (void)max_frames;
+    return -1; // nothing is transmitted
 }
 
 uint32_t BruceBackendImpl::nowMs() {
@@ -131,3 +108,4 @@ void BruceBackendImpl::randomBytes(uint8_t* out, size_t len) {
 }
 
 } // namespace brucelink
+#endif // !LITE_VERSION

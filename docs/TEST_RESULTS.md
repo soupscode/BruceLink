@@ -324,6 +324,46 @@ $ python3 -m unittest discover -s tests    22 tests OK
 
 **Not run on hardware.**
 
+## Jobs: one radio at a time (ADR 0006) — host tests and builds (2026-11-23)
+
+```
+$ make -C tests/c test cppcheck
+[job]        9 tests ok   (record bounds; every single-bit flip of a record
+                           caught, CRC included; random RTC contents never
+                           valid; normal job; crash mid-job -> interrupted,
+                           never re-run, no loop; copy survives; payload
+                           layouts and limits; Flipper tracker: happy path,
+                           refusals, lost job, wrong id, retries, BUSY,
+                           timeout across 2^32 wrap)
+3073 checks, 0 failed
+[jobs]       4 tests ok   (refusals incl. demo key and e-stop with nothing
+                           written or restarted; accept + BUSY; end to end
+                           with bl_client + tracker across two simulated
+                           restarts; crash -> interrupted, power loss ->
+                           not found, never back -> timeout)
+308 checks, 0 failed
+cppcheck clean
+$ python3 -m unittest discover -s tests       23 tests OK (installer: 9,
+  incl. the boot hook and an unknown main.cpp layout writing nothing)
+```
+
+Mutation check: 7 broken variants of `bl_job.c` (re-run after a crash,
+RUNNING not sealed before the run, auto-start never cleared, fetch on the
+starting session, no CRC check, result id not checked, deadline without the
+restart allowance) and 7 of the bridge (demo key or e-stop not refusing a job,
+a second job overwriting a pending one, a result for any id or before it is
+finished, no limit check, a job capability answered inline) each fail a test.
+
+Builds: Flipper FAP v0.4 APPCHK pass; ESP32 compile check SUCCESS (RAM 10.2 %,
+Flash 17.2 %); Bruce 1.17 + BruceLink for `m5stack-sticks3` SUCCESS (RAM 40.8 %,
+Flash 56.9 %), installed sources byte-identical to the repo. The job record
+(536 bytes) is in `.rtc_noinit` (RTC slow memory, `0x50000204`), which the
+startup code does not initialise.
+
+**Not run on hardware.** Not host-testable: RTC retention across
+`esp_restart`, the boot hook inside Bruce's `setup()`, the Wi-Fi scan job, the
+restart timing, the Flipper's job screen.
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)
@@ -564,16 +604,168 @@ NVS. Code that runs at boot and is new since the last build that ran
 plus static constructors of the bridge; nothing found that could fail. An
 emulator boot test was not run.
 
+The merged image boots; see below.
+
 Response: the docs no longer recommend `firmware.bin` alone. To keep NVS,
 flash bootloader, partition table and app at `0x0` / `0x8000` / `0x10000`,
 which needs nothing from what was on the device.
 
+### 2026-11-23 — First pairing on hardware, `b635b03` merged image (owner's devices)
+
+- **Pairing completed** on the Flipper (app v0.3) and the StickS3 (owner:
+  "paired"). Whether both showed the same key id was not reported.
+- **Connecting afterwards failed**, with a memory error on the StickS3 (owner:
+  "can't connect - uses too much memory"; exact text and serial not reported).
+- **After a reboot of the StickS3, Turn on and Connect work** with the paired
+  key, and Device Info and the Wi-Fi scan work over that session. So the key
+  survives a reboot in NVS on the StickS3 and in the Flipper's key file, both
+  sides derived the same key (the session authenticates with it), and the
+  paired bridge runs normally.
+
+Reading: after storing the key, `b635b03` stopped BLE (pairing mode) and
+started it again (normal mode). Starting BLE goes through Bruce's
+`radioHasMemForBle()`, which wants one free DMA-capable block of 48 kB. That
+held at boot (pairing mode started), so it is the restart that fell short:
+memory allocated while BLE was up (the key store's NVS write happens then)
+can sit inside the region BLE gives back and split it. Not confirmed; the
+figures were not captured.
+
+Response (next build): after pairing, the bridge task leaves pairing mode in
+place (`endPairing` + `setKey`, host-tested in `test_bridge.cpp`), so BLE is
+not restarted; a cancelled pairing returns to the old key the same way.
+`moduleStop` waits 100 ms for the idle task to free the task's stack before
+returning. A failed start now shows the largest free block and the 48 kB it
+needs, and logs the figures.
+
+### 2026-11-23 — `9f37f46` (jobs) on the StickS3 (owner's devices)
+
+- Flashed with the three-part command (bootloader / partitions / app): **did
+  not boot**. Command output and serial log not yet reported; second
+  non-merged flash that failed (see `b635b03` app-only above).
+- Flashed as the merged image at `0x0`: **boots**; paired again; Device Info
+  works.
+- Wi-Fi Scan from the Flipper: `StickS3 refused: unknown wire error`. That is
+  the v0.3 app (no jobs) receiving the new `use_job` error (16), which it has
+  no name for: the Flipper was still running v0.3. The job path itself has
+  not run yet.
+
+### 2026-11-23 — First job on hardware: Wi-Fi scan with BLE off (`9f37f46`, app v0.4)
+
+- **The full cycle worked** (owner: "that worked"): the Flipper started the
+  job, the StickS3 restarted, scanned, restarted, turned BruceLink back on, and
+  the Flipper fetched and showed the result. So RTC memory kept the record
+  across both restarts, the boot hook ran, and auto-start worked.
+- **Too slow** for the owner; total time not reported. Known cost at the time:
+  Bruce's boot animation runs for up to 7 s on every boot (twice per job), and
+  the scan allowed up to 300 ms per channel.
+
+Response (next build): the job runs before the animation, the boot after a
+job skips it (and Wi-Fi at startup), scan 120 ms per channel, delays trimmed,
+and the result reports scan time, stick boot time and the Flipper's total.
+
+### 2026-11-23 — Faster jobs (`8f9285a`, app v0.5)
+
+- Wi-Fi scan job: **"much faster"** (owner), cycle works. The `Took` / scan /
+  boot figures were not reported, so how much each change saved is not
+  known.
+
+### 2026-11-23 — Independent review fixes (cloud, no hardware)
+
+Four reviewers read the whole repository (protocol core, Flipper app, StickS3
+glue, cross-cutting). Every fix that runs on the host has a regression test,
+and each new test was run against the old code (or a mutant restoring it) and
+failed there:
+
+| Fix | Test | Old code |
+|---|---|---|
+| HELLO version range in the transcript | `t_session_hello_range_is_authenticated` | handshake completed after a range rewrite |
+| Seal/open only when established | `t_session_strict_states_and_wipe` | AUTH frame opened by a waiting responder |
+| Secrets wiped on failure | same | keys left after FAILED |
+| Only AUTH_OK ends WAIT_AUTH_OK | `t_session_stray_frame_while_waiting_auth_ok` | repeated HELLO_ACK failed the handshake |
+| Request tags (M4.7) | `t_client_late_response_dropped` | late ERROR surfaced as the next answer |
+| Gate: no wrap | `t_safety_frames_cannot_wrap` | huge frame count passed |
+| Gate: target always | `t_safety_active_needs_a_target` | target-less op passed |
+| Gate: reset clears enable | `t_safety_estop_reset_leaves_active_off` | survived before |
+| Fetch only after the drop | `t_jobc_no_fetch_before_the_link_drops` | fetched on the starting session |
+| Cancel job before restart | `t_job_cancelled_before_the_restart` | job stayed PENDING after e-stop / drop |
+| E-stop cleared only by a session | `t_estop_cleared_only_by_a_session` | a bare link cleared it |
+| Demo key refuses capture | `t_demo_key_never_enables_active_ops` | capture started |
+| Capture stops on drop / e-stop | `t_capture_stops_on_link_loss_and_estop` | mutants survived before |
+| Active job refused | `t_active_job_refused` | branch never ran before |
+| Refund after failed transmit | `t_failed_active_op_is_refunded` | mutant survived before |
+| Destructor wipes the key | `t_destructor_wipes_key` | mutant survived before |
+| Installer writes nothing on a failed check | `test_name_collision_writes_nothing` | Bruce files patched, then failed |
+
+Also new: Python recomputation of the session handshake (transcript, both
+confirm tags, both keys, MACs) and of the request tag; RFC 4231 cases 6–7, RFC
+5869 A.2, all seven X25519 low-order points, header tamper and counter end; a
+check that the demo key is in no Flipper source and not in the built `.fap`.
+The interop suite now fails instead of skipping when the C tool does not build.
+
+Not host-testable, built only: the StickS3 module changes (rescan while a peer
+is on cooldown, in-place "Pair again", stop when NimBLE is released under it,
+key wiped on task exit, checked NimBLE start, Forget checks, capture and active
+ops refused on the live link) and the Flipper review fixes (job tracking on
+link changes and timeouts, Back, pairing feedback, key file temp + rename).
+
+| Check | Result |
+|---|---|
+| `make -C tests/c test cppcheck` | 3483 + 378 checks, 0 failed; cppcheck clean |
+| `python3 -m unittest discover -s tests` | 28 tests OK |
+| FAP (ufbt, mntm-012) | APPCHK pass, Target 7 / API 87.1 |
+| `esp32/test_compile` | SUCCESS, RAM 10.2 % / Flash 17.3 % |
+| Bruce 1.17 + BruceLink (`m5stack-sticks3`) | SUCCESS, static RAM 133,788 B |
+
+**Wire change:** the transcript and header byte 5 changed. A Flipper and a
+StickS3 on different sides of this change do not complete the handshake:
+update both.
+
+### 2026-11-23 — RAM review (cloud, no hardware)
+
+Three reviewers looked for internal RAM the StickS3 build does not need.
+Figures are computed or read from the map, not measured on the stick.
+
+- Heap layout: of the ~133 kB "free" at the menu only one region (about
+  170 kB at boot, before Bruce's own allocations) can hold BLE's 48 kB block;
+  about 98 kB of the free figure is in smaller regions. The "largest DMA
+  block" reading of 31,732 B is a separate 32 kB region, which hides the main
+  region's own largest block.
+- BruceLink-side, no feature loss: the bridge task stack to PSRAM (10 kB while
+  on), NimBLE's host buffers to PSRAM (about 16 kB at BLE start, needs a
+  forced-include build flag), passive scanning (fewer transient allocations),
+  and offering "restart into BruceLink" when the memory guard refuses.
+- Bruce-side, costs features or needs Bruce source edits: TinyUSB (about
+  31 kB static; USB mass storage, USB BadUSB/HID, U2F), the Wi-Fi password
+  cracker's IRAM (4 kB), NetCut's device table (4.3 kB), the RF stream buffer
+  (4 kB), mDNS (2.4 kB), and smaller items.
+
+### 2026-11-23 — RAM trims without feature loss (cloud, no hardware)
+
+| Check | Result |
+|---|---|
+| Host tests, cppcheck, Python (29 incl. the installer's new ini patch and its failure case) | pass |
+| `esp32/test_compile` with the forced include | SUCCESS; `nimble_platform_mem_malloc` / `_calloc` ask for caps `0x404` (PSRAM, 8-bit), not `0x804` (internal) |
+| Bruce 1.17 + BruceLink, `m5stack-sticks3` | SUCCESS, static RAM 133,796 B (heap changes only); `pio project metadata` shows `-include bl_nimble_psram.h` in both the C and C++ flags and `lib/BruceLink` on the include path |
+
+Expected on the stick (computed, not measured): about 16 kB more internal
+RAM free after BLE starts (NimBLE's host buffers), 3 kB more while BruceLink is
+on (stack), fewer transient allocations while scanning. To check: the
+`internal` and `dma-blk` figures in the `[BruceLink] module: BLE up` and
+`Flipper linked` serial lines, against the same lines from `222920f`.
+
 ## Not yet tested (requires the local hardware session)
 
-- The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,
-  re-advertising after a dropped link, handing the radio back on exit.
-- The current app build on a Flipper at all (loopback ran on the previous one).
-- BruceBackendImpl compiled inside the Bruce tree; the Bruce patch.
-- On-air Wi-Fi scan, sniffer/EAPOL capture to LittleFS, pcap transfer.
-- Active-op forwarding and the safety gate under real transmission.
-- BLE + Wi-Fi-promiscuous coexistence.
+Updated 2026-11-23 after the independent review. Already run on hardware: see
+the dated entries above.
+
+- The review-fix build on either device (the handshake changed: both at once).
+- Connecting straight after pairing (in-place switch); "Pair again" while on;
+  Forget on both devices; refusal of a wrong key.
+- Re-advertising after a dropped link and recovery after a failed handshake
+  (the StickS3 now rescans every 5 s while a Flipper is on cooldown).
+- Job timing figures (`Took` / scan / boot), the stick's stop button during a
+  job, a crash during a job.
+- Sniffer/EAPOL capture (to run as a job), pcap transfer.
+- Active ops (refused; to run as jobs once ADR 0006's active-job rules are
+  implemented and tested).
+- Coexistence with Bruce's own BLE tools while BruceLink is on.

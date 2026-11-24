@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../../shared/brucelink_core/src/bl_client.h"
+#include "../../shared/brucelink_core/src/bl_job.h"
 #include "../../shared/brucelink_core/src/bl_pair.h"
 #include "bl_keyfile.h"
 #include "transport/bl_transport.h"
@@ -45,6 +46,7 @@ typedef enum {
     BlScreenStatic, /* About */
     BlScreenPairing,
     BlScreenForget,
+    BlScreenJob, /* a job on the StickS3 (ADR 0006) */
 } BlScreen;
 
 typedef struct {
@@ -60,6 +62,7 @@ typedef struct {
     bl_client_t client; /* session initiator state machine */
     uint32_t link_id; /* last transport link id seen (0 = none) */
     bool connect_pending; /* Connect pressed: start the transport on the next tick */
+    bool pair_pending; /* Pair pressed: start pairing mode on the next tick */
     const char* shown_status; /* transport status text last drawn (compared by pointer) */
     char shown_diag[96]; /* transport counters last drawn */
     bool active_ops_enabled; /* operator opt-in for active ops (default off) */
@@ -78,11 +81,20 @@ typedef struct {
     bool pair_running; /* pair holds an attempt for the current link */
     bool pair_answered; /* the user answered this attempt's code */
     bool pair_done; /* a pairing succeeded and was saved in this pairing session */
+    uint32_t pair_failed_ms; /* when the current attempt failed (drop the link after) */
     const char* pair_last_failure;
 
     /* All protocol work runs on the app thread via the ViewDispatcher
      * tick event (never in a FuriTimer callback: the timer service task
      * has a 1 KB stack). No locking needed. */
+
+    /* The current job (ADR 0006). Followed on every tick whatever screen
+     * is up, so leaving its screen does not lose it. */
+    bl_jobc_t job;
+    const char* job_title;
+    uint32_t job_drawn_s; /* elapsed seconds last drawn */
+    char job_text[BL_JOB_RESULT_MAX + 64]; /* the finished job's screen */
+    bool job_unseen; /* finished while its screen was not up */
 
     BlScreen screen;
     const char* req_title; /* title of the request being shown */

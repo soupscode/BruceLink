@@ -1,9 +1,9 @@
 /*
  * BruceLink Flipper app — BLE transport (GATT peripheral for the StickS3).
  *
- * STATUS: compiles against the Momentum mntm-012 SDK; NOT yet run on
- * hardware. Everything radio-facing here needs the bring-up procedure in
- * docs/HARDWARE_TESTING.md step 5. The portable parts are host-tested:
+ * STATUS: runs on hardware against the StickS3 (owner-reported,
+ * 2026-11-23: link, handshake, requests, pairing, jobs across restarts;
+ * docs/TEST_RESULTS.md). The portable parts are host-tested:
  * event parsing (bl_gatt_evt), fragmentation (bl_reasm) and the session
  * client (bl_client).
  *

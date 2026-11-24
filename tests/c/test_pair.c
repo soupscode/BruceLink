@@ -307,7 +307,7 @@ static void t_pair_ignores_out_of_order_and_garbage(void) {
     CHECK_EQ_INT(bl_pair_state(&d.r), BL_PS_WAIT_REVEAL);
     /* CONFIRM long before it can mean anything */
     uint8_t tag[32] = {0};
-    bl_frame_t cf = {BL_WIRE_VERSION, BL_MSG_PAIR_CONFIRM, 0, 0, 32, tag};
+    bl_frame_t cf = {BL_WIRE_VERSION, BL_MSG_PAIR_CONFIRM, 0, 0, 32, tag, 0};
     int cn = bl_frame_encode(&cf, NULL, 0, b, sizeof(b));
     CHECK_EQ_INT(bl_pair_rx(&d.i, b, (size_t)cn, a, sizeof(a), &al), BL_E_STATE);
     CHECK_EQ_INT(bl_pair_state(&d.i), BL_PS_WAIT_KEY);
@@ -354,7 +354,7 @@ static void t_pair_malformed_rejected(void) {
         pl[0] = cases[k].ver;
         pl[33] = cases[k].name_len;
         if(cases[k].bad_char) pl[35] = cases[k].bad_char;
-        bl_frame_t fr = {BL_WIRE_VERSION, BL_MSG_PAIR_COMMIT, 0, 0, (uint16_t)cases[k].total, pl};
+        bl_frame_t fr = {BL_WIRE_VERSION, BL_MSG_PAIR_COMMIT, 0, 0, (uint16_t)cases[k].total, pl, 0};
         int n = bl_frame_encode(&fr, NULL, 0, f, sizeof(f));
         CHECK(bl_pair_rx(&r, f, (size_t)n, out, sizeof(out), &ol) < 0);
         CHECK_EQ_INT(bl_pair_state(&r), BL_PS_WAIT_COMMIT);
@@ -376,7 +376,7 @@ static void t_pair_low_order_key(void) {
     pl[0] = BL_PAIR_VERSION; /* pk all zero: a low-order point */
     pl[49] = 1;
     pl[50] = 'S';
-    bl_frame_t fr = {BL_WIRE_VERSION, BL_MSG_PAIR_KEY, 0, 0, sizeof(pl), pl};
+    bl_frame_t fr = {BL_WIRE_VERSION, BL_MSG_PAIR_KEY, 0, 0, sizeof(pl), pl, 0};
     int n = bl_frame_encode(&fr, NULL, 0, a, sizeof(a));
     CHECK_EQ_INT(bl_pair_rx(&i, a, (size_t)n, out, sizeof(out), &ol), BL_E_CRYPTO);
     CHECK_EQ_INT(i.fail, BL_PF_CRYPTO);

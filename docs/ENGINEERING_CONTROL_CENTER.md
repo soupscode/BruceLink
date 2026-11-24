@@ -31,11 +31,11 @@ where files overlapped.
 | Capture manager | ✅ | ✅ (mock) | ✅ | — |
 | PCAP + CRC-32 | ✅ | ✅ + interop | ✅ | — |
 | Safety gate | ✅ | ✅ | ✅ | — |
-| Flipper UI + loopback | ✅ | — | ✅ APPCHK | — |
-| Flipper BLE transport | ✅ | parser + client ✅; radio path — | ✅ APPCHK | — |
-| ESP32 bridge core | ✅ | ✅ 88 checks (host) | ✅ SUCCESS | — |
+| Flipper UI (BLE only since v0.3) | ✅ | — | ✅ APPCHK | ✅ v0.2–v0.5 ran (owner) |
+| Flipper BLE transport | ✅ | parser + client ✅; radio path — | ✅ APPCHK | ✅ linked (owner) |
+| ESP32 bridge core | ✅ | ✅ `bl_bridge_tests` (host) | ✅ SUCCESS | ✅ linked (owner) |
 | ESP32 NimBLE transport | ✅ | — (needs NimBLE) | ✅ SUCCESS | — |
-| Bruce glue + patch | written | — | ⬜ (Bruce tree) | — |
+| Bruce glue + installer | ✅ | installer ✅ | ✅ Bruce tree | ✅ pairing, Wi-Fi scan job (owner) |
 
 ## Capture subsystem tracker (Phase 2)
 

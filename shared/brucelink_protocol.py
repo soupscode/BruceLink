@@ -3,10 +3,9 @@
 A second, independent implementation of the BruceLink wire format used
 to verify byte-for-byte interoperability with the C core
 (shared/brucelink_core). It covers the frame codec + MAC, COBS framing,
-the PCAP headers and CRC32. The authenticated session handshake
-(X25519/HKDF) is exercised by the C known-answer tests against RFC 7748
-and RFC 5869; this module focuses on the wire encodings where
-cross-implementation bugs (endianness, offsets, truncation) live.
+the PCAP headers, CRC32, the session handshake's transcript, confirm tags
+and key schedule (from a given X25519 shared secret: X25519 itself is
+checked by the C known-answer tests against RFC 7748) and pairing (ADR 0005).
 
 SPDX-License-Identifier: MIT
 """
@@ -42,6 +41,7 @@ class Frame:
     flags: int
     seq: int
     payload: bytes
+    tag: int = 0  # header byte 5: a request's tag, echoed in its response
 
 
 def encode(frame: Frame, key: bytes | None = None) -> bytes:
@@ -50,7 +50,7 @@ def encode(frame: Frame, key: bytes | None = None) -> bytes:
         raise ValueError("payload too large")
     hdr = (
         MAGIC
-        + bytes((frame.version, frame.type, frame.flags, 0))
+        + bytes((frame.version, frame.type, frame.flags, frame.tag))
         + struct.pack("<I", frame.seq)
         + struct.pack("<H", len(frame.payload))
     )
@@ -81,6 +81,7 @@ def decode(packet: bytes, key: bytes | None = None) -> Frame:
         flags=packet[4],
         seq=struct.unpack_from("<I", packet, 6)[0],
         payload=packet[HDR_LEN : HDR_LEN + plen],
+        tag=packet[5],
     )
 
 
@@ -205,3 +206,33 @@ def pair_confirm(psk: bytes, transcript: bytes, initiator: bool) -> bytes:
 
 def pair_key_id(psk: bytes) -> bytes:
     return _h(b"BLpair1 key id", psk)[:2]
+
+
+# --- Session handshake (ADR 0002, bl_session.c) ----------------------------
+
+MSG_HELLO = 0x01
+MSG_HELLO_ACK = 0x02
+MSG_AUTH = 0x03
+MSG_AUTH_OK = 0x04
+
+
+def session_transcript(hello: bytes, hello_ack: bytes) -> bytes:
+    """proto_min || proto_max || proto_sel || pub_C || nonce_C || pub_P || nonce_P,
+    from the HELLO and HELLO_ACK payloads."""
+    return hello[0:2] + hello_ack[0:1] + hello[2:50] + hello_ack[1:49]
+
+
+def session_confirm(psk: bytes, transcript: bytes, central: bool) -> bytes:
+    return hmac.new(psk, (b"BLcC" if central else b"BLcP") + transcript,
+                    hashlib.sha256).digest()
+
+
+def session_keys(shared: bytes, psk: bytes, nonce_c: bytes, nonce_p: bytes,
+                 proto_sel: int) -> tuple[bytes, bytes]:
+    """(c2p, p2c) direction keys."""
+    prk = hmac.new(nonce_c + nonce_p, shared + psk, hashlib.sha256).digest()
+
+    def expand(info: bytes) -> bytes:
+        return hmac.new(prk, info + bytes((proto_sel, 1)), hashlib.sha256).digest()
+
+    return expand(b"brucelink v1 c2p"), expand(b"brucelink v1 p2c")

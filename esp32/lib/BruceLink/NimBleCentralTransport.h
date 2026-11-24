@@ -50,12 +50,17 @@ public:
     static const size_t kMaxChunk = BL_BLE_CHUNK_MAX; /* largest Flipper update */
     /* Upper bound on one blocking connection attempt. */
     static const uint32_t kConnectTimeoutMs = 5000;
+    /* While a Flipper on cooldown is around, restart the scan this often:
+     * the controller reports each advertiser once per scan, so without a
+     * restart a Flipper whose cooldown ran out would never be seen again. */
+    static const uint32_t kRescanMs = 5000;
 
     NimBleCentralTransport();
     // Initialise NimBLE and the bridge; psk is the provisioned pairing key
     // (nullptr when there is none yet: put the bridge in pairing mode before
     // the first loop(), or it drops every link). Clears the peer cooldowns.
-    void begin(BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend);
+    // False if NimBLE or the chunk queue could not be set up; call end().
+    bool begin(BruceLinkBridge* bridge, const uint8_t psk[BL_KEY_LEN], BruceBackend* backend);
     // Start scanning for a BruceLink peripheral.
     void startScan(uint32_t duration_s = 0);
     // Single owner of the bridge: process events, supervise, connect, poll.
@@ -64,6 +69,14 @@ public:
     // so captures stop and active ops halt) and release NimBLE. Call from
     // the task that runs loop(), or after that task has stopped.
     void end();
+    // Another Bruce tool released NimBLE under us (NimBLEDevice::deinit):
+    // every NimBLE object this transport held is gone.
+    bool stackGone() const;
+    // After stackGone(): tell the bridge the link is lost and drop every
+    // reference without calling NimBLE. end() must not be called then.
+    void abandon();
+    // Forget every peer cooldown (e.g. when switching to pairing mode).
+    void clearCooldowns();
     bool connected() const {
         return connected_;
     }
@@ -107,12 +120,14 @@ private:
     bool have_pending_;
     bool link_lost_;
     uint16_t pending_mtu_;
+    bool blocked_seen_; // a Flipper on cooldown was seen in this scan
 
     /* --- loop()-only state --- */
     uint8_t peer_id_[PeerCooldown::kIdMax];
     size_t peer_id_len_;
     bool connected_; // link up AND bridge_->onConnect() done
     bool dropping_; // we asked NimBLE to disconnect; waiting for it
+    uint32_t scan_started_ms_;
 };
 
 } // namespace brucelink

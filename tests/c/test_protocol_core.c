@@ -23,7 +23,7 @@ static void prng(void* ctx, uint8_t* buf, size_t len) {
 static void t_frame_roundtrip_unauth(void) {
     uint8_t out[BL_MAX_MSG];
     uint8_t pl[5] = {1, 2, 3, 4, 5};
-    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_PING, 0, 42, 5, pl};
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_PING, 0, 42, 5, pl, 0};
     int n = bl_frame_encode(&f, NULL, 0, out, sizeof(out));
     CHECK_EQ_INT(n, (int)bl_frame_size(5));
     bl_frame_t g;
@@ -40,7 +40,7 @@ static void t_frame_mac_roundtrip_and_tamper(void) {
     uint8_t out[BL_MAX_MSG];
     uint8_t pl[64];
     for(int i = 0; i < 64; i++) pl[i] = (uint8_t)i;
-    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_STATUS, BL_FLAG_RESPONSE, 7, 64, pl};
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_STATUS, BL_FLAG_RESPONSE, 7, 64, pl, 0};
     int n = bl_frame_encode(&f, key, sizeof(key), out, sizeof(out));
     CHECK(n > 0);
     bl_frame_t g;
@@ -61,7 +61,7 @@ static void t_frame_mac_roundtrip_and_tamper(void) {
 
 static void t_frame_malformed(void) {
     uint8_t out[BL_MAX_MSG];
-    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_PING, 0, 1, 0, NULL};
+    bl_frame_t f = {BL_WIRE_VERSION, BL_MSG_PING, 0, 1, 0, NULL, 0};
     int n = bl_frame_encode(&f, NULL, 0, out, sizeof(out));
     bl_frame_t g;
     /* too short */

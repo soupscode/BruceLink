@@ -129,7 +129,72 @@ static void t_ct_equal(void) {
     CHECK(!bl_ct_equal(a, b, 16));
 }
 
+/* Review 2026-11-23: keys longer than a block, multi-block HKDF output and
+ * the other low-order points had no known-answer test. */
+static void t_hmac_long_key_rfc4231(void) {
+    uint8_t key[131], mac[BL_SHA256_LEN], exp[BL_SHA256_LEN];
+    memset(key, 0xaa, sizeof(key));
+    /* RFC 4231 test case 6: key longer than a block */
+    static const char m6[] = "Test Using Larger Than Block-Size Key - Hash Key First";
+    bl_hmac_sha256(key, sizeof(key), m6, sizeof(m6) - 1, mac);
+    bl_hex2bin("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54", exp, 32);
+    CHECK(memcmp(mac, exp, 32) == 0);
+    /* test case 7: key and data both longer than a block */
+    static const char m7[] =
+        "This is a test using a larger than block-size key and a larger than block-size data. "
+        "The key needs to be hashed before being used by the HMAC algorithm.";
+    bl_hmac_sha256(key, sizeof(key), m7, sizeof(m7) - 1, mac);
+    bl_hex2bin("9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2", exp, 32);
+    CHECK(memcmp(mac, exp, 32) == 0);
+}
+
+static void t_hkdf_long_rfc5869(void) {
+    /* RFC 5869 appendix A.2: 80-byte inputs, 82-byte (three-block) output */
+    uint8_t ikm[80], salt[80], info[80], prk[32], okm[82], exp[82];
+    for(int i = 0; i < 80; i++) {
+        ikm[i] = (uint8_t)i;
+        salt[i] = (uint8_t)(0x60 + i);
+        info[i] = (uint8_t)(0xb0 + i);
+    }
+    bl_hkdf_extract(salt, sizeof(salt), ikm, sizeof(ikm), prk);
+    bl_hex2bin("06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244", exp, 32);
+    CHECK(memcmp(prk, exp, 32) == 0);
+    CHECK_EQ_INT(bl_hkdf_expand(prk, info, sizeof(info), okm, sizeof(okm)), BL_OK);
+    bl_hex2bin(
+        "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c"
+        "59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71"
+        "cc30c58179ec3e87c14c01d5c1f3434f1d87",
+        exp, 82);
+    CHECK(memcmp(okm, exp, 82) == 0);
+}
+
+static void t_x25519_all_low_order_points(void) {
+    /* The seven encodings of points of order 1, 2, 4 and 8 (u = 0, 1, the
+     * two order-8 points, p-1, p, p+1): each gives an all-zero secret. */
+    static const char* const pts[7] = {
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+        "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    };
+    uint8_t out[32], scalar[32], point[32];
+    bl_hex2bin("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", scalar, 32);
+    for(int i = 0; i < 7; i++) {
+        bl_hex2bin(pts[i], point, 32);
+        CHECK_EQ_INT(bl_x25519(out, scalar, point), BL_E_CRYPTO);
+        /* the high bit is ignored (RFC 7748), so it is no way around it */
+        point[31] |= 0x80;
+        CHECK_EQ_INT(bl_x25519(out, scalar, point), BL_E_CRYPTO);
+    }
+}
+
 void run_crypto_tests(void) {
+    RUN(t_hmac_long_key_rfc4231);
+    RUN(t_hkdf_long_rfc5869);
+    RUN(t_x25519_all_low_order_points);
     RUN(t_sha256_nist);
     RUN(t_sha256_streaming);
     RUN(t_hmac_rfc4231);
