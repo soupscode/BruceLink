@@ -6,6 +6,7 @@ Python reference produces byte-identical results for the same inputs.
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -77,16 +78,23 @@ class InteropTests(unittest.TestCase):
         srcs = [str(tool)] + [str(p) for p in core.glob("*.c")]
         if os.environ.get("BL_SKIP_INTEROP") == "1":
             raise unittest.SkipTest("BL_SKIP_INTEROP=1")
-        # $CC if set, else the first C compiler on PATH (Windows has no `cc`;
-        # MinGW gcc and clang do). No compiler is a failure, not a skip.
-        cc = os.environ.get("CC") or next(
-            (c for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
-        if cc is None:
+        # $CC if set (it may carry arguments, e.g. "ccache gcc", as in
+        # tests/c/Makefile), else the first C compiler on PATH, run by the
+        # path found (Windows has no `cc`; MinGW gcc and clang do). No
+        # compiler is a failure, not a skip.
+        cc_env = os.environ.get("CC", "").strip()
+        if cc_env:
+            whole = shutil.which(cc_env) or (cc_env if os.path.isfile(cc_env) else None)
+            cc = [whole] if whole else shlex.split(cc_env, posix=os.name != "nt")
+        else:
+            found = next((shutil.which(c) for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
+            cc = [found] if found else []
+        if not cc:
             raise AssertionError("no C compiler for the C vectors tool: set CC or put cc/gcc/clang on PATH")
         # A tool that does not build is a failure, not a skip: a skipped
         # interop suite hides exactly the drift it exists to catch.
         r = subprocess.run(
-            [cc, "-std=c99", "-O1", "-Wall", "-Werror", f"-I{core}", *srcs, "-o", str(out)],
+            [*cc, "-std=c99", "-O1", "-Wall", "-Werror", f"-I{core}", *srcs, "-o", str(out)],
             capture_output=True, text=True,
         )
         if r.returncode != 0:

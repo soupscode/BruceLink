@@ -191,9 +191,9 @@ static void t_x25519_all_low_order_points(void) {
     }
 }
 
-/* RFC 5869 appendix A.3: zero-length salt and info. Pins the expand loop's
- * first block (T(0) is empty) and the no-info path, so the cppcheck fix in
- * bl_hkdf_expand (2026-11-24) provably keeps the output unchanged. */
+/* RFC 5869 appendix A.3: zero-length salt and info. Covers the NULL-salt
+ * extract, the no-info expand path and the empty T(0) of the first block,
+ * which is the case the cppcheck fix in bl_hkdf_expand touches. */
 static void t_hkdf_empty_salt_info_rfc5869(void) {
     uint8_t ikm[22], prk[32], okm[42], exp[42];
     memset(ikm, 0x0b, sizeof(ikm));
