@@ -71,7 +71,9 @@ key id = H("BLpair1 key id" | psk)[0..1]   (display only)
 | StickS3 | NVS (`Preferences`, namespace `brucelink`) | Not in `bruce.conf` (printed to serial) and not on LittleFS (readable through Bruce's file browser and web UI), the same place Bruce keeps its U2F secrets. Flash encryption is off, so physical access with a USB cable can read it. |
 
 Flashing the StickS3's merged image (offset 0x0) erases NVS and with it the
-pairing; flashing only the app (`firmware.bin` at 0x10000) keeps it.
+pairing. Flashing its three parts (`bootloader.bin` at 0x0, `partitions.bin` at
+0x8000, `firmware.bin` at 0x10000) writes the same bytes except NVS (0x9000),
+so it keeps the pairing and does not depend on what was on the device.
 
 ### On the devices
 

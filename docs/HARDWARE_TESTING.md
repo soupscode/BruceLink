@@ -93,9 +93,17 @@ the same service; a subscribed scanner then receives a `PAIR_COMMIT`, and the
 
 ## 4b. Pairing (ADR 0005)
 
-Needs the step 4 build on the StickS3 and the Flipper app. To keep a pairing
-across StickS3 updates, flash only `firmware.bin` at `0x10000`; the merged
-image at `0x0` erases NVS and with it the pairing.
+Needs the step 4 build on the StickS3 and the Flipper app. The merged image at
+`0x0` erases NVS and with it the pairing. To keep a pairing across StickS3
+updates, flash the three parts instead:
+
+```
+esptool --chip esp32s3 --port <port> write-flash \
+  0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
+```
+
+Not `firmware.bin` alone: on 2026-11-23 the app-only file written by itself
+did not boot (see `TEST_RESULTS.md`).
 
 1. Flipper: **Pair**. Expect the instructions screen; the Flipper advertises.
 2. StickS3: **BruceLink → Pair with Flipper**.

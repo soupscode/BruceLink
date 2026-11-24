@@ -546,6 +546,27 @@ Not yet checked: behaviour when either device goes out of range, the rest of
 Bruce while BruceLink is on. Both devices use the public demo key and the
 link is unencrypted, so this demonstrates the link, not its security.
 
+### 2026-11-23 — `b635b03` app-only image does not boot (owner's StickS3)
+
+The owner flashed `Bruce-1.17-BruceLink-b635b03-m5stack-sticks3-app-only.bin`
+(`firmware.bin`) and the StickS3 did not boot. Not yet known: the offset and
+tool used, the serial output, and whether the merged image of the same build
+boots.
+
+Checked in the cloud: the delivered file is byte-identical to the app inside
+the merged image at `0x10000`; the bootloader and partition table (`factory`
+app at `0x10000`, 0x4E0000 bytes; the app is 0x48DF40) are byte-identical in
+every merged image delivered since the first. So written at `0x10000` over an
+earlier BruceLink merged image, flash would match the merged image except for
+NVS. Code that runs at boot and is new since the last build that ran
+(`ee58380`): the main-menu item's constructor and icon (the first item drawn),
+plus static constructors of the bridge; nothing found that could fail. An
+emulator boot test was not run.
+
+Response: the docs no longer recommend `firmware.bin` alone. To keep NVS,
+flash bootloader, partition table and app at `0x0` / `0x8000` / `0x10000`,
+which needs nothing from what was on the device.
+
 ## Not yet tested (requires the local hardware session)
 
 - The Flipper BLE profile on a radio: advertising, subscription, MTU, notify,

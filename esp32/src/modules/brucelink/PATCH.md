@@ -45,8 +45,11 @@ That is the whole change to Bruce so far: no existing Bruce function is modified
   `bruce_brucelink_hooks_unavailable.cpp` makes every one of them refuse.
 - **Pairing** (ADR 0005): **BruceLink → Pair with Flipper**. The key is kept in
   NVS (`BruceLinkKeyStore`), never in `bruce.conf` or on LittleFS. **Turn on**
-  refuses without one. Flashing the merged image at `0x0`
-  erases NVS and the pairing; flash `firmware.bin` at `0x10000` to keep it.
+  refuses without one. Flashing the merged image at `0x0` erases NVS and the
+  pairing. To keep it, flash the merged image's three parts in one command:
+  `write-flash 0x0 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin`
+  (NVS sits between them, at `0x9000`). `firmware.bin` alone at `0x10000`
+  boots only on top of a BruceLink merged image (same partition table).
 - One BLE stack, one owner: **Turn on** refuses while another Bruce BLE
   feature (BLE API, BadBLE, scanners) has NimBLE initialised, and those features
   will fail or disturb the link if started while BruceLink is on. Turn BruceLink

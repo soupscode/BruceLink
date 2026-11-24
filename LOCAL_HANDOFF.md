@@ -131,7 +131,8 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 - BLE + Wi-Fi-promiscuous coexistence is unmanaged upstream (no `esp_coex`).
 - Full raw pcap is SD-gated on a bare StickS3 (by design, refused).
 - The StickS3 keeps the pairing in NVS; flashing the merged image at `0x0`
-  erases it (flash `firmware.bin` at `0x10000` to keep it). The Flipper's key
+  erases it (flash bootloader / partitions / firmware at 0x0 / 0x8000 / 0x10000
+  to keep it; not `firmware.bin` alone, which failed to boot once). The Flipper's key
   file only decrypts on the Flipper that wrote it.
 - A reply that arrives after its request timed out is shown as if it answered
   the next request (no request id yet; M4.7).
