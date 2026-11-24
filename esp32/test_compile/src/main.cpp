@@ -56,6 +56,21 @@ public:
     }
     void jobCancel() override {
     }
+    int captureFileCount() override {
+        return 0;
+    }
+    bool captureFileAt(int, char*, size_t, uint32_t*) override {
+        return false;
+    }
+    bool captureFileInfo(const char*, uint32_t*, uint32_t*) override {
+        return false;
+    }
+    int captureFileRead(const char*, uint32_t, uint8_t*, size_t) override {
+        return -1;
+    }
+    bool captureFileDelete(const char*) override {
+        return false;
+    }
     bool captureBackend(const bl_capture_backend_t** be, void** ctx) override {
         *be = &STUB_CAP;
         *ctx = nullptr;

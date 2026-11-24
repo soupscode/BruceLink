@@ -778,6 +778,11 @@ Expected on the stick (not measured): about 46 kB more internal heap at boot
 than `3fac5b5`, on top of NimBLE's buffers in PSRAM. To check:
 `HARDWARE_TESTING.md` step 4a.
 
+### 2026-11-23 — RAM-trim build on the owner's devices (`cb11f31`)
+
+- Owner: "all is working well". Which checks of step 4a were run was not
+  itemized, and no memory figures were reported.
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see

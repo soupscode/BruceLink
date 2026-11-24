@@ -2,6 +2,24 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — Handshake capture and capture files (2026-11-23)
+
+Builds on both devices; host-tested; **not yet run on hardware**. Flipper app
+0.7 (the StickS3 build must match).
+
+- **Handshake capture as a job** (ADR 0006 amendment): Bruce's sniffer in
+  "handshakes only" mode with BLE off, as a listening station (nothing
+  transmitted), on one channel or hopping, for 30 s to 5 min or until a button
+  on the stick. The result lists the counts and each new or grown file.
+- **Capture files** (`bl_files`, messages `CAP_LIST`, `CAP_FILE_INFO`,
+  `CAP_XFER_DATA`, `CAP_DELETE`): list the StickS3's handshake pcaps, download
+  one to the Flipper's SD card (448-byte chunks, resumes after a dropped link,
+  CRC-32 checked, kept only if it matches), delete one. Only
+  `/BrucePCAP/handshakes/*.pcap` can be named; a bridge with the demo key
+  serves none.
+- Flipper: **Handshake Capture** (duration, channel, start) and **Captures**
+  (list, download, delete) screens.
+
 ## [Unreleased] — RAM trims in Bruce (2026-11-23, owner's choice)
 
 The owner chose to drop the Bruce features the RAM review listed. Lines

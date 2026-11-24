@@ -145,11 +145,10 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. Flash the review-fix build on **both** devices (the handshake changed) and
-   re-run steps 4b (pairing, then connecting straight after it) and 5b (the
-   job; report the `Took` / scan / boot figures).
-2. Handshake capture as a job (M5.2), the owner's next pick, then getting the
-   file to the Flipper. Then BLE tools as jobs.
+1. Handshake capture and capture files on hardware (`HARDWARE_TESTING.md`
+   steps 7 and 8, an AP and client you own). The owner reported the RAM-trim
+   build (`cb11f31`) as "all working well" (2026-11-23).
+2. Then BLE tools as jobs.
 3. Measure the RAM trims on the stick (`HARDWARE_TESTING.md` step 4a) and
    check Bruce's remaining features.
 4. Link confidentiality (M4.6): AEAD with the session keys.

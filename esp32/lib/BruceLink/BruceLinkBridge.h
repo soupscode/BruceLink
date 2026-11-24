@@ -21,6 +21,7 @@
 extern "C" {
 #include "bl_capability.h"
 #include "bl_capture.h"
+#include "bl_files.h"
 #include "bl_job.h"
 #include "bl_pair.h"
 #include "bl_reasm.h"
@@ -66,6 +67,22 @@ public:
      * link dropping first): forget the restart request. The bridge has
      * already cleared the record. */
     virtual void jobCancel() = 0;
+    /* Capture files (bl_files.h): the pcaps Bruce's sniffer left on the
+     * StickS3, by bare name. Every name the bridge passes has passed
+     * bl_file_name_ok(); the backend lists only names that pass it too, and
+     * only from its capture directory. No radio is involved. */
+    /* How many files there are (at most BL_FILE_LIST_MAX). */
+    virtual int captureFileCount() = 0;
+    /* The index-th file's name (NUL-terminated) and size, in a stable
+     * order while nothing changes; false past the end. */
+    virtual bool captureFileAt(int index, char* name, size_t cap, uint32_t* size) = 0;
+    /* Size and CRC-32 (bl_crc32) of a file; false if there is no such file. */
+    virtual bool captureFileInfo(const char* name, uint32_t* size, uint32_t* crc) = 0;
+    /* Read up to len bytes at offset: the number read (0 at the end), or
+     * <0 if there is no such file or it cannot be read. */
+    virtual int captureFileRead(const char* name, uint32_t offset, uint8_t* buf, size_t len) = 0;
+    /* Delete a file; false if there is no such file or it stayed. */
+    virtual bool captureFileDelete(const char* name) = 0;
     /* Provide the capture backend vtable + context; false if this build has
      * no capture support (capture requests then report "disabled"). */
     virtual bool captureBackend(const bl_capture_backend_t** be, void** ctx) = 0;
@@ -218,6 +235,11 @@ private:
     void onPairFrame(const uint8_t* frame, size_t len);
     void handleJobStart(const bl_frame_t* f);
     void handleJobResult(const bl_frame_t* f);
+    void handleFileList(const bl_frame_t* f);
+    void handleFileInfo(const bl_frame_t* f);
+    void handleFileRead(const bl_frame_t* f);
+    void handleFileDelete(const bl_frame_t* f);
+    bool fileOpsAllowed(); /* sends the refusal when not */
     void cancelPendingJob(); /* e-stop / link loss before commitJob() */
 
     uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */

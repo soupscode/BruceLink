@@ -29,11 +29,11 @@ out.
 | Status `0x0002` | globals `wifiConnected`, `sdcardMounted` (`globals.h`) | Yes | Impl | Yes | — | No | Passive |
 | Wi-Fi scan `0x0010` (job) | `WiFi.mode(WIFI_MODE_STA)` + `WiFi.scanNetworks` as Bruce's own scan (`wifi_common.cpp`) | Yes | Impl² | Yes¹ | Yes (2026-11-23, as a job) | No | Passive |
 | BLE scan `0x0011` | `getScan()->getResults` (model: `native_bleScan`, `ble_js.cpp:5`) | Likely | Design | — | — | No | Passive |
-| Sniff: EAPOL handshake `0x0020` | `isItEAPOL`/`saveHandshake` (`sniffer.cpp:221,300`) → LittleFS | Likely | Refused³ | Yes | — | No | Passive |
+| Sniff: EAPOL handshake `0x0020` (job) | `isItEAPOL`/`saveHandshake` (`sniffer.cpp:221,300`) → LittleFS | Likely | Impl³ | Yes¹ | — | No | Passive |
 | Sniff: full raw pcap `0x0021` | `sniffer_full_mode_available` = `sdDetected` (`sniffer.cpp:869`) | **No** (SD-gated) | Refused³ | Yes | — | **SD module** | Passive |
-| PCAP list `0x0022` | `ls`/`stat` (`storage_commands`), `/listfiles` WebUI | Yes | Design | — | — | No | Passive |
-| PCAP transfer `0x0023` | WebUI `/file` download only; **no binary serial export** | Partial | Design⁴ | Yes⁵ | — | No | Passive |
-| PCAP delete `0x0024` | `rm`/`deleteFromSd` | Yes | Design | — | — | No | Passive |
+| PCAP list `0x0022` | LittleFS directory of `/BrucePCAP/handshakes` | Yes | Impl⁴ | Yes | — | No | Passive |
+| PCAP transfer `0x0023` | LittleFS read (upstream has only the WebUI download) | Yes | Impl⁴ | Yes⁵ | — | No | Passive |
+| PCAP delete `0x0024` | `LittleFS.remove` | Yes | Impl⁴ | Yes | — | No | Passive |
 | PMKID capture | **Not in upstream** | No | — | — | — | — | — |
 | Deauth `0x0040` | `send_raw_frame`→`esp_wifi_80211_tx` (`wifi_atks.cpp:140`); **ungated** | Likely | Refused⁶ | Yes⁷ | — | No | **Active-RF** |
 | Beacon spam `0x0041` | `beaconAttack` (`wifi_atks.cpp:825`) | Likely | Design⁶ | — | — | No | **Active-RF** |
@@ -54,13 +54,17 @@ out.
    fetched with `JOB_RESULT_REQ`. Host-tested end to end; the full cycle ran on
    the owner's devices (2026-11-23).
 3. `bl_capture` session manager + mock backend fully simulated (lifecycle, gated
-   raw mode, start/poll failure, stop on link loss and e-stop). On the StickS3
-   capture is **refused** on the live link: it needs Wi-Fi, and nothing uses
-   Wi-Fi while BLE is up (ADR 0006). Handshake capture is to run as a job
-   (task M5.2), calling Bruce's sniffer at boot.
-4. Resumable `CAP_XFER_*` designed; bulk transfer deliberately **off** the live
-   BLE control link (ADR 0003). Transport choice (BLE vs USB vs Wi-Fi) pending
-   hardware throughput/coexistence measurement.
+   raw mode, start/poll failure, stop on link loss and e-stop); not used on the
+   StickS3, where inline capture is refused (nothing uses Wi-Fi while BLE is up,
+   ADR 0006). Handshake capture runs as a **job**: Bruce's sniffer at boot with
+   BLE off, as a listening station, until `max_s` or a button
+   (`BruceLinkJobs.cpp`). The bridge side (limits, channel argument) is
+   host-tested; the job itself is not host-testable.
+4. `bl_files` (shared core): list, info + CRC-32, stateless chunked reads, delete,
+   and the Flipper's download tracker (resume after a dropped link, CRC check).
+   Over the live BLE link: handshake pcaps are a few kB. Names are checked on
+   both devices; only `/BrucePCAP/handshakes/*.pcap` can be named. Host-tested
+   end to end through the bridge with an in-memory backend.
 5. PCAP header bytes and CRC32 verified against the C core and an independent
    Python implementation (`tests/test_protocol.py`).
 6. BruceLink adds **no** transmit code. Active ops are to forward to Bruce's

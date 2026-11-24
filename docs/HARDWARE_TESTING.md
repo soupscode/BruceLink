@@ -225,22 +225,36 @@ logs `[BruceLink] job: ...` with the memory figures.
 - ESTOP from the Flipper → STATUS shows `estop:1`.
 - Link loss → bridge e-stops and stops any capture (`onDisconnect`).
 
-## 7. Capture (passive)
+## 7. Handshake capture as a job (passive; an AP and client you own)
 
-- `CAP_START` mode 0 (handshake) on a known channel of an **owned** AP;
-  reconnect a client to produce a 4-way handshake; STATUS counts rise.
-- `CAP_STOP`; confirm a `/BrucePCAP/handshakes/HS_*.pcap` exists on LittleFS and
-  opens in Wireshark (linktype 105).
-- `CAP_START` mode 1 (raw) on a bare StickS3 must be **refused**
-  (`no_resource`) — SD-gated upstream.
-- Fill LittleFS: STATUS must surface the error and capture must stop.
+Needs both devices on the same build (Flipper 0.7) and a paired, connected link.
 
-## 8. Coexistence & transfer
+1. Flipper: **Handshake Capture**: Duration 1 min, Channel = your AP's channel,
+   **Start capture**. Expect the job screen as with the Wi-Fi scan; the StickS3
+   restarts and shows "Handshake capture" with the channel, `HS` / `EAPOL`
+   counts, packets and seconds left.
+2. While it runs, reconnect a client to your AP (toggle its Wi-Fi). `EAPOL`
+   should rise; `HS` once a full handshake is in.
+3. At the end the StickS3 restarts and the Flipper shows the counts and the new
+   file, e.g. `HS_<MAC>_<SSID>.pcap 1234 B new`. Report the `Took` figure.
+4. Again with Channel **Hop** and 2 min: counts are lower per channel; note them.
+5. Press a button on the stick mid-capture: outcome `stopped on the stick`,
+   with what was captured so far.
+6. LittleFS full: the job ends early with "LittleFS is full" (or refuses to
+   start). Delete files from the Flipper (step 8) to recover.
 
-- Not applicable any more: capture runs as a job with BLE off (ADR 0006),
-  never while the link is up.
-- Transfer a pcap over BLE; verify CRC-32 matches the device-side value; drop
-  the link mid-transfer and confirm resume from offset.
+## 8. Capture files on the Flipper
+
+1. **Captures**: the list shows each file by SSID (or MAC) and size.
+2. Pick one, **Download**: progress in bytes, then "Saved to the SD card ...
+   CRC-32 checked". On a PC the file is in `apps_data/brucelink/captures/` and
+   opens in Wireshark (linktype 105) with the EAPOL frames.
+3. Start a larger download and walk out of range (or turn BruceLink off and
+   on): it continues where it stopped once the link is back (Connect again if
+   needed), and still ends with the CRC check.
+4. **Delete** a file (confirm with Yes): it disappears from the list on the next
+   **Captures**.
+5. Capture and transfer never overlap: the capture runs with BLE off.
 
 ## 9. Active-RF gate (authorized lab only)
 

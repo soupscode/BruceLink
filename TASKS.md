@@ -26,7 +26,7 @@ Status keys: ✅ done+verified · 🟡 done, needs hardware · 🔵 in progress 
 | M4.7 | Match replies to requests | 🟡 host-tested | Request tag in header byte 5, echoed by the StickS3; the Flipper drops a reply whose tag is not the pending request's (`t_client_late_response_dropped`). Needs both devices updated together |
 | M4.4 | BLE discovery screen | ⬜ | Lists nearby BruceLink bridges |
 | M5.1 | Bridge builds inside Bruce: module, glue, installer | 🟡 builds in Bruce `1.17`; flashed and linked with the Flipper (owner-reported: Device Info, Capabilities, off/on OK); Wi-Fi scan works over the air (ADR 0004) | `tools/install_into_bruce.py` + `pio run -e m5stack-sticks3`; menu toggle starts/stops the bridge on the device; device info + Wi-Fi scan over the air |
-| M5.2 | Handshake capture as a job | ⬜ | Run Bruce's sniffer (handshakes only) at boot with BLE off, bounded by `max_s` and the stick's button, and report what it saved; then get the file to the Flipper. Capture and active ops are refused on the live link until then |
+| M5.2 | Handshake capture as a job | 🟡 built, not yet run | Bruce's sniffer (handshakes only) at boot with BLE off, listening station, fixed channel or hopping, bounded by `max_s` and the stick's button; result lists new/grown files. HARDWARE_TESTING step 7 |
 | M5.5 | ~~Fit Wi-Fi next to BLE on the StickS3~~ | superseded by M5.7 | ADR 0004's reduced scan worked on hardware with 1.8 kB to spare; the owner chose one radio at a time instead (ADR 0006) |
 | M5.7 | **Jobs: one radio at a time** (ADR 0006) | 🟡 Wi-Fi scan cycle works on hardware and is "much faster" after skipping the boot animation (owner-reported); figures not yet reported | Wi-Fi scan as a job: accept → restart → scan with BLE off → restart → BruceLink back → Flipper fetches. HARDWARE_TESTING step 5b. Next: measure the restart time, then move capture (M5.2) and BLE tools onto jobs; active jobs only with ADR 0006's rules |
 | M5.6 | Re-enabling BruceLink without a reboot | 🟡 | After BruceLink off (and Bruce's Wi-Fi used) the largest DMA block stays ~32 kB and Bruce's 48 kB BLE guard refuses. Turn on now offers "restart into BruceLink" (one restart, then BruceLink starts by itself); NimBLE's buffers in PSRAM may also leave less fragmentation. Built, not yet run |
@@ -47,11 +47,11 @@ Phase 1 BLE; does not interrupt foundation work.
 | P2.3 | PCAP writer (linktype 105) + CRC-32 | ✅ | Byte-exact + Python interop |
 | P2.4 | Generalized command adapter (CMD_REQ) | 🟡 | Bridge dispatch; add features via registry |
 | P2.5 | Remote safety gate (connection-level) | ✅ host | default-deny, one specific target, rate (no wrap), e-stop, link-loss, cleared only by a new session, refund; mutation-checked 2026-11-23. Nothing transmits yet |
-| P2.6 | Sniffer/EAPOL via Bruce (handshake mode) | ⬜ | Handshake pcap on LittleFS on HW |
-| P2.7 | Resumable PCAP transfer + integrity | ⬜ | Resume from offset; CRC verified |
+| P2.6 | Sniffer/EAPOL via Bruce (handshake mode) | 🟡 | As M5.2. Handshake pcap on LittleFS on HW |
+| P2.7 | Resumable PCAP transfer + integrity | 🟡 host-tested | `bl_files`: stateless reads, resume after a drop (same size + CRC), CRC-32 at the end, strict names. HARDWARE_TESTING step 8 |
 | P2.8 | Transfer channel decision (BLE/USB/Wi-Fi) | ⬜ | Throughput + coexistence measured on HW |
 | P2.9 | BLE/Wi-Fi coexistence evaluation | ⬜ | Loss/drop numbers recorded |
-| P2.10 | Capture UI on Flipper | ⬜ | Start/stop/status/list screens |
+| P2.10 | Capture UI on Flipper | 🟡 builds | Handshake Capture (duration, channel), Captures (list, download to SD, delete) |
 | P2.11 | Active-RF forwarding (authorized lab) | ⬜ | Must run as a job (ADR 0006) with the active-job rules implemented and tested (gate at acceptance, duration cap, stop button, no re-run). Today refused; the Bruce transmit hook is a placeholder |
 
 ## Blockers
@@ -62,5 +62,6 @@ Phase 1 BLE; does not interrupt foundation work.
 
 ## Milestone priority changes from the scope amendment
 
-None to Phase 1 ordering. The BLE link (M4.2) runs on hardware; the owner's
-next pick after the review is handshake capture as a job (M5.2 / P2.6).
+None to Phase 1 ordering. The BLE link (M4.2) runs on hardware. Handshake
+capture as a job and the file transfer (M5.2, P2.6, P2.7, P2.10) are built and
+waiting for their first hardware run.

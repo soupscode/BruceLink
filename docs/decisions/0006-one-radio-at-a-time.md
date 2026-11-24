@@ -166,3 +166,23 @@ active jobs:
 - **Capture and active ops** are refused on the live link; they are to run as
   jobs (capture first, task M5.2). Active jobs stay refused (now host-tested,
   `t_active_job_refused`) until the rules above are implemented and tested.
+
+## Amendment — handshake capture as a job (2026-11-23)
+
+The second job. `wifi.sniff.handshake` (0x0020) is flagged `JOB`: limits 60 s
+by default, 300 s at most, one argument byte (channel: 0 hops over all
+channels, 400 ms each; 1–13 stays on one). At boot with BLE off the StickS3
+runs Bruce's own sniffer: its promiscuous callback, its writer task and its
+"handshakes only" mode, so the files are exactly Bruce's
+(`/BrucePCAP/handshakes/HS_<MAC>[_<SSID>].pcap`, one append-and-close per
+write, so the restart after the job loses nothing written). Two deliberate
+differences from Bruce's sniffer screen: the radio is a **station that only
+listens** (Bruce's starts a hidden AP, which transmits beacons), and the job
+ends at `max_s` or a button. It is passive: nothing is transmitted, so the
+active-job rules above do not apply; Bruce's "deauth while sniffing" is not
+offered.
+
+Reaching `max_s` is the normal end (`done`); a button gives `stopped on the
+stick`; LittleFS running out ends it early with a note. The result lists every
+new or grown file, which the Flipper then lists and downloads over the live
+link (`shared/protocol.md`, "Capture files"): reading a file needs no radio.

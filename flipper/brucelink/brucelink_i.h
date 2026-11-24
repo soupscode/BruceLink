@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../../shared/brucelink_core/src/bl_client.h"
+#include "../../shared/brucelink_core/src/bl_files.h"
 #include "../../shared/brucelink_core/src/bl_job.h"
 #include "../../shared/brucelink_core/src/bl_pair.h"
 #include "bl_keyfile.h"
@@ -17,6 +18,7 @@
 #include <gui/modules/variable_item_list.h>
 #include <gui/modules/widget.h>
 #include <notification/notification_messages.h>
+#include <storage/storage.h>
 
 #define BL_TEXT_MAX 512
 
@@ -25,6 +27,9 @@ typedef enum {
     BlViewText,
     BlViewSettings,
     BlViewPair, /* pairing / forget screens; Back is handled by the app */
+    BlViewCapture, /* handshake capture: duration, channel, start */
+    BlViewFiles, /* the StickS3's capture files */
+    BlViewFile, /* one file: download / delete */
 } BlViewId;
 
 /* Custom events: widget buttons are only allowed to post these; the
@@ -35,6 +40,10 @@ typedef enum {
     BlEvtPairNo,
     BlEvtForgetYes,
     BlEvtForgetNo,
+    BlEvtFileDownload,
+    BlEvtFileDelete,
+    BlEvtFileDeleteYes,
+    BlEvtFileDeleteNo,
 } BlCustomEvent;
 
 /* What the text view is currently showing, so asynchronous updates
@@ -47,7 +56,20 @@ typedef enum {
     BlScreenPairing,
     BlScreenForget,
     BlScreenJob, /* a job on the StickS3 (ADR 0006) */
+    BlScreenFiles, /* listing the capture files */
+    BlScreenDelete, /* deleting one */
+    BlScreenXfer, /* a download */
 } BlScreen;
+
+#define BL_APP_FILES_MAX 32
+
+/* A request that is neither a job's nor a download's (those track their
+ * own), so its reply finds its way back. */
+typedef enum {
+    BlOpNone,
+    BlOpList,
+    BlOpDelete,
+} BlPendingOp;
 
 typedef struct {
     Gui* gui;
@@ -95,6 +117,29 @@ typedef struct {
     uint32_t job_drawn_s; /* elapsed seconds last drawn */
     char job_text[BL_JOB_RESULT_MAX + 64]; /* the finished job's screen */
     bool job_unseen; /* finished while its screen was not up */
+
+    /* Handshake capture setup */
+    VariableItemList* capture_setup;
+    uint8_t cap_duration_idx;
+    uint8_t cap_channel_idx; /* 0 = hop */
+
+    /* Capture files on the StickS3 (bl_files) */
+    Submenu* files_menu;
+    Widget* file_widget;
+    bl_file_entry_t files[BL_APP_FILES_MAX];
+    size_t files_count;
+    uint32_t file_sel;
+    bool file_confirm; /* the file screen asks "delete?" */
+    BlPendingOp pending_op;
+    /* The download: followed on every tick, like a job. Written to
+     * <path>.part, renamed when the CRC matches. */
+    bl_xferc_t xfer;
+    Storage* storage;
+    File* xfer_file;
+    char xfer_path[96];
+    bool xfer_write_failed;
+    bool xfer_closed; /* the transport stopped under it */
+    bool xfer_unseen;
 
     BlScreen screen;
     const char* req_title; /* title of the request being shown */

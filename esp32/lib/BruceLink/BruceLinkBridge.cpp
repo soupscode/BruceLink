@@ -21,16 +21,21 @@ static const bl_capability_desc_t kCaps[] = {
     {BL_CAP_DEVICE_INFO, "device.info", BL_OP_PASSIVE, 0, 1},
     {BL_CAP_STATUS, "status", BL_OP_PASSIVE, 0, 1},
     {BL_CAP_WIFI_SCAN, "wifi.scan", BL_OP_PASSIVE, BL_CAP_F_JOB | BL_CAP_F_HW_UNVERIFIED, 1},
+    /* A job (ADR 0006): Bruce's sniffer, handshakes only, with BLE off. */
     {BL_CAP_SNIFF_HANDSHAKE,
      "wifi.sniff.handshake",
      BL_OP_PASSIVE,
-     BL_CAP_F_HW_UNVERIFIED,
+     BL_CAP_F_JOB | BL_CAP_F_HW_UNVERIFIED,
      1},
     {BL_CAP_SNIFF_RAW,
      "wifi.sniff.raw",
      BL_OP_PASSIVE,
      BL_CAP_F_REQUIRES_EXT_HW | BL_CAP_F_HW_UNVERIFIED,
      1},
+    /* Capture files on the live link: no radio (bl_files.h). */
+    {BL_CAP_PCAP_LIST, "pcap.list", BL_OP_PASSIVE, BL_CAP_F_HW_UNVERIFIED, 1},
+    {BL_CAP_PCAP_XFER, "pcap.transfer", BL_OP_PASSIVE, BL_CAP_F_HW_UNVERIFIED, 1},
+    {BL_CAP_PCAP_DELETE, "pcap.delete", BL_OP_PASSIVE, BL_CAP_F_HW_UNVERIFIED, 1},
     {BL_CAP_DEAUTH,
      "wifi.deauth",
      BL_OP_ACTIVE,
@@ -50,7 +55,18 @@ struct JobLimits {
 static const JobLimits kJobLimits[] = {
     /* A full scan takes a few seconds; the limit only guards a hang. */
     {BL_CAP_WIFI_SCAN, 20, 60, 0},
+    /* Captures until max_s (or a button on the stick); one argument, the
+     * channel: 0 = hop over all of them, else 1..13. */
+    {BL_CAP_SNIFF_HANDSHAKE, 60, 300, 1},
 };
+
+/* What each job's argument bytes may be (lengths are checked above). */
+static bool jobArgsOk(uint16_t cap_id, const uint8_t* args, size_t len) {
+    switch(cap_id) {
+    case BL_CAP_SNIFF_HANDSHAKE: return len == 0 || args[0] <= 13;
+    default: return true;
+    }
+}
 
 static const JobLimits* jobLimits(uint16_t cap_id) {
     for(const JobLimits& l : kJobLimits)
@@ -318,6 +334,10 @@ void BruceLinkBridge::handleRequest(const bl_frame_t* f) {
     case BL_MSG_CMD_REQ: handleCommand(f); break;
     case BL_MSG_JOB_START: handleJobStart(f); break;
     case BL_MSG_JOB_RESULT_REQ: handleJobResult(f); break;
+    case BL_MSG_CAP_LIST: handleFileList(f); break;
+    case BL_MSG_CAP_FILE_INFO: handleFileInfo(f); break;
+    case BL_MSG_CAP_XFER_DATA: handleFileRead(f); break;
+    case BL_MSG_CAP_DELETE: handleFileDelete(f); break;
     case BL_MSG_CAP_START: handleCaptureStart(f); break;
     case BL_MSG_CAP_STOP:
         bl_capture_stop(&capture_);
@@ -421,7 +441,7 @@ void BruceLinkBridge::handleJobStart(const bl_frame_t* f) {
         return;
     }
     if(max_s == 0) max_s = lim->default_s;
-    if(max_s > lim->max_s || args_len > lim->max_args) {
+    if(max_s > lim->max_s || args_len > lim->max_args || !jobArgsOk(cap_id, args, args_len)) {
         sendError(BL_ERR_BAD_ARG);
         return;
     }
@@ -490,6 +510,122 @@ void BruceLinkBridge::handleJobResult(const bl_frame_t* f) {
         return;
     }
     sendSealed(BL_MSG_JOB_RESULT, BL_FLAG_RESPONSE, out, (uint16_t)n);
+}
+
+/* ---- capture files (bl_files.h) ------------------------------------ */
+
+/* Reading files needs no radio, but a capture holds handshakes that can be
+ * cracked: a session made with the public demo key gets none of them. */
+bool BruceLinkBridge::fileOpsAllowed() {
+    if(demo_key_) {
+        sendError(BL_ERR_NOT_AUTHORIZED);
+        return false;
+    }
+    return true;
+}
+
+/* A request's file name, checked and NUL-terminated; false (and BAD_ARG
+ * sent) if it is not one the StickS3 may serve. */
+static bool takeName(const char* name, size_t len, char out[BL_FILE_NAME_MAX + 1]) {
+    if(!bl_file_name_ok(name, len)) return false; /* the parsers already checked; again here */
+    memcpy(out, name, len);
+    out[len] = '\0';
+    return true;
+}
+
+void BruceLinkBridge::handleFileList(const bl_frame_t* f) {
+    if(!fileOpsAllowed()) return;
+    uint8_t start = 0;
+    if(bl_files_parse_list_req(f->payload, f->payload_len, &start) != BL_OK) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    int count = backend_->captureFileCount();
+    if(count < 0) count = 0;
+    if(count > (int)BL_FILE_LIST_MAX) count = (int)BL_FILE_LIST_MAX;
+    uint8_t out[BL_MAX_PAYLOAD];
+    size_t len = 0;
+    bl_files_list_begin((uint8_t)count, start, out, sizeof(out), &len);
+    /* A page covers indexes [start, start + BL_FILE_LIST_PAGE); a name the
+     * backend should not have listed is left out, not sent. */
+    for(int i = start; i < count && i < (int)start + (int)BL_FILE_LIST_PAGE; i++) {
+        char name[BL_FILE_NAME_MAX + 1];
+        uint32_t size = 0;
+        memset(name, 0, sizeof(name));
+        if(!backend_->captureFileAt(i, name, sizeof(name), &size)) break;
+        name[BL_FILE_NAME_MAX] = '\0';
+        (void)bl_files_list_add(name, strlen(name), size, out, sizeof(out), &len);
+    }
+    sendSealed(BL_MSG_CAP_LIST, BL_FLAG_RESPONSE, out, (uint16_t)len);
+}
+
+void BruceLinkBridge::handleFileInfo(const bl_frame_t* f) {
+    if(!fileOpsAllowed()) return;
+    const char* nm = nullptr;
+    size_t nl = 0;
+    char name[BL_FILE_NAME_MAX + 1];
+    if(bl_files_parse_name(f->payload, f->payload_len, &nm, &nl) != BL_OK || !takeName(nm, nl, name)) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    uint32_t size = 0, crc = 0;
+    if(!backend_->captureFileInfo(name, &size, &crc)) {
+        sendError(BL_ERR_NOT_FOUND);
+        return;
+    }
+    uint8_t out[16 + BL_FILE_NAME_MAX];
+    const int n = bl_files_encode_info(size, crc, name, nl, out, sizeof(out));
+    if(n < 0) {
+        sendError(BL_ERR_INTERNAL);
+        return;
+    }
+    sendSealed(BL_MSG_CAP_FILE_INFO, BL_FLAG_RESPONSE, out, (uint16_t)n);
+}
+
+void BruceLinkBridge::handleFileRead(const bl_frame_t* f) {
+    if(!fileOpsAllowed()) return;
+    uint32_t offset = 0;
+    uint16_t max_len = 0;
+    const char* nm = nullptr;
+    size_t nl = 0;
+    char name[BL_FILE_NAME_MAX + 1];
+    if(bl_files_parse_read_req(f->payload, f->payload_len, &offset, &max_len, &nm, &nl) != BL_OK ||
+       !takeName(nm, nl, name)) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    uint8_t out[4 + BL_FILE_CHUNK_MAX];
+    const int got = backend_->captureFileRead(name, offset, out + 4, max_len);
+    if(got < 0) {
+        sendError(BL_ERR_NOT_FOUND);
+        return;
+    }
+    if((size_t)got > max_len) {
+        sendError(BL_ERR_INTERNAL); /* a backend that overran: send nothing of it */
+        return;
+    }
+    const int n = bl_files_encode_data_head(offset, (size_t)got, out, sizeof(out));
+    if(n < 0) {
+        sendError(BL_ERR_INTERNAL);
+        return;
+    }
+    sendSealed(BL_MSG_CAP_XFER_DATA, BL_FLAG_RESPONSE, out, (uint16_t)n);
+}
+
+void BruceLinkBridge::handleFileDelete(const bl_frame_t* f) {
+    if(!fileOpsAllowed()) return;
+    const char* nm = nullptr;
+    size_t nl = 0;
+    char name[BL_FILE_NAME_MAX + 1];
+    if(bl_files_parse_name(f->payload, f->payload_len, &nm, &nl) != BL_OK || !takeName(nm, nl, name)) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    if(!backend_->captureFileDelete(name)) {
+        sendError(BL_ERR_NOT_FOUND);
+        return;
+    }
+    sendSealed(BL_MSG_CAP_DELETE, BL_FLAG_RESPONSE, nullptr, 0);
 }
 
 void BruceLinkBridge::handleActiveOp(

@@ -111,13 +111,14 @@ key id = SHA256("BLpair1 key id" ‖ psk)[0..1]          (display only)
 | 0x20/0x21 | CMD_REQ / CMD_RESP | — | `[u16 cap_id][args]` / result text |
 | 0x22/0x23 | JOB_START / JOB_ACCEPTED | C→P/P→C | jobs (below) |
 | 0x24/0x25 | JOB_RESULT_REQ / JOB_RESULT | C→P/P→C | jobs (below) |
-| 0x40 | CAP_START | C→P | `[u8 mode][u8 channel]` |
+| 0x40 | CAP_START | C→P | `[u8 mode][u8 channel]` (refused on the StickS3: capture runs as a job) |
 | 0x41 | CAP_STOP | C→P | — |
 | 0x42 | CAP_STATUS | C→P | — |
-| 0x43 | CAP_LIST | C→P | — (pcap file listing) |
-| 0x44 | CAP_FILE_INFO | P→C | name, size, CRC-32 |
-| 0x45/46/47 | CAP_XFER_BEGIN / DATA / END | — | resumable transfer w/ offset |
-| 0x48 | CAP_DELETE | C→P | file id |
+| 0x43 | CAP_LIST | C→P, P→C | capture files, a page at a time (below) |
+| 0x44 | CAP_FILE_INFO | C→P, P→C | name → size, CRC-32 (below) |
+| 0x45 / 0x47 | CAP_XFER_BEGIN / END | — | reserved (reads are stateless) |
+| 0x46 | CAP_XFER_DATA | C→P, P→C | read at an offset (below) |
+| 0x48 | CAP_DELETE | C→P, P→C | name → empty (below) |
 | 0x7E | ESTOP | C→P | — (abort active ops + capture; also auto on link loss) |
 | 0x7F | ERROR | P→C | `[u16 wire_err]` |
 
@@ -206,6 +207,51 @@ gate (ADR 0003); `REQUIRES_TARGET` ones must name a BSSID (no broadcast).
   notifications (ADR 0001 §6).
 
 ## Capture
+
+**Handshake capture is a job** (ADR 0006): `JOB_START` with cap `0x0020`
+(`wifi.sniff.handshake`), `max_s` 1–300 (0: 60), one argument byte, the channel:
+0 hops over all channels (400 ms each), 1–13 stays on one. The StickS3 runs
+Bruce's own sniffer in "handshakes only" mode with BLE off, as a station that
+only listens (nothing is transmitted), until `max_s` or a button on the stick.
+Bruce writes each AP's EAPOL frames to
+`/BrucePCAP/handshakes/HS_<MAC>[_<SSID>].pcap` on LittleFS. Outcome `done` at
+`max_s`, `stopped on the stick` for a button; either way the result text gives
+the handshake / EAPOL / packet counts, the channel, the time, and each new or
+grown file with its size.
+
+### Capture files
+
+Reading a file needs no radio, so these run on the live link. Every message is
+a request (C→P) and its response (P→C, RESPONSE flag) of the same type; all
+integers little-endian. Code and tests: `bl_files.{h,c}`.
+
+| Message | Request | Response |
+|---|---|---|
+| `CAP_LIST` | `[u8 start]` | `[u8 total][u8 start][u8 count]` then `count` × `[u32 size][u8 name_len][name]` |
+| `CAP_FILE_INFO` | `[u8 name_len][name]` | `[u32 size][u32 crc32][u8 name_len][name]` |
+| `CAP_XFER_DATA` | `[u32 offset][u16 max_len][u8 name_len][name]` | `[u32 offset][data]`, data ≤ `max_len` ≤ 448 |
+| `CAP_DELETE` | `[u8 name_len][name]` | empty |
+
+- **Names** are bare file names, never paths. Both devices accept only
+  `[A-Za-z0-9._-]`, 1–63 bytes, not starting with `.`, no `..`, ending in
+  `.pcap` (`bl_file_name_ok`): exactly what Bruce's sniffer writes, and nothing
+  outside its capture directory can be named. The StickS3 lists only such
+  files, and only from `/BrucePCAP/handshakes`.
+- **Paging.** A `CAP_LIST` page covers indexes `[start, start + 7)` of `total`
+  files; ask again with `start + 7`. A page can hold fewer than 7 entries if a
+  file is skipped. `total` ≤ 255.
+- **Download.** Ask for the info, then read from offset 0 in chunks; each read
+  is stateless, so after a dropped link the Flipper asks for the info again and,
+  if size and CRC are unchanged, continues from where it was. When the last byte
+  is in, the CRC-32 (the pcap writer's, `bl_pcap.h`) of the received bytes must
+  equal the info's. The Flipper writes `<name>.part` under
+  `/ext/apps_data/brucelink/captures/` and renames it only then.
+- **Errors:** `bad_arg` (malformed or a name that fails the check, `max_len` 0 or
+  over 448), `not_found` (no such file, or an offset past its end),
+  `not_authorized` (the bridge holds the public demo key: no capture files for
+  it), `internal`.
+
+### Inline capture (not used on the StickS3)
 
 `CAP_START [u8 mode][u8 channel]`: mode 0 handshake-only, 1 raw (needs SD;
 `no_resource` on a bare StickS3), 2 deauth-pcap; channel 1–14. Errors:

@@ -26,6 +26,8 @@ typedef enum {
     MenuConnect,
     MenuDeviceInfo,
     MenuWifiScan,
+    MenuCapture,
+    MenuCaptures,
     MenuCapabilities,
     MenuPair,
     MenuForget,
@@ -81,6 +83,7 @@ static void bl_send(BruceLinkApp* app, const uint8_t* frame, size_t len) {
 }
 
 static void bl_job_link_down(BruceLinkApp* app);
+static void bl_files_link_down(BruceLinkApp* app, bool transport_gone);
 
 static void bl_stop_transport(BruceLinkApp* app) {
     if(app->transport == NULL) return;
@@ -93,6 +96,7 @@ static void bl_stop_transport(BruceLinkApp* app) {
     bl_secure_zero(&app->client, sizeof(app->client));
     bl_client_init(&app->client, NULL, bl_rng, NULL);
     bl_job_link_down(app);
+    bl_files_link_down(app, true);
 }
 
 /* (Re)start the BLE transport. The handshake begins by itself, from the
@@ -229,7 +233,13 @@ static bool bl_job_send(BruceLinkApp* app, uint8_t type, const uint8_t* pl, size
     return true;
 }
 
-static void bl_job_begin(BruceLinkApp* app, const char* title, uint16_t cap_id) {
+static void bl_job_begin(
+    BruceLinkApp* app,
+    const char* title,
+    uint16_t cap_id,
+    uint16_t max_s,
+    const uint8_t* args,
+    size_t args_len) {
     app->screen = BlScreenJob;
     const bl_jobc_state_t st = app->job.state;
     const bool active = st == BL_JOBC_STARTING || st == BL_JOBC_RUNNING || st == BL_JOBC_FETCHING;
@@ -244,7 +254,7 @@ static void bl_job_begin(BruceLinkApp* app, const char* title, uint16_t cap_id) 
         return;
     }
     uint8_t pl[8];
-    const int n = bl_jobc_start(&app->job, cap_id, 0, NULL, 0, furi_get_tick(), pl, sizeof(pl));
+    const int n = bl_jobc_start(&app->job, cap_id, max_s, args, args_len, furi_get_tick(), pl, sizeof(pl));
     if(n < 0 || !bl_job_send(app, BL_MSG_JOB_START, pl, (size_t)n)) {
         bl_jobc_init(&app->job);
         bl_show_text(app, title, "busy: still waiting for the\nprevious reply");
@@ -271,6 +281,365 @@ static void bl_job_tick(BruceLinkApp* app, uint32_t now) {
     if(j->state == BL_JOBC_STARTING || j->state == BL_JOBC_RUNNING || j->state == BL_JOBC_FETCHING) {
         if(bl_jobc_elapsed_ms(j, now) / 1000u != app->job_drawn_s) bl_job_draw(app);
     }
+}
+
+/* ------------------------------------- capture files (bl_files.h) */
+
+static void bl_size_text(uint32_t size, char* out, size_t cap) {
+    if(size < 1024u) {
+        snprintf(out, cap, "%lu B", (unsigned long)size);
+    } else {
+        const unsigned long tenths = (unsigned long)size * 10u / 1024u;
+        snprintf(out, cap, "%lu.%lu kB", tenths / 10u, tenths % 10u);
+    }
+}
+
+/* What to call a file on a 128 px screen: the SSID if Bruce put one in
+ * the name (HS_<MAC>_<SSID>.pcap), else the MAC. */
+static void bl_file_label(const bl_file_entry_t* e, char* out, size_t cap) {
+    const char* n = e->name;
+    size_t l = e->name_len > 5 ? e->name_len - 5u : e->name_len; /* drop ".pcap" */
+    if(l > 3 && memcmp(n, "HS_", 3) == 0) {
+        n += 3;
+        l -= 3;
+    }
+    if(l > 13 && n[12] == '_') {
+        n += 13;
+        l -= 13;
+    }
+    char size[16];
+    bl_size_text(e->size, size, sizeof(size));
+    snprintf(out, cap, "%.*s  %s", (int)l, n, size);
+}
+
+static void bl_files_menu_cb(void* ctx, uint32_t index);
+
+static void bl_files_show_menu(BruceLinkApp* app) {
+    app->screen = BlScreenNone; /* the list is complete: nothing more to land here */
+    submenu_reset(app->files_menu);
+    submenu_set_header(app->files_menu, "Captures on StickS3");
+    for(size_t i = 0; i < app->files_count; i++) {
+        char label[48];
+        bl_file_label(&app->files[i], label, sizeof(label));
+        submenu_add_item(app->files_menu, label, (uint32_t)i, bl_files_menu_cb, app);
+    }
+    view_dispatcher_switch_to_view(app->view_dispatcher, BlViewFiles);
+}
+
+static void bl_files_request_page(BruceLinkApp* app, uint8_t start) {
+    uint8_t pl[1];
+    bl_files_encode_list_req(start, pl, sizeof(pl));
+    if(!bl_job_send(app, BL_MSG_CAP_LIST, pl, sizeof(pl))) {
+        app->pending_op = BlOpNone;
+        bl_show_text(app, "Captures", "busy: still waiting for the\nprevious reply");
+        return;
+    }
+    app->pending_op = BlOpList;
+}
+
+static void bl_files_open(BruceLinkApp* app) {
+    app->screen = BlScreenFiles;
+    app->files_count = 0;
+    if(!bl_client_ready(&app->client)) {
+        bl_show_text(app, "Captures", "not connected\nUse Connect first.");
+        return;
+    }
+    bl_show_text(app, "Captures", "listing...");
+    bl_files_request_page(app, 0);
+}
+
+/* A CAP_LIST page: keep its entries, ask for the next page or show them. */
+static void bl_files_on_list(BruceLinkApp* app, const bl_frame_t* f) {
+    app->pending_op = BlOpNone;
+    bl_file_entry_t page[BL_FILE_LIST_PAGE];
+    uint8_t total = 0, start = 0;
+    size_t count = 0;
+    if(bl_files_parse_list(f->payload, f->payload_len, &total, &start, page, BL_FILE_LIST_PAGE, &count) !=
+       BL_OK) {
+        if(app->screen == BlScreenFiles) bl_show_text(app, "Captures", "malformed reply");
+        return;
+    }
+    for(size_t i = 0; i < count && app->files_count < BL_APP_FILES_MAX; i++) {
+        app->files[app->files_count++] = page[i];
+    }
+    if(app->screen != BlScreenFiles) return; /* user moved on */
+    const unsigned next = (unsigned)start + BL_FILE_LIST_PAGE;
+    if(next < total && app->files_count < BL_APP_FILES_MAX) {
+        bl_files_request_page(app, (uint8_t)next);
+        return;
+    }
+    if(app->files_count == 0) {
+        bl_show_text(app, "Captures", "No captures on the StickS3.\n\nRun Handshake Capture\nfirst.");
+        return;
+    }
+    bl_files_show_menu(app);
+}
+
+static void bl_file_button_cb(GuiButtonType button, InputType type, void* ctx) {
+    BruceLinkApp* app = ctx;
+    if(type != InputTypeShort) return;
+    const bool right = button == GuiButtonTypeRight;
+    const uint32_t evt = app->file_confirm ? (right ? BlEvtFileDeleteYes : BlEvtFileDeleteNo) :
+                                             (right ? BlEvtFileDownload : BlEvtFileDelete);
+    view_dispatcher_send_custom_event(app->view_dispatcher, evt);
+}
+
+static void bl_file_draw(BruceLinkApp* app) {
+    Widget* w = app->file_widget;
+    widget_reset(w);
+    if(app->file_sel >= app->files_count) return;
+    const bl_file_entry_t* e = &app->files[app->file_sel];
+    char size[16];
+    bl_size_text(e->size, size, sizeof(size));
+    if(app->file_confirm) {
+        snprintf(app->text, sizeof(app->text), "Delete on the StickS3?\n%s", e->name);
+        widget_add_text_box_element(w, 2, 2, 124, 48, AlignLeft, AlignTop, app->text, false);
+        widget_add_button_element(w, GuiButtonTypeLeft, "No", bl_file_button_cb, app);
+        widget_add_button_element(w, GuiButtonTypeRight, "Yes", bl_file_button_cb, app);
+    } else {
+        snprintf(app->text, sizeof(app->text), "%s\n%s", e->name, size);
+        widget_add_text_box_element(w, 2, 2, 124, 48, AlignLeft, AlignTop, app->text, false);
+        widget_add_button_element(w, GuiButtonTypeLeft, "Delete", bl_file_button_cb, app);
+        widget_add_button_element(w, GuiButtonTypeRight, "Download", bl_file_button_cb, app);
+    }
+}
+
+static void bl_files_menu_cb(void* ctx, uint32_t index) {
+    BruceLinkApp* app = ctx;
+    if(index >= app->files_count) return;
+    app->file_sel = index;
+    app->file_confirm = false;
+    bl_file_draw(app);
+    view_dispatcher_switch_to_view(app->view_dispatcher, BlViewFile);
+}
+
+static void bl_file_delete(BruceLinkApp* app) {
+    app->screen = BlScreenDelete;
+    app->req_title = "Delete";
+    const bl_file_entry_t* e = &app->files[app->file_sel];
+    uint8_t pl[1 + BL_FILE_NAME_MAX];
+    const int n = bl_files_encode_name(e->name, e->name_len, pl, sizeof(pl));
+    if(!bl_client_ready(&app->client)) {
+        bl_show_text(app, "Delete", "not connected\nUse Connect first.");
+    } else if(n < 0 || !bl_job_send(app, BL_MSG_CAP_DELETE, pl, (size_t)n)) {
+        bl_show_text(app, "Delete", "busy: still waiting for the\nprevious reply");
+    } else {
+        app->pending_op = BlOpDelete;
+        bl_show_text(app, "Delete", "deleting...");
+    }
+    view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
+}
+
+static void bl_file_on_deleted(BruceLinkApp* app, const bl_frame_t* f) {
+    app->pending_op = BlOpNone;
+    if(f->type == BL_MSG_CAP_DELETE && app->file_sel < app->files_count) {
+        snprintf(app->text, sizeof(app->text), "Deleted on the StickS3:\n%s", app->files[app->file_sel].name);
+        memmove(
+            &app->files[app->file_sel], &app->files[app->file_sel + 1],
+            (app->files_count - app->file_sel - 1) * sizeof(app->files[0]));
+        app->files_count--;
+    } else {
+        const uint16_t code = f->payload_len >= 2 ? (uint16_t)(f->payload[0] | (f->payload[1] << 8)) :
+                                                    (uint16_t)BL_ERR_INTERNAL;
+        snprintf(app->text, sizeof(app->text), "StickS3 refused:\n%s", bl_wire_err_str(code));
+    }
+    if(app->screen == BlScreenDelete) bl_show_text(app, "Delete", app->text);
+}
+
+/* ---- the download ---- */
+
+static void bl_xfer_finish_file(BruceLinkApp* app, bool keep) {
+    char part[sizeof(app->xfer_path) + 8];
+    snprintf(part, sizeof(part), "%s.part", app->xfer_path);
+    if(app->xfer_file) {
+        storage_file_close(app->xfer_file);
+        storage_file_free(app->xfer_file);
+        app->xfer_file = NULL;
+    }
+    if(keep) {
+        if(storage_common_rename(app->storage, part, app->xfer_path) != FSE_OK) app->xfer_write_failed = true;
+    }
+    if(!keep || app->xfer_write_failed) storage_simply_remove(app->storage, part);
+}
+
+static void bl_xfer_draw(BruceLinkApp* app) {
+    if(app->screen != BlScreenXfer) return;
+    const bl_xferc_t* x = &app->xfer;
+    switch(x->state) {
+    case BL_XFER_INFO:
+        snprintf(app->text, sizeof(app->text), "%s\n\nAsking the StickS3...", x->name);
+        break;
+    case BL_XFER_DATA:
+        snprintf(
+            app->text, sizeof(app->text), "%s\n\n%lu / %lu bytes", x->name, (unsigned long)x->offset,
+            (unsigned long)x->size);
+        break;
+    case BL_XFER_DONE:
+        snprintf(
+            app->text, sizeof(app->text), "Saved to the SD card:\n%s\n%lu bytes, CRC-32 checked.",
+            app->xfer_path, (unsigned long)x->size);
+        break;
+    case BL_XFER_FAILED:
+        if(app->xfer_closed) {
+            snprintf(app->text, sizeof(app->text), "The link was closed before\nthe end. Nothing kept.");
+        } else if(app->xfer_write_failed) {
+            snprintf(app->text, sizeof(app->text), "Writing to the SD card\nfailed. Nothing kept.");
+        } else if(x->fail == BL_XFER_F_REFUSED) {
+            snprintf(app->text, sizeof(app->text), "StickS3 refused:\n%s", bl_wire_err_str(x->err));
+        } else if(x->fail == BL_XFER_F_CHANGED) {
+            snprintf(app->text, sizeof(app->text), "The file changed on the\nStickS3. Download it again.");
+        } else if(x->fail == BL_XFER_F_CRC) {
+            snprintf(app->text, sizeof(app->text), "CRC-32 mismatch: the copy\nis damaged. Nothing kept.");
+        } else {
+            snprintf(app->text, sizeof(app->text), "Unexpected reply from\nthe StickS3. Nothing kept.");
+        }
+        break;
+    default: app->text[0] = 0; break;
+    }
+    bl_show_text(app, "Download", app->text);
+}
+
+/* The download ended (done or failed): keep or drop the file, say so once. */
+static void bl_xfer_ended(BruceLinkApp* app) {
+    const bool ok = app->xfer.state == BL_XFER_DONE && !app->xfer_write_failed;
+    bl_xfer_finish_file(app, ok);
+    if(!ok && app->xfer.state == BL_XFER_DONE) app->xfer.state = BL_XFER_FAILED; /* the SD write failed */
+    app->xfer_unseen = app->screen != BlScreenXfer;
+    bl_xfer_draw(app);
+    notification_message(app->notifications, ok ? &sequence_success : &sequence_error);
+}
+
+static void bl_xfer_begin(BruceLinkApp* app) {
+    app->screen = BlScreenXfer;
+    const bl_file_entry_t* e = &app->files[app->file_sel];
+    const bool same = strcmp(app->xfer.name, e->name) == 0;
+    /* One at a time: a running download is shown, whichever file was
+     * picked; a finished one not seen yet is shown if it is this file. */
+    if(bl_xferc_active(&app->xfer) || (app->xfer_unseen && same)) {
+        app->xfer_unseen = false;
+        bl_xfer_draw(app);
+        return;
+    }
+    app->xfer_unseen = false;
+    if(!bl_client_ready(&app->client)) {
+        bl_show_text(app, "Download", "not connected\nUse Connect first.");
+        return;
+    }
+    storage_simply_mkdir(app->storage, APP_DATA_PATH("captures"));
+    snprintf(app->xfer_path, sizeof(app->xfer_path), "%s/%s", APP_DATA_PATH("captures"), e->name);
+    char part[sizeof(app->xfer_path) + 8];
+    snprintf(part, sizeof(part), "%s.part", app->xfer_path);
+    app->xfer_write_failed = false;
+    app->xfer_closed = false;
+    app->xfer_file = storage_file_alloc(app->storage);
+    if(!storage_file_open(app->xfer_file, part, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        storage_file_free(app->xfer_file);
+        app->xfer_file = NULL;
+        bl_show_text(app, "Download", "Could not create the file\non the SD card.");
+        return;
+    }
+    bl_xferc_start(&app->xfer, e->name, e->name_len);
+    bl_xfer_draw(app);
+}
+
+/* Every tick: the next request, when the link is up and the slot free. */
+static void bl_xfer_tick(BruceLinkApp* app) {
+    if(!bl_xferc_active(&app->xfer) || !bl_client_ready(&app->client)) return;
+    uint8_t type = 0;
+    uint8_t pl[8 + BL_FILE_NAME_MAX];
+    const int n = bl_xferc_next(&app->xfer, &type, pl, sizeof(pl));
+    if(n > 0 && !bl_job_send(app, type, pl, (size_t)n)) bl_xferc_unsend(&app->xfer);
+}
+
+/* A reply the download asked for (true), written to the file. */
+static bool bl_xfer_on_message(BruceLinkApp* app, const bl_frame_t* f) {
+    const uint8_t* d = NULL;
+    size_t dl = 0;
+    uint32_t at = 0;
+    if(!bl_xferc_on_response(&app->xfer, f->type, f->payload, f->payload_len, &d, &dl, &at)) return false;
+    if(dl > 0 && app->xfer_file != NULL) {
+        /* chunks come in order: `at` is always the end of the file */
+        if(storage_file_write(app->xfer_file, d, dl) != dl) {
+            app->xfer_write_failed = true;
+            app->xfer.state = BL_XFER_FAILED;
+        }
+    }
+    if(app->xfer.state == BL_XFER_DONE || app->xfer.state == BL_XFER_FAILED) {
+        bl_xfer_ended(app);
+    } else {
+        bl_xfer_draw(app);
+    }
+    return true;
+}
+
+/* The link or the transport is gone. */
+static void bl_files_link_down(BruceLinkApp* app, bool transport_gone) {
+    if(app->pending_op != BlOpNone) {
+        app->pending_op = BlOpNone;
+        if(app->screen == BlScreenFiles) bl_show_text(app, "Captures", "link lost");
+        if(app->screen == BlScreenDelete) bl_show_text(app, "Delete", "link lost\nIt may or may not\nhave been deleted.");
+    }
+    if(!bl_xferc_active(&app->xfer)) return;
+    if(transport_gone) {
+        /* no link will come back: give up, keep nothing */
+        app->xfer.state = BL_XFER_FAILED;
+        app->xfer_closed = true;
+        bl_xfer_ended(app);
+        return;
+    }
+    bl_xferc_retry(&app->xfer); /* continues on the next session */
+    bl_xfer_draw(app);
+}
+
+/* ------------------------------------------------ handshake capture */
+
+static const uint16_t kCapDurations[] = {30, 60, 120, 300};
+static const char* const kCapDurationText[] = {"30 s", "1 min", "2 min", "5 min"};
+#define BL_CAP_CHANNELS 14u /* hop, then 1..13 */
+
+static void bl_cap_duration_cb(VariableItem* item) {
+    BruceLinkApp* app = variable_item_get_context(item);
+    app->cap_duration_idx = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, kCapDurationText[app->cap_duration_idx]);
+}
+
+static void bl_cap_channel_text(VariableItem* item, uint8_t idx) {
+    char t[8];
+    if(idx == 0) snprintf(t, sizeof(t), "Hop");
+    else snprintf(t, sizeof(t), "%u", (unsigned)idx);
+    variable_item_set_current_value_text(item, t);
+}
+
+static void bl_cap_channel_cb(VariableItem* item) {
+    BruceLinkApp* app = variable_item_get_context(item);
+    app->cap_channel_idx = variable_item_get_current_value_index(item);
+    bl_cap_channel_text(item, app->cap_channel_idx);
+}
+
+static void bl_capture_enter_cb(void* ctx, uint32_t index) {
+    BruceLinkApp* app = ctx;
+    if(index != 2) return; /* "Start capture" */
+    /* Runs as a job: the StickS3 restarts, captures with BLE off, and
+     * restarts again (ADR 0006). Passive: nothing is transmitted. */
+    const uint8_t ch = app->cap_channel_idx;
+    bl_job_begin(app, "Handshake Capture", BL_CAP_SNIFF_HANDSHAKE, kCapDurations[app->cap_duration_idx], &ch, 1);
+    view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
+}
+
+static void bl_build_capture_setup(BruceLinkApp* app) {
+    VariableItemList* l = app->capture_setup;
+    variable_item_list_reset(l);
+    app->cap_duration_idx = 1; /* 1 min */
+    app->cap_channel_idx = 0; /* hop */
+    VariableItem* it =
+        variable_item_list_add(l, "Duration", COUNT_OF(kCapDurations), bl_cap_duration_cb, app);
+    variable_item_set_current_value_index(it, app->cap_duration_idx);
+    variable_item_set_current_value_text(it, kCapDurationText[app->cap_duration_idx]);
+    it = variable_item_list_add(l, "Channel", BL_CAP_CHANNELS, bl_cap_channel_cb, app);
+    variable_item_set_current_value_index(it, app->cap_channel_idx);
+    bl_cap_channel_text(it, app->cap_channel_idx);
+    variable_item_list_add(l, "Start capture", 0, NULL, app);
+    variable_item_list_set_enter_callback(l, bl_capture_enter_cb, app);
 }
 
 /* Render a CAPS payload as a text list. */
@@ -321,6 +690,23 @@ static void bl_on_message(BruceLinkApp* app, const bl_frame_t* f) {
                 app->job.state == BL_JOBC_DONE ? &sequence_success : &sequence_error);
         }
         bl_job_draw(app);
+        return;
+    }
+    if(bl_xfer_on_message(app, f)) return;
+    if(app->pending_op == BlOpList && (f->type == BL_MSG_CAP_LIST || f->type == BL_MSG_ERROR)) {
+        if(f->type == BL_MSG_CAP_LIST) {
+            bl_files_on_list(app, f);
+        } else {
+            app->pending_op = BlOpNone;
+            const uint16_t code = f->payload_len >= 2 ? (uint16_t)(f->payload[0] | (f->payload[1] << 8)) :
+                                                        (uint16_t)BL_ERR_INTERNAL;
+            snprintf(app->text, sizeof(app->text), "StickS3 refused:\n%s", bl_wire_err_str(code));
+            if(app->screen == BlScreenFiles) bl_show_text(app, "Captures", app->text);
+        }
+        return;
+    }
+    if(app->pending_op == BlOpDelete && (f->type == BL_MSG_CAP_DELETE || f->type == BL_MSG_ERROR)) {
+        bl_file_on_deleted(app, f);
         return;
     }
     if(app->screen != BlScreenRequest) return; /* user moved on */
@@ -395,6 +781,7 @@ static void bl_tick(void* ctx) {
         app->link_id = link;
         bl_client_link_down(&app->client);
         bl_job_link_down(app); /* normally: the StickS3 is restarting for it */
+        bl_files_link_down(app, false);
         if(link != 0) {
             /* Start authenticating immediately: the StickS3 drops links
              * that are not authenticated within its deadline. */
@@ -417,6 +804,13 @@ static void bl_tick(void* ctx) {
         const bl_jobc_state_t before = app->job.state;
         bl_jobc_request_timed_out(&app->job);
         bl_job_after(app, before);
+        if(bl_xferc_active(&app->xfer)) bl_xferc_retry(&app->xfer); /* ask again */
+        if(app->pending_op != BlOpNone) {
+            app->pending_op = BlOpNone;
+            if(app->screen == BlScreenFiles || app->screen == BlScreenDelete) {
+                bl_show_text(app, app->screen == BlScreenFiles ? "Captures" : "Delete", "no reply (timed out)");
+            }
+        }
         if(app->screen == BlScreenRequest) {
             /* Say what the link saw, so a lost reply can be told apart
              * from a StickS3 that never answered. */
@@ -431,6 +825,7 @@ static void bl_tick(void* ctx) {
     }
 
     bl_job_tick(app, now);
+    bl_xfer_tick(app);
 
     /* The transport's own state (advertising / connecting / linked) changes
      * without the link id changing, e.g. when a central connects but has
@@ -741,6 +1136,23 @@ static bool bl_custom_event_cb(void* ctx, uint32_t event) {
         app->screen = BlScreenNone;
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewMenu);
         return true;
+    case BlEvtFileDownload:
+        if(app->file_sel >= app->files_count) return true;
+        bl_xfer_begin(app);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
+        return true;
+    case BlEvtFileDelete:
+        app->file_confirm = true;
+        bl_file_draw(app);
+        return true;
+    case BlEvtFileDeleteNo:
+        app->file_confirm = false;
+        bl_file_draw(app);
+        return true;
+    case BlEvtFileDeleteYes:
+        app->file_confirm = false;
+        if(app->file_sel < app->files_count) bl_file_delete(app);
+        return true;
     default: return false;
     }
 }
@@ -783,10 +1195,18 @@ static void bl_submenu_cb(void* ctx, uint32_t index) {
     case MenuWifiScan: {
         /* Runs as a job: the StickS3 restarts to give the scan its radio
          * (ADR 0006). */
-        bl_job_begin(app, "Wi-Fi Scan", BL_CAP_WIFI_SCAN);
+        bl_job_begin(app, "Wi-Fi Scan", BL_CAP_WIFI_SCAN, 0, NULL, 0);
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
         break;
     }
+    case MenuCapture:
+        app->screen = BlScreenNone;
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewCapture);
+        break;
+    case MenuCaptures:
+        bl_files_open(app);
+        view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
+        break;
     case MenuCapabilities:
         bl_request(app, "Capabilities", BL_MSG_CAPS_REQ, NULL, 0);
         view_dispatcher_switch_to_view(app->view_dispatcher, BlViewText);
@@ -832,6 +1252,11 @@ static uint32_t bl_back_to_menu_cb(void* ctx) {
     return BlViewMenu;
 }
 
+static uint32_t bl_back_to_files_cb(void* ctx) {
+    UNUSED(ctx);
+    return BlViewFiles;
+}
+
 static void bl_active_toggle_cb(VariableItem* item) {
     BruceLinkApp* app = variable_item_get_context(item);
     uint8_t idx = variable_item_get_current_value_index(item);
@@ -849,6 +1274,8 @@ static void bl_build_menu(BruceLinkApp* app) {
     submenu_add_item(app->submenu, "Connect", MenuConnect, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Device Info", MenuDeviceInfo, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Wi-Fi Scan", MenuWifiScan, bl_submenu_cb, app);
+    submenu_add_item(app->submenu, "Handshake Capture", MenuCapture, bl_submenu_cb, app);
+    submenu_add_item(app->submenu, "Captures", MenuCaptures, bl_submenu_cb, app);
     submenu_add_item(app->submenu, "Capabilities", MenuCapabilities, bl_submenu_cb, app);
     if(app->paired) {
         submenu_add_item(app->submenu, "Pair again", MenuPair, bl_submenu_cb, app);
@@ -897,6 +1324,22 @@ static BruceLinkApp* bl_app_alloc(void) {
     /* no previous callback: Back reaches bl_navigation_cb */
     view_dispatcher_add_view(app->view_dispatcher, BlViewPair, widget_get_view(app->pair_widget));
 
+    app->capture_setup = variable_item_list_alloc();
+    bl_build_capture_setup(app);
+    view_set_previous_callback(variable_item_list_get_view(app->capture_setup), bl_back_to_menu_cb);
+    view_dispatcher_add_view(
+        app->view_dispatcher, BlViewCapture, variable_item_list_get_view(app->capture_setup));
+
+    app->files_menu = submenu_alloc();
+    view_set_previous_callback(submenu_get_view(app->files_menu), bl_back_to_menu_cb);
+    view_dispatcher_add_view(app->view_dispatcher, BlViewFiles, submenu_get_view(app->files_menu));
+
+    app->file_widget = widget_alloc();
+    view_set_previous_callback(widget_get_view(app->file_widget), bl_back_to_files_cb);
+    view_dispatcher_add_view(app->view_dispatcher, BlViewFile, widget_get_view(app->file_widget));
+
+    app->storage = furi_record_open(RECORD_STORAGE);
+
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_custom_event_callback(app->view_dispatcher, bl_custom_event_cb);
     view_dispatcher_set_navigation_event_callback(app->view_dispatcher, bl_navigation_cb);
@@ -913,8 +1356,12 @@ static void bl_app_free(BruceLinkApp* app) {
     bl_secure_zero(app->psk, sizeof(app->psk));
     bl_client_link_down(&app->client);
     bl_secure_zero(&app->client, sizeof(app->client)); /* its copy of the key */
+    if(app->xfer_file != NULL) bl_xfer_finish_file(app, false); /* an unfinished download */
 
     view_dispatcher_remove_view(app->view_dispatcher, BlViewMenu);
+    view_dispatcher_remove_view(app->view_dispatcher, BlViewCapture);
+    view_dispatcher_remove_view(app->view_dispatcher, BlViewFiles);
+    view_dispatcher_remove_view(app->view_dispatcher, BlViewFile);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewText);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewSettings);
     view_dispatcher_remove_view(app->view_dispatcher, BlViewPair);
@@ -922,8 +1369,12 @@ static void bl_app_free(BruceLinkApp* app) {
     widget_free(app->widget);
     widget_free(app->pair_widget);
     variable_item_list_free(app->settings);
+    variable_item_list_free(app->capture_setup);
+    submenu_free(app->files_menu);
+    widget_free(app->file_widget);
     view_dispatcher_free(app->view_dispatcher);
 
+    furi_record_close(RECORD_STORAGE);
     furi_record_close(RECORD_NOTIFICATION);
     furi_record_close(RECORD_GUI);
     free(app);

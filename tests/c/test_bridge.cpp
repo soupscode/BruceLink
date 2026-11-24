@@ -32,6 +32,7 @@ extern "C" {
 #include "bl_test.h"
 
 #include <new>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,43 @@ struct MockBackend : public BruceBackend {
     int cancels = 0;
     void jobCancel() override {
         cancels++;
+    }
+    /* capture files, in memory (bl_files.h) */
+    std::map<std::string, std::vector<uint8_t>> files;
+    std::vector<std::string> asked; /* every name the bridge passed on */
+    int read_overrun = 0; /* report this many bytes more than asked */
+    int captureFileCount() override {
+        return (int)files.size();
+    }
+    bool captureFileAt(int index, char* name, size_t cap, uint32_t* size) override {
+        int i = 0;
+        for(auto& kv : files) {
+            if(i++ != index) continue;
+            snprintf(name, cap, "%s", kv.first.c_str());
+            *size = (uint32_t)kv.second.size();
+            return true;
+        }
+        return false;
+    }
+    bool captureFileInfo(const char* name, uint32_t* size, uint32_t* crc) override {
+        asked.push_back(name);
+        auto it = files.find(name);
+        if(it == files.end()) return false;
+        *size = (uint32_t)it->second.size();
+        *crc = bl_crc32(it->second.data(), it->second.size());
+        return true;
+    }
+    int captureFileRead(const char* name, uint32_t offset, uint8_t* buf, size_t len) override {
+        asked.push_back(name);
+        auto it = files.find(name);
+        if(it == files.end() || offset > it->second.size()) return -1;
+        size_t n = it->second.size() - offset < len ? it->second.size() - offset : len;
+        if(n) memcpy(buf, it->second.data() + offset, n);
+        return (int)n + read_overrun;
+    }
+    bool captureFileDelete(const char* name) override {
+        asked.push_back(name);
+        return files.erase(name) == 1;
     }
     static int cStart(void* c, bl_capture_mode_t, uint8_t) {
         MockBackend* m = static_cast<MockBackend*>(c);
@@ -1039,6 +1077,136 @@ static uint32_t acceptedId(const std::vector<Msg>& r, uint16_t* max_s = nullptr)
     return id;
 }
 
+/* ---------------------------------------- capture files (bl_files.h) */
+
+static void t_files_list_read_delete() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    for(int i = 0; i < 9; i++) {
+        char nm[32];
+        snprintf(nm, sizeof(nm), "HS_%012d.pcap", i);
+        h.be.files[nm] = std::vector<uint8_t>((size_t)(100 * i), (uint8_t)i);
+    }
+    h.be.files["bruce.conf"] = std::vector<uint8_t>(10, 'k'); /* never listed or served */
+    uint8_t req[BL_MAX_PAYLOAD];
+    /* page 0: indexes 0..6 */
+    int n = bl_files_encode_list_req(0, req, sizeof(req));
+    auto r = h.request(BL_MSG_CAP_LIST, req, (uint16_t)n);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CAP_LIST);
+    bl_file_entry_t e[BL_FILE_LIST_PAGE];
+    uint8_t total = 0, start = 0;
+    size_t count = 0;
+    CHECK(r.size() == 1 &&
+          bl_files_parse_list(r[0].payload.data(), r[0].payload.size(), &total, &start, e, 7, &count) == BL_OK);
+    CHECK_EQ_INT(total, 10);
+    CHECK_EQ_INT((long)count, 7);
+    CHECK(strcmp(e[0].name, "HS_000000000000.pcap") == 0);
+    /* page 1: indexes 7..9; bruce.conf (index 9) is left out */
+    n = bl_files_encode_list_req(7, req, sizeof(req));
+    r = h.request(BL_MSG_CAP_LIST, req, (uint16_t)n);
+    CHECK(r.size() == 1 &&
+          bl_files_parse_list(r[0].payload.data(), r[0].payload.size(), &total, &start, e, 7, &count) == BL_OK);
+    CHECK_EQ_INT((long)count, 2);
+    CHECK_EQ_INT((long)e[1].size, 800);
+    CHECK(strcmp(e[1].name, "HS_000000000008.pcap") == 0);
+
+    /* a whole download through the Flipper's tracker */
+    bl_xferc_t x;
+    CHECK_EQ_INT(bl_xferc_start(&x, "HS_000000000005.pcap", 20), BL_OK);
+    std::vector<uint8_t> got;
+    for(int guard = 0; guard < 10 && bl_xferc_active(&x); guard++) {
+        uint8_t type = 0;
+        n = bl_xferc_next(&x, &type, req, sizeof(req));
+        CHECK(n > 0);
+        r = h.request(type, req, (uint16_t)n);
+        CHECK(r.size() == 1);
+        if(r.size() != 1) break;
+        const uint8_t* d = nullptr;
+        size_t dl = 0;
+        uint32_t at = 0;
+        CHECK(bl_xferc_on_response(&x, r[0].type, r[0].payload.data(), r[0].payload.size(), &d, &dl, &at));
+        got.insert(got.end(), d, d + dl);
+    }
+    CHECK_EQ_INT(x.state, BL_XFER_DONE);
+    CHECK(got == h.be.files["HS_000000000005.pcap"]);
+
+    /* delete, then it is gone */
+    n = bl_files_encode_name("HS_000000000005.pcap", 20, req, sizeof(req));
+    r = h.request(BL_MSG_CAP_DELETE, req, (uint16_t)n);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CAP_DELETE && r[0].payload.empty());
+    CHECK(h.be.files.count("HS_000000000005.pcap") == 0);
+    CHECK(isError(h.request(BL_MSG_CAP_DELETE, req, (uint16_t)n), BL_ERR_NOT_FOUND));
+    CHECK(isError(h.request(BL_MSG_CAP_FILE_INFO, req, (uint16_t)n), BL_ERR_NOT_FOUND));
+}
+
+/* Only names that pass bl_file_name_ok ever reach the backend. */
+static void t_files_refuse_bad_names_and_demo_key() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    h.be.files["HS_A.pcap"] = std::vector<uint8_t>(10, 1);
+    const char* bad[] = {"../bruce.conf", "bruce.conf", "/HS_A.pcap", "a/../HS_A.pcap", ".pcap", "HS_A.pcap/"};
+    for(const char* b : bad) {
+        std::vector<uint8_t> p = {(uint8_t)strlen(b)};
+        p.insert(p.end(), b, b + strlen(b));
+        CHECK(isError(h.request(BL_MSG_CAP_FILE_INFO, p.data(), (uint16_t)p.size()), BL_ERR_BAD_ARG));
+        CHECK(isError(h.request(BL_MSG_CAP_DELETE, p.data(), (uint16_t)p.size()), BL_ERR_BAD_ARG));
+        std::vector<uint8_t> q = {0, 0, 0, 0, 16, 0};
+        q.insert(q.end(), p.begin(), p.end());
+        CHECK(isError(h.request(BL_MSG_CAP_XFER_DATA, q.data(), (uint16_t)q.size()), BL_ERR_BAD_ARG));
+    }
+    CHECK(h.be.asked.empty());
+    /* a read past the end, an oversized ask, a backend that overruns */
+    uint8_t req[BL_MAX_PAYLOAD];
+    int n = bl_files_encode_read_req(11, 16, "HS_A.pcap", 9, req, sizeof(req));
+    CHECK(isError(h.request(BL_MSG_CAP_XFER_DATA, req, (uint16_t)n), BL_ERR_NOT_FOUND));
+    n = bl_files_encode_read_req(10, 16, "HS_A.pcap", 9, req, sizeof(req));
+    auto r = h.request(BL_MSG_CAP_XFER_DATA, req, (uint16_t)n);
+    CHECK(r.size() == 1 && r[0].type == BL_MSG_CAP_XFER_DATA && r[0].payload.size() == 4); /* at the end */
+    req[4] = 0xFF; /* max_len 0x01FF = 511 > BL_FILE_CHUNK_MAX */
+    req[5] = 0x01;
+    CHECK(isError(h.request(BL_MSG_CAP_XFER_DATA, req, (uint16_t)n), BL_ERR_BAD_ARG));
+    h.be.read_overrun = 1;
+    n = bl_files_encode_read_req(0, 4, "HS_A.pcap", 9, req, sizeof(req));
+    CHECK(isError(h.request(BL_MSG_CAP_XFER_DATA, req, (uint16_t)n), BL_ERR_INTERNAL));
+
+    /* the public demo key gets no capture files */
+    Harness d;
+    memcpy(d.psk, BRUCELINK_DEMO_PSK, BL_KEY_LEN);
+    d.begin();
+    CHECK(d.connect());
+    d.be.files["HS_A.pcap"] = std::vector<uint8_t>(10, 1);
+    n = bl_files_encode_list_req(0, req, sizeof(req));
+    CHECK(isError(d.request(BL_MSG_CAP_LIST, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
+    n = bl_files_encode_name("HS_A.pcap", 9, req, sizeof(req));
+    CHECK(isError(d.request(BL_MSG_CAP_FILE_INFO, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
+    CHECK(isError(d.request(BL_MSG_CAP_DELETE, req, (uint16_t)n), BL_ERR_NOT_AUTHORIZED));
+    CHECK(d.be.files.size() == 1);
+}
+
+/* The handshake capture is a job; its channel argument is bounded. */
+static void t_sniff_job() {
+    Harness h;
+    h.begin();
+    CHECK(h.connect());
+    CHECK(isError(h.cmd(BL_CAP_SNIFF_HANDSHAKE), BL_ERR_USE_JOB));
+    CHECK(isError(h.jobStart(BL_CAP_SNIFF_HANDSHAKE, 301), BL_ERR_BAD_ARG));
+    CHECK(isError(h.jobStart(BL_CAP_SNIFF_HANDSHAKE, 60, {14}), BL_ERR_BAD_ARG));
+    CHECK(isError(h.jobStart(BL_CAP_SNIFF_HANDSHAKE, 60, {6, 1}), BL_ERR_BAD_ARG));
+    CHECK_EQ_INT(h.be.restarts, 0);
+    uint16_t ms = 0;
+    CHECK(acceptedId(h.jobStart(BL_CAP_SNIFF_HANDSHAKE, 0, {6}), &ms) != 0);
+    CHECK_EQ_INT(ms, 60);
+    CHECK_EQ_INT(h.be.rec.args_len, 1);
+    CHECK_EQ_INT(h.be.rec.args[0], 6);
+    Harness g;
+    g.begin();
+    CHECK(g.connect());
+    CHECK(acceptedId(g.jobStart(BL_CAP_SNIFF_HANDSHAKE, 300, {0}), &ms) != 0); /* hop, the longest */
+    CHECK_EQ_INT(ms, 300);
+}
+
 static void t_job_refusals() {
     Harness h;
     h.begin();
@@ -1586,6 +1754,9 @@ int main() {
     RUN(t_demo_key_never_enables_active_ops);
     RUN(t_real_key_reports_not_demo);
     printf("[jobs]\n");
+    RUN(t_files_list_read_delete);
+    RUN(t_files_refuse_bad_names_and_demo_key);
+    RUN(t_sniff_job);
     RUN(t_job_refusals);
     RUN(t_job_accept_and_busy);
     RUN(t_estop_cleared_only_by_a_session);

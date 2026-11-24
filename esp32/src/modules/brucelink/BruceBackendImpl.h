@@ -24,12 +24,20 @@ public:
     bl_job_record_t* jobRecord() override;
     void jobRestart() override;
     void jobCancel() override;
+    int captureFileCount() override;
+    bool captureFileAt(int index, char* name, size_t cap, uint32_t* size) override;
+    bool captureFileInfo(const char* name, uint32_t* size, uint32_t* crc) override;
+    int captureFileRead(const char* name, uint32_t offset, uint8_t* buf, size_t len) override;
+    bool captureFileDelete(const char* name) override;
     bool captureBackend(const bl_capture_backend_t** be, void** ctx) override;
     int activeOp(uint16_t cap_id, const uint8_t* target, uint8_t channel, uint32_t max_frames)
         override;
     uint32_t nowMs() override;
     void randomBytes(uint8_t* out, size_t len) override;
 };
+
+/* Where Bruce's sniffer keeps handshake captures on LittleFS. */
+extern const char kCaptureDir[];
 
 /* One USB-serial log line with the memory figures that decide whether a
  * radio can start. For finding where a remote operation stops. */
