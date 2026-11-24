@@ -5,6 +5,7 @@
 #pragma once
 
 #include "../../shared/brucelink_core/src/bl_client.h"
+#include "../../shared/brucelink_core/src/bl_job.h"
 #include "../../shared/brucelink_core/src/bl_pair.h"
 #include "bl_keyfile.h"
 #include "transport/bl_transport.h"
@@ -45,6 +46,7 @@ typedef enum {
     BlScreenStatic, /* About */
     BlScreenPairing,
     BlScreenForget,
+    BlScreenJob, /* a job on the StickS3 (ADR 0006) */
 } BlScreen;
 
 typedef struct {
@@ -83,6 +85,14 @@ typedef struct {
     /* All protocol work runs on the app thread via the ViewDispatcher
      * tick event (never in a FuriTimer callback: the timer service task
      * has a 1 KB stack). No locking needed. */
+
+    /* The current job (ADR 0006). Followed on every tick whatever screen
+     * is up, so leaving its screen does not lose it. */
+    bl_jobc_t job;
+    const char* job_title;
+    uint32_t job_drawn_s; /* elapsed seconds last drawn */
+    char job_text[BL_JOB_RESULT_MAX + 64]; /* the finished job's screen */
+    bool job_unseen; /* finished while its screen was not up */
 
     BlScreen screen;
     const char* req_title; /* title of the request being shown */

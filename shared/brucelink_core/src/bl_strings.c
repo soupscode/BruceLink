@@ -47,6 +47,7 @@ const char* bl_wire_err_str(uint16_t e) {
     case BL_ERR_NOT_FOUND: return "not found";
     case BL_ERR_ESTOPPED: return "emergency stop engaged";
     case BL_ERR_INTERNAL: return "internal error";
+    case BL_ERR_USE_JOB: return "runs as a job";
     default: return "unknown wire error";
     }
 }
@@ -73,6 +74,10 @@ const char* bl_msg_type_str(uint8_t t) {
     case BL_MSG_CAPS: return "CAPS";
     case BL_MSG_CMD_REQ: return "CMD_REQ";
     case BL_MSG_CMD_RESP: return "CMD_RESP";
+    case BL_MSG_JOB_START: return "JOB_START";
+    case BL_MSG_JOB_ACCEPTED: return "JOB_ACCEPTED";
+    case BL_MSG_JOB_RESULT_REQ: return "JOB_RESULT_REQ";
+    case BL_MSG_JOB_RESULT: return "JOB_RESULT";
     case BL_MSG_CAP_START: return "CAP_START";
     case BL_MSG_CAP_STOP: return "CAP_STOP";
     case BL_MSG_CAP_STATUS: return "CAP_STATUS";

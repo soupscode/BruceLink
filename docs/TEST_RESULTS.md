@@ -324,6 +324,46 @@ $ python3 -m unittest discover -s tests    22 tests OK
 
 **Not run on hardware.**
 
+## Jobs: one radio at a time (ADR 0006) — host tests and builds (2026-11-23)
+
+```
+$ make -C tests/c test cppcheck
+[job]        9 tests ok   (record bounds; every single-bit flip of a record
+                           caught, CRC included; random RTC contents never
+                           valid; normal job; crash mid-job -> interrupted,
+                           never re-run, no loop; copy survives; payload
+                           layouts and limits; Flipper tracker: happy path,
+                           refusals, lost job, wrong id, retries, BUSY,
+                           timeout across 2^32 wrap)
+3073 checks, 0 failed
+[jobs]       4 tests ok   (refusals incl. demo key and e-stop with nothing
+                           written or restarted; accept + BUSY; end to end
+                           with bl_client + tracker across two simulated
+                           restarts; crash -> interrupted, power loss ->
+                           not found, never back -> timeout)
+308 checks, 0 failed
+cppcheck clean
+$ python3 -m unittest discover -s tests       23 tests OK (installer: 9,
+  incl. the boot hook and an unknown main.cpp layout writing nothing)
+```
+
+Mutation check: 7 broken variants of `bl_job.c` (re-run after a crash,
+RUNNING not sealed before the run, auto-start never cleared, fetch on the
+starting session, no CRC check, result id not checked, deadline without the
+restart allowance) and 7 of the bridge (demo key or e-stop not refusing a job,
+a second job overwriting a pending one, a result for any id or before it is
+finished, no limit check, a job capability answered inline) each fail a test.
+
+Builds: Flipper FAP v0.4 APPCHK pass; ESP32 compile check SUCCESS (RAM 10.2 %,
+Flash 17.2 %); Bruce 1.17 + BruceLink for `m5stack-sticks3` SUCCESS (RAM 40.8 %,
+Flash 56.9 %), installed sources byte-identical to the repo. The job record
+(536 bytes) is in `.rtc_noinit` (RTC slow memory, `0x50000204`), which the
+startup code does not initialise.
+
+**Not run on hardware.** Not host-testable: RTC retention across
+`esp_restart`, the boot hook inside Bruce's `setup()`, the Wi-Fi scan job, the
+restart timing, the Flipper's job screen.
+
 ## Hardware results
 
 ### 2026-11-23 — Flipper app over the loopback transport (owner's Flipper)

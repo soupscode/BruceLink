@@ -41,3 +41,9 @@ bool moduleLinked();
 
 /* BruceLink's submenu (main menu > BruceLink). Returns on Esc or "Main Menu". */
 void bruceLinkMenu();
+
+/* Called once at the end of Bruce's setup() (installed by
+ * tools/install_into_bruce.py). Runs a pending job with BLE never started
+ * and restarts, or brings BruceLink back after a job (ADR 0006); on any
+ * other boot it does nothing. */
+void bruceLinkBoot();

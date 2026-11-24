@@ -11,13 +11,16 @@ What it does (and nothing else):
   3. adds "BruceLink" to Bruce's main menu, first, before Wi-Fi:
        <bruce>/src/core/main_menu.h    include + member
        <bruce>/src/core/main_menu.cpp  entry in the item list
+  4. calls bruceLinkBoot() at the end of setup() in <bruce>/src/main.cpp,
+     which runs a pending BruceLink job and brings the link back after it
+     (ADR 0006)
      Every added line ends with "// BruceLink". Older versions of this script
      put two entries under Config > Advanced (ConfigMenu.cpp); re-running
      removes those.
 
 It is idempotent (safe to run again after updating BruceLink) and refuses
 to touch a tree that does not look like the Bruce version it was written
-against, unless --force is given. `--uninstall` reverses all three steps.
+against, unless --force is given. `--uninstall` reverses all of it.
 
 Then build Bruce as usual:  pio run -e m5stack-sticks3
 SPDX-License-Identifier: MIT
@@ -44,6 +47,7 @@ END = "#endif" + MARKER + "\n"
 
 MAIN_MENU_H = Path("src/core/main_menu.h")
 MAIN_MENU_CPP = Path("src/core/main_menu.cpp")
+BRUCE_MAIN = Path("src/main.cpp")
 CONFIG_MENU = Path("src/core/menu_items/ConfigMenu.cpp")  # older installs only: cleaned
 
 # (file, [(anchor line, "before" | "after", lines to add)]). Each anchor must
@@ -58,6 +62,14 @@ PATCHES = [
     (MAIN_MENU_CPP, [
         ("        &wifiMenu,\n", "before",
          GUARD + "        &bruceLinkMenu," + MARKER + "\n" + END),
+    ]),
+    (BRUCE_MAIN, [
+        ('#include "core/main_menu.h"\n', "after",
+         GUARD + '#include "modules/brucelink/BruceLinkModule.h"' + MARKER + "\n" + END),
+        ('    if (bruceConfig.startupApp != "" && !startupApp.startApp(bruceConfig.startupApp)) {\n',
+         "before",
+         GUARD + "    bruceLinkBoot(); // runs a pending job, or brings the link back after one" + MARKER
+         + "\n" + END),
     ]),
     (CONFIG_MENU, []),
 ]

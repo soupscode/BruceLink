@@ -6,8 +6,9 @@ BruceLink **reuses Bruce's existing functions** through a remote interface — i
 does not reimplement them.
 
 > **Status: the Flipper and the StickS3 link over BLE on real hardware** (device
-> info, capabilities, Wi-Fi scan; owner-reported). Pairing with a comparison
-> code is implemented but not yet run on hardware. Frames are authenticated but
+> info, capabilities, Wi-Fi scan; owner-reported). Tools now run as jobs, one
+> radio at a time (ADR 0006; not yet run on hardware). Pairing with a comparison
+> code works on hardware. Frames are authenticated but
 > not encrypted; capture and active operations are not wired into Bruce yet. See
 > [`docs/STATUS.md`](docs/STATUS.md) and [`LOCAL_HANDOFF.md`](LOCAL_HANDOFF.md).
 

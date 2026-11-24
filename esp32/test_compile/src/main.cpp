@@ -41,13 +41,18 @@ static const bl_capture_backend_t STUB_CAP = {
     stub_cap_start, stub_cap_setch, stub_cap_poll, stub_cap_stop, stub_cap_avail};
 
 // --- stub Bruce backend ---------------------------------------------------
+static RTC_NOINIT_ATTR bl_job_record_t g_job;
+
 class StubBackend : public BruceBackend {
 public:
     size_t deviceInfo(char* out, size_t cap) override {
         return (size_t)snprintf(out, cap, "BruceLink stub\nBruce 1.17\nStickS3");
     }
-    size_t wifiScan(char* out, size_t cap) override {
-        return (size_t)snprintf(out, cap, "0 networks (stub)");
+    bl_job_record_t* jobRecord() override {
+        return &g_job; // RTC memory that survives a restart, as in the Bruce module
+    }
+    void jobRestart() override {
+        // stub: the demo key refuses every job, so this is never reached
     }
     bool captureBackend(const bl_capture_backend_t** be, void** ctx) override {
         *be = &STUB_CAP;

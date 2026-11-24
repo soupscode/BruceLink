@@ -47,7 +47,8 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 
 | Item | State |
 |---|---|
-| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; **Wi-Fi scan works over the air (owner-reported, 2026-11-23, four scans, no leak)** with the reduced, transient driver start (ADR 0004): 4.8 s each; guard headroom only 1.8 kB in steady state; capture / active op unavailable (placeholder hooks) |
+| BruceBackend glue (device info, Wi-Fi scan, capture, active op) | 🟡 builds inside Bruce `1.17`; flashed 2026-11-23, **Device Info and Capabilities work over the air (owner-reported)**; Wi-Fi scan worked over the air with ADR 0004's reduced driver start (owner-reported, four scans); **replaced by the Wi-Fi scan as a job (ADR 0006)**, which builds and is host-tested end to end but has not run on hardware; capture / active op unavailable (placeholder hooks) |
+| Jobs: tools between restarts with BLE off (ADR 0006) | 🟡 record + boot transitions + payloads + Flipper tracker host-tested (7 mutations caught); bridge end to end across simulated restarts incl. crash and power loss (7 mutations caught); boot hook installed and Bruce builds; **not yet run on hardware** (RTC retention, restarts, timing) |
 | Bruce module + installer | 🟡 runs on the StickS3 (owner-reported: link established, off/on works); coexistence with other Bruce features not yet checked |
 | BruceLink on Bruce's main menu (icon, Turn on/off, Pair, Forget) | 🟡 builds and links in Bruce 1.17; installer host-tested (8 tests, incl. upgrade from the Config → Advanced entries); not yet run |
 | Headless sniffer hooks (Bruce patch) | 📐 declared; placeholder bodies make capture and active ops report "not available" |
@@ -63,7 +64,7 @@ Legend: ✅ verified · 🟡 implemented, not verified on hardware · 📐 desig
 | Generalized command adapter (CMD_REQ) | 🟡 in bridge core |
 | Remote safety gate (connection-level) | ✅ host-tested (incl. frame budget, unicast-only targets) |
 | Resumable PCAP transfer | 📐 |
-| BLE/Wi-Fi coexistence evaluation | 🔴 2026-11-23: with NimBLE up, `esp_wifi_init` fails with `ESP_ERR_NO_MEM` on the StickS3 (135 kB internal heap at the menu; radios do not use PSRAM in this build). 🟡 ADR 0004: 62 kB free with the Flipper linked; a reduced, transient Wi-Fi scan fits (peak 35.7 kB, lowest free 25.9 kB) and returned networks on hardware. Repeated use and the other Wi-Fi features still to do |
+| BLE/Wi-Fi coexistence | Avoided by design (ADR 0006, owner's decision): nothing uses Wi-Fi while the link is up. Background: with NimBLE up a full `esp_wifi_init` ran out of memory on the StickS3; ADR 0004's reduced scan fitted with 1.8 kB to spare |
 
 ## Hardware
 

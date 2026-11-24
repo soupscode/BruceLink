@@ -88,6 +88,8 @@ key id = SHA256("BLpair1 key id" ‖ psk)[0..1]          (display only)
 | 0x12/0x13 | STATUS_REQ / STATUS | — | capture + gate status text |
 | 0x14/0x15 | CAPS_REQ / CAPS | — | capability registry (below) |
 | 0x20/0x21 | CMD_REQ / CMD_RESP | — | `[u16 cap_id][args]` / result text |
+| 0x22/0x23 | JOB_START / JOB_ACCEPTED | C→P/P→C | jobs (below) |
+| 0x24/0x25 | JOB_RESULT_REQ / JOB_RESULT | C→P/P→C | jobs (below) |
 | 0x40 | CAP_START | C→P | `[u8 mode][u8 channel]` |
 | 0x41 | CAP_STOP | C→P | — |
 | 0x42 | CAP_STATUS | C→P | — |
@@ -104,7 +106,40 @@ key id = SHA256("BLpair1 key id" ‖ psk)[0..1]          (display only)
 `u8 flags`, `u8 min_proto`, `u8 name_len`, `name[name_len]`.
 
 Flags: `0x01` ACTIVE_RF, `0x02` REQUIRES_EXT_HW, `0x04` HW_UNVERIFIED,
-`0x08` REQUIRES_TARGET. Canonical ids in `bl_capability.h`.
+`0x08` REQUIRES_TARGET, `0x10` JOB (runs as a job, below). Canonical ids in
+`bl_capability.h`.
+
+### Jobs (ADR 0006)
+
+A capability flagged JOB needs the StickS3's radio memory to itself, so it
+never runs next to the link: the StickS3 accepts it, restarts, runs it with
+BLE off, restarts again and brings the link back. The result is fetched on the
+next session. Invoking it with `CMD_REQ` returns `use_job`.
+
+| Message | Payload (little-endian) |
+|---|---|
+| `JOB_START` | `u16 cap_id`, `u16 max_s` (0 = the capability's default), `args[0..32]` |
+| `JOB_ACCEPTED` | `u32 job_id` (never 0), `u16 max_s` (the limit that applies) |
+| `JOB_RESULT_REQ` | `u32 job_id` |
+| `JOB_RESULT` | `u32 job_id`, `u8 outcome`, `text[0..480]` |
+
+Outcomes: 1 done, 2 failed (text says why), 3 stopped with a button on the
+StickS3, 4 time limit reached, 5 interrupted (the StickS3 reset during the
+job; it is never run again).
+
+- `JOB_START` errors, in order: `bad_arg` (malformed), `unknown_capability`,
+  `bad_arg` (not a job capability), `capability_disabled` (active jobs, not
+  yet allowed), `not_authorized` (bridge holds the demo key), `estopped`,
+  `bad_arg` (`max_s` over the capability's limit, or arguments it does not
+  take), `busy` (a job was already accepted and the restart is pending).
+- After `JOB_ACCEPTED` the StickS3 releases the link within about 0.5 s. The
+  Flipper must not fetch on that session; it fetches after the link has
+  dropped and a new session is up, and gives up at `max_s` + 60 s.
+- `JOB_RESULT_REQ` errors: `bad_arg`, `not_found` (no such job: never
+  accepted, replaced by a newer one, or lost with power), `busy` (not
+  finished). A result can be fetched more than once.
+- Limits per capability (bridge): `wifi.scan` default 20 s, at most 60 s, no
+  arguments.
 
 ### Generalized command adapter
 
@@ -132,7 +167,7 @@ gate (ADR 0003); `REQUIRES_TARGET` ones must name a BSSID (no broadcast).
 ## Emergency stop and session lifetime
 
 - `ESTOP` latches for the **rest of the session**: every radio operation
-  (Wi-Fi scan, `CAP_START`, active ops) is refused with `estopped`, and any
+  (`JOB_START`, `CAP_START`, active ops) is refused with `estopped`, and any
   capture is stopped and flushed. Read-only queries (`PING`, `DEVICE_INFO`,
   `CAPS`, `STATUS`) and `CAP_STOP` stay available.
 - A **new authenticated session** starts with the gate reset: e-stop cleared and
@@ -162,7 +197,8 @@ estop:<0|1> active:<0|1>`.
 0 none · 1 bad_frame · 2 unsupported_version · 3 not_authenticated ·
 4 unknown_type · 5 bad_arg · 6 unknown_capability · 7 capability_disabled ·
 8 not_authorized · 9 target_not_allowed · 10 rate_limited · 11 busy ·
-12 no_resource · 13 not_found · 14 estopped · 15 internal.
+12 no_resource · 13 not_found · 14 estopped · 15 internal · 16 use_job (this
+capability runs as a job).
 
 ## Fragmentation (BLE)
 
