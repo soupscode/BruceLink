@@ -8,7 +8,7 @@ it is not a reimplementation.
 
 - `LOCAL_HANDOFF.md` — what's implemented / tested / not, and the next task.
 - `docs/STATUS.md` — verified status. `TASKS.md` — backlog.
-- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety, radio memory on the StickS3, pairing).
+- `docs/decisions/` — ADRs (BLE transport, protocol+auth, capture+safety, radio memory on the StickS3, pairing, one radio at a time).
 - `docs/CAPABILITY_MATRIX.md` — what Bruce supports vs what BruceLink exposes.
 
 ## Pinned versions
@@ -26,8 +26,8 @@ Momentum `mntm-012` (API 87.1) · Bruce `1.17` (`2b6ba4d`, env `m5stack-sticks3`
 - `esp32/lib/BruceLink/` — bridge core + NimBLE transport (portable / NimBLE only).
 - `esp32/src/modules/brucelink/` — Bruce glue (builds only in the Bruce tree) + `PATCH.md`.
   `python3 tools/install_into_bruce.py <bruce-checkout>` installs it, the bridge library
-  and a "BruceLink" item on Bruce 1.17's main menu (`--uninstall` reverses; tested by
-  `tests/test_install_into_bruce.py`).
+  a "BruceLink" item on Bruce 1.17's main menu and a `bruceLinkBoot()` call at the end of
+  `setup()` (`--uninstall` reverses; tested by `tests/test_install_into_bruce.py`).
 - `esp32/test_compile/` — standalone ESP32-S3 compile check (stub backend).
 - `tests/c/` — host C tests (ASan+UBSan). `tests/test_protocol.py` — Python + interop.
 - `scripts/hil/` — hardware-in-the-loop scripts.
@@ -52,9 +52,11 @@ scripts/hil/build_all.sh                     # everything
   includes Bruce or NimBLE headers.
 - New Bruce features: add a capability (`bl_capability.h`) + a backend method.
   No new transport or message type per tool.
-- On the StickS3 Wi-Fi and BLE share ~133 kB of internal RAM (ADR 0004). Anything that
-  needs Wi-Fi while linked goes through the guard and the reduced, transient driver start
-  in `BruceLinkWifi.cpp`; never call Bruce's or Arduino's full Wi-Fi start from the bridge.
+- One radio at a time (ADR 0006). On the StickS3 Wi-Fi and BLE share ~133 kB of internal
+  RAM, and the link takes ~72 kB. Nothing uses Wi-Fi (or a Bruce BLE tool) while the link
+  is up: such a capability is flagged `BL_CAP_F_JOB` and runs as a job, between two
+  restarts with BLE off (`BruceLinkJobs.cpp`). Never start Wi-Fi from the bridge task.
+  A job is never re-run after a reset (`bl_job_on_boot`); keep it that way.
 
 ## Security rules
 
@@ -63,7 +65,9 @@ scripts/hil/build_all.sh                     # everything
 - RF-transmitting capabilities (`BL_CAP_F_ACTIVE_RF`) are **default-off** and pass
   the remote safety gate: session-level enable, e-stop, link-loss auto-stop, rate
   limit, optional target scope (ADR 0003). BruceLink builds no RF frames; it
-  forwards to Bruce's existing primitives.
+  forwards to Bruce's existing primitives. Active **jobs** are refused until ADR 0006's
+  rules (gate at acceptance, duration cap, stop button on the stick, no re-run) are
+  implemented and tested.
 - Never broadcast an active op. Never expose unauthenticated control or
   unrestricted command execution. Bound all payloads (≤ 512 B).
 - Never store the pairing key in `bruce.conf` (Bruce prints it to serial).

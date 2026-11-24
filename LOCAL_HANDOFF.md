@@ -94,18 +94,14 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
   handler, notify) was written against the Momentum source and never executed.
   Expect to debug it. Start with `HARDWARE_TESTING.md` step 3b (needs only a
   Flipper and a phone).
-- **Wi-Fi does not fit next to BLE on the StickS3** (2026-11-23, serial log in
-  `docs/TEST_RESULTS.md`): with NimBLE up, `esp_wifi_init` fails with
-  `ESP_ERR_NO_MEM`, and the failed init used to leave the bridge dead until
-  reboot. Wi-Fi is now started only when it should fit (`wifiStartAllowed`;
-  the clean refusal is confirmed on hardware), and the scan brings the driver
-  up small and only for its own duration (ADR 0004, `BruceLinkWifi.cpp`).
-  That scan **returned networks on the Flipper** (2026-11-23): four scans,
-  4.8 s each, no leak, peak 35.7 kB on the first and 29.7 kB after. In
-  steady state only 1.8 kB separates free RAM from the guard's threshold. This is the project's
-  main open technical risk (task M5.5): every Wi-Fi feature is meant to be
-  driven over the BLE link. The StickS3 logs memory at each step on USB serial
-  (`python -m serial.tools.miniterm <port> 115200`, lines `[BruceLink] ...`).
+- **One radio at a time** (ADR 0006, owner's decision, 2026-11-23). Wi-Fi and
+  BLE do not fit together on the StickS3 (with NimBLE up a full
+  `esp_wifi_init` ran out of memory; ADR 0004's reduced scan fitted with
+  1.8 kB to spare). Tools now run as **jobs**: the StickS3 restarts, runs the
+  tool with BLE off, restarts and turns BruceLink back on; the Flipper fetches
+  the result. Host-tested end to end, **not yet run on hardware**: RTC memory
+  retention, the two restarts, their duration (the Flipper allows max_s +
+  60 s), and Bruce's boot with the hook. `HARDWARE_TESTING.md` step 5b.
 - **Handshake takes about 3 s on hardware** against a 5 s limit (measured by
   eye). The request limit (10 s) is still an estimate: Bruce's Wi-Fi scan
   time is unmeasured. If Connect over BLE
@@ -144,10 +140,12 @@ Then follow `docs/HARDWARE_TESTING.md` steps 3–9.
 
 ## 7. Next engineering task
 
-1. Run pairing on hardware (`HARDWARE_TESTING.md` step 4b), then step 5 with
-   the paired key. Fix what breaks.
-2. Headless sniffer hooks (`PATCH.md`, M5.2), using the reduced Wi-Fi start
-   from ADR 0004 — capture is the next user-visible feature.
-3. Link confidentiality (M4.6): AEAD with the session keys.
-4. Widen the Wi-Fi memory headroom (ADR 0004), re-enabling without reboot
-   (M5.6), BLE ownership in Bruce (M5.4).
+1. Run the Wi-Fi scan job on hardware (`HARDWARE_TESTING.md` step 5b):
+   restarts, auto-start, result fetch, stop button, crash safety; measure the
+   time per job. Fix what breaks.
+2. Connect straight after pairing without a reboot (step 4b, build `993437b`
+   or later).
+3. Headless sniffer hooks (`PATCH.md`, M5.2), run as a job — capture is the
+   next user-visible feature. Then BLE tools as jobs.
+4. Link confidentiality (M4.6): AEAD with the session keys.
+5. Re-enabling without reboot (M5.6), BLE ownership in Bruce (M5.4).

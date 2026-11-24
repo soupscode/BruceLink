@@ -78,6 +78,13 @@ typedef enum {
     BL_MSG_CMD_REQ = 0x20, /* invoke a registered capability by id */
     BL_MSG_CMD_RESP = 0x21,
 
+    /* Jobs (ADR 0006): a tool that runs between two restarts of the
+     * StickS3, with the link down. */
+    BL_MSG_JOB_START = 0x22, /* C->P: cap_id + max_s + args */
+    BL_MSG_JOB_ACCEPTED = 0x23, /* P->C: job_id + max_s; the link drops next */
+    BL_MSG_JOB_RESULT_REQ = 0x24, /* C->P: job_id (on a later session) */
+    BL_MSG_JOB_RESULT = 0x25, /* P->C: job_id + outcome + text */
+
     /* --- capture subsystem (phase 2) --- */
     BL_MSG_CAP_START = 0x40,
     BL_MSG_CAP_STOP = 0x41,
@@ -113,6 +120,7 @@ typedef enum {
     BL_ERR_NOT_FOUND = 13,
     BL_ERR_ESTOPPED = 14, /* refused: emergency stop engaged */
     BL_ERR_INTERNAL = 15,
+    BL_ERR_USE_JOB = 16, /* this capability runs as a job (JOB_START) */
 } bl_wire_err_t;
 
 const char* bl_wire_err_str(uint16_t e);

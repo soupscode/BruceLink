@@ -21,6 +21,7 @@
 extern "C" {
 #include "bl_capability.h"
 #include "bl_capture.h"
+#include "bl_job.h"
 #include "bl_pair.h"
 #include "bl_reasm.h"
 #include "bl_safety.h"
@@ -51,8 +52,13 @@ public:
      * terminated) and return its length (< cap). The bridge clamps the
      * reported length to the text actually present. */
     virtual size_t deviceInfo(char* out, size_t cap) = 0;
-    /* Passive Wi-Fi scan rendered as text lines; same contract. */
-    virtual size_t wifiScan(char* out, size_t cap) = 0;
+    /* The job record kept across restarts (ADR 0006): RTC memory that is
+     * not initialised at boot, on the StickS3. Never nullptr. The bridge
+     * writes a new job into it and reads finished results from it. */
+    virtual bl_job_record_t* jobRecord() = 0;
+    /* Restart the device to run the job now in jobRecord(), after the
+     * reply that was just sent has left. Must not restart synchronously. */
+    virtual void jobRestart() = 0;
     /* Provide the capture backend vtable + context; false if this build has
      * no capture support (capture requests then report "disabled"). */
     virtual bool captureBackend(const bl_capture_backend_t** be, void** ctx) = 0;
@@ -177,6 +183,8 @@ private:
     void sendStatus();
 
     void onPairFrame(const uint8_t* frame, size_t len);
+    void handleJobStart(const bl_frame_t* f);
+    void handleJobResult(const bl_frame_t* f);
 
     uint8_t psk_[BL_KEY_LEN]; /* provisioned pairing key (long-lived) */
     bool have_psk_;

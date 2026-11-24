@@ -20,7 +20,7 @@ namespace brucelink {
 static const bl_capability_desc_t kCaps[] = {
     {BL_CAP_DEVICE_INFO, "device.info", BL_OP_PASSIVE, 0, 1},
     {BL_CAP_STATUS, "status", BL_OP_PASSIVE, 0, 1},
-    {BL_CAP_WIFI_SCAN, "wifi.scan", BL_OP_PASSIVE, BL_CAP_F_HW_UNVERIFIED, 1},
+    {BL_CAP_WIFI_SCAN, "wifi.scan", BL_OP_PASSIVE, BL_CAP_F_JOB | BL_CAP_F_HW_UNVERIFIED, 1},
     {BL_CAP_SNIFF_HANDSHAKE,
      "wifi.sniff.handshake",
      BL_OP_PASSIVE,
@@ -38,6 +38,25 @@ static const bl_capability_desc_t kCaps[] = {
      1},
 };
 static const bl_capability_registry_t kRegistry = {kCaps, sizeof(kCaps) / sizeof(kCaps[0])};
+
+/* Jobs (ADR 0006): time limits per capability, in seconds, and how many
+ * argument bytes each takes. Every BL_CAP_F_JOB capability has a row. */
+struct JobLimits {
+    uint16_t cap_id;
+    uint16_t default_s; /* when JOB_START asks for 0 */
+    uint16_t max_s;
+    uint8_t max_args;
+};
+static const JobLimits kJobLimits[] = {
+    /* A full scan takes a few seconds; the limit only guards a hang. */
+    {BL_CAP_WIFI_SCAN, 20, 60, 0},
+};
+
+static const JobLimits* jobLimits(uint16_t cap_id) {
+    for(const JobLimits& l : kJobLimits)
+        if(l.cap_id == cap_id) return &l;
+    return nullptr;
+}
 
 static const uint8_t kChannelMin = 1;
 static const uint8_t kChannelMax = 14;
@@ -278,6 +297,8 @@ void BruceLinkBridge::handleRequest(const bl_frame_t* f) {
     case BL_MSG_STATUS_REQ:
     case BL_MSG_CAP_STATUS: sendStatus(); break;
     case BL_MSG_CMD_REQ: handleCommand(f); break;
+    case BL_MSG_JOB_START: handleJobStart(f); break;
+    case BL_MSG_JOB_RESULT_REQ: handleJobResult(f); break;
     case BL_MSG_CAP_START: handleCaptureStart(f); break;
     case BL_MSG_CAP_STOP:
         bl_capture_stop(&capture_);
@@ -325,6 +346,11 @@ void BruceLinkBridge::handleCommand(const bl_frame_t* f) {
         sendError(BL_ERR_UNKNOWN_CAPABILITY);
         return;
     }
+    /* Needs the radio to itself: only between two restarts (ADR 0006). */
+    if(d->flags & BL_CAP_F_JOB) {
+        sendError(BL_ERR_USE_JOB);
+        return;
+    }
     if(d->op_class == BL_OP_ACTIVE) {
         handleActiveOp(d, args, arglen);
         return;
@@ -334,14 +360,91 @@ void BruceLinkBridge::handleCommand(const bl_frame_t* f) {
         sendError(BL_ERR_ESTOPPED);
         return;
     }
-    if(cap_id == BL_CAP_WIFI_SCAN) {
-        char buf[BL_MAX_PAYLOAD];
-        memset(buf, 0, sizeof(buf));
-        size_t n = backend_->wifiScan(buf, sizeof(buf));
-        sendText(BL_MSG_CMD_RESP, buf, boundedTextLen(buf, n, sizeof(buf)));
-    } else {
+    sendError(BL_ERR_BAD_ARG); /* no other inline command */
+}
+
+void BruceLinkBridge::handleJobStart(const bl_frame_t* f) {
+    uint16_t cap_id = 0, max_s = 0;
+    const uint8_t* args = nullptr;
+    size_t args_len = 0;
+    if(bl_job_parse_start(f->payload, f->payload_len, &cap_id, &max_s, &args, &args_len) != BL_OK) {
         sendError(BL_ERR_BAD_ARG);
+        return;
     }
+    const bl_capability_desc_t* d = bl_caps_find(&kRegistry, cap_id);
+    if(d == nullptr) {
+        sendError(BL_ERR_UNKNOWN_CAPABILITY);
+        return;
+    }
+    const JobLimits* lim = jobLimits(cap_id);
+    if(!(d->flags & BL_CAP_F_JOB) || lim == nullptr) {
+        sendError(BL_ERR_BAD_ARG); /* answered inline, not as a job */
+        return;
+    }
+    /* Active jobs need ADR 0006's rules (gate at acceptance, duration cap,
+     * stop button, no re-run) implemented and tested first. */
+    if(d->op_class == BL_OP_ACTIVE) {
+        sendError(BL_ERR_CAPABILITY_DISABLED);
+        return;
+    }
+    /* A job restarts the device; the public demo key authenticates nobody. */
+    if(demo_key_) {
+        sendError(BL_ERR_NOT_AUTHORIZED);
+        return;
+    }
+    if(!radioAllowed()) {
+        sendError(BL_ERR_ESTOPPED);
+        return;
+    }
+    if(max_s == 0) max_s = lim->default_s;
+    if(max_s > lim->max_s || args_len > lim->max_args) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    bl_job_record_t* rec = backend_->jobRecord();
+    if(bl_job_record_valid(rec) && rec->state != BL_JOB_S_FINISHED) {
+        sendError(BL_ERR_BUSY); /* already accepted one; the restart is coming */
+        return;
+    }
+    uint32_t id = 0;
+    while(id == 0) {
+        uint8_t r[4];
+        backend_->randomBytes(r, sizeof(r));
+        id = (uint32_t)r[0] | ((uint32_t)r[1] << 8) | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    }
+    /* Replaces any earlier result: one job at a time. */
+    if(bl_job_record_create(rec, id, cap_id, max_s, args, args_len) != BL_OK) {
+        sendError(BL_ERR_INTERNAL);
+        return;
+    }
+    uint8_t out[8];
+    const int n = bl_job_encode_accepted(id, max_s, out, sizeof(out));
+    sendSealed(BL_MSG_JOB_ACCEPTED, BL_FLAG_RESPONSE, out, (uint16_t)n);
+    backend_->jobRestart();
+}
+
+void BruceLinkBridge::handleJobResult(const bl_frame_t* f) {
+    uint32_t id = 0;
+    if(bl_job_parse_result_req(f->payload, f->payload_len, &id) != BL_OK) {
+        sendError(BL_ERR_BAD_ARG);
+        return;
+    }
+    const bl_job_record_t* rec = backend_->jobRecord();
+    if(!bl_job_record_valid(rec) || rec->job_id != id) {
+        sendError(BL_ERR_NOT_FOUND); /* never had it, or lost with power */
+        return;
+    }
+    if(rec->state != BL_JOB_S_FINISHED) {
+        sendError(BL_ERR_BUSY);
+        return;
+    }
+    uint8_t out[BL_MAX_PAYLOAD];
+    const int n = bl_job_encode_result(rec->job_id, rec->outcome, rec->result, rec->result_len, out, sizeof(out));
+    if(n < 0) {
+        sendError(BL_ERR_INTERNAL);
+        return;
+    }
+    sendSealed(BL_MSG_JOB_RESULT, BL_FLAG_RESPONSE, out, (uint16_t)n);
 }
 
 void BruceLinkBridge::handleActiveOp(

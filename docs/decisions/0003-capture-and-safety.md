@@ -138,3 +138,13 @@ the demo key (the compile check, a misconfigured build). Being paired lifts only
 that lock: the session-level enable, e-stop, rate limit and unicast-only target
 rules apply in full, and in the current Bruce build the transmit hook still
 reports "not available" (nothing is sent).
+
+## Amendment — active operations as jobs (2026-11-23, ADR 0006)
+
+Tools that need the radio now run as jobs, between two restarts of the
+StickS3 with the BLE link down. The gate above assumes a live link (session
+enable, remote e-stop, auto-stop on link loss), which a job does not have. For
+active jobs ADR 0006 replaces those with: the gate applied when the job is
+accepted, a hard duration cap enforced on the StickS3, any button on the
+StickS3 as the stop, and no re-run after a reset. Until that is implemented
+and tested, the bridge refuses active jobs (`capability_disabled`).

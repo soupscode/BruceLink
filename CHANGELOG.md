@@ -2,6 +2,35 @@
 
 All notable changes to BruceLink. Dates are UTC.
 
+## [Unreleased] — One radio at a time (2026-11-23)
+
+Builds on both devices; host-tested end to end; **not yet run on hardware**.
+
+### Added
+- **Jobs** (ADR 0006, task M5.7): a tool that needs the StickS3's radio memory
+  runs between two restarts with BLE off, then BruceLink comes back by itself
+  and the Flipper fetches the result. Messages `JOB_START` / `JOB_ACCEPTED` /
+  `JOB_RESULT_REQ` / `JOB_RESULT` (0x22–0x25), error `use_job` (16),
+  capability flag `JOB`.
+  - `bl_job` (shared core): the record kept in RTC memory (magic, CRC,
+    bounds), the boot transitions (a job is never re-run after a reset), the
+    payloads, and the Flipper-side tracker. 9 tests; 7 deliberate bugs caught.
+  - Bridge: accepts jobs (refused with the demo key, while e-stopped, and for
+    active capabilities), serves results; 4 end-to-end tests across simulated
+    restarts, crash and power loss; 7 deliberate bugs caught.
+  - StickS3: `BruceLinkJobs` (record, boot hook, Wi-Fi scan job stoppable with
+    any button); the installer adds a `bruceLinkBoot()` call at the end of
+    Bruce's `setup()`.
+  - Flipper (v0.4): Wi-Fi Scan runs as a job, with a seconds counter through
+    the restarts and the result fetched on reconnect.
+
+### Changed
+- **The Wi-Fi scan is a job**; nothing uses Wi-Fi while the link is up.
+
+### Removed
+- ADR 0004's inline Wi-Fi path (`BruceLinkWifi.cpp`, `wifiStartAllowed`,
+  `formatWifiNoMemory`); ADR 0004 is superseded.
+
 ## [Unreleased] — Pairing (2026-11-23)
 
 Builds on both devices; host-tested where it can be; **not yet run on hardware**.

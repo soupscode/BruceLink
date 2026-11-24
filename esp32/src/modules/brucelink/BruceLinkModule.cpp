@@ -7,6 +7,7 @@
 #include "BruceLinkModule.h"
 
 #include "BruceBackendImpl.h"
+#include "BruceLinkJobs.h"
 #include "BruceLinkKeyStore.h"
 
 #include <NimBleCentralTransport.h> // lib/BruceLink
@@ -20,6 +21,7 @@ extern "C" {
 #include <NimBLEDevice.h>
 #include <core/display.h> // displayInfo / displayError / displayMessage / loopOptions
 #include <core/radio_mem.h> // radioHasMemForBle
+#include <esp_system.h> // esp_restart
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -137,11 +139,22 @@ static void pairingStep(bool linked_now, bool was_linked) {
     bl_secure_zero(key, sizeof(key));
 }
 
+/* A job was accepted (ADR 0006): let the reply leave, release BLE so the
+ * Flipper sees the link drop, and restart into the job. */
+static const uint32_t kJobReplyFlushMs = 500;
+static void restartForJob() {
+    logStep("job: accepted, restarting into it");
+    vTaskDelay(pdMS_TO_TICKS(kJobReplyFlushMs));
+    g_transport.end();
+    esp_restart();
+}
+
 static void bridgeTask(void*) {
     bool was_linked = false;
     while(g_run) {
         if(g_switch_pending) applySwitch();
         g_transport.loop();
+        if(jobRestartRequested()) restartForJob();
         const bool linked = g_transport.connected();
         if(linked != was_linked) logStep(linked ? "module: Flipper linked" : "module: link down");
         if(g_pairing_mode) pairingStep(linked, was_linked);

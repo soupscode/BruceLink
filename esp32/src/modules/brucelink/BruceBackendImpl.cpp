@@ -6,7 +6,7 @@
 #include "BruceBackendImpl.h"
 
 #include <BruceLinkFormat.h>
-#include "BruceLinkWifi.h"
+#include "BruceLinkJobs.h"
 #include "bruce_brucelink_hooks.h" // thin headless hooks added by the BruceLink patch
 
 #include <Arduino.h>
@@ -61,13 +61,12 @@ void logStep(const char* what) {
     Serial.flush();
 }
 
-size_t BruceBackendImpl::wifiScan(char* out, size_t cap) {
-    // Lines are appended whole or not at all; SSIDs are sanitized. How Wi-Fi
-    // is brought up next to the BLE link is in BruceLinkWifi.
-    bl_textbuf_t tb;
-    bl_tb_init(&tb, out, cap);
-    wifiScanInto(&tb);
-    return tb.len;
+bl_job_record_t* BruceBackendImpl::jobRecord() {
+    return jobRecordStorage(); // RTC memory: survives the restart (BruceLinkJobs)
+}
+
+void BruceBackendImpl::jobRestart() {
+    jobRestartRequest(); // the bridge task restarts once the reply has left
 }
 
 // --- capture backend: drives Bruce's existing sniffer via headless hooks ---

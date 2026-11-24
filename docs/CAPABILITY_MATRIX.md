@@ -27,7 +27,7 @@ nothing in the board config rules it out.
 |---|---|---|---|---|---|---|---|
 | Device info `0x0001` | `infoCallback`, `BRUCE_VERSION`, `getBattery()` (`util_commands.cpp`, `interface.cpp:114`) | Yes | Impl | Yes¹ | — | No | Passive |
 | Status `0x0002` | globals `wifiConnected`, `sdcardMounted` (`globals.h`) | Yes | Impl | Yes | — | No | Passive |
-| Wi-Fi scan `0x0010` | `WiFi.scanNetworks` (model: `native_wifiScan`, `wifi_js.cpp:76`) | Likely | Impl² | Yes¹ | — | No | Passive |
+| Wi-Fi scan `0x0010` (job) | `WiFi.mode(WIFI_MODE_STA)` + `WiFi.scanNetworks` as Bruce's own scan (`wifi_common.cpp`) | Likely | Impl² | Yes¹ | — | No | Passive |
 | BLE scan `0x0011` | `getScan()->getResults` (model: `native_bleScan`, `ble_js.cpp:5`) | Likely | Design | — | — | No | Passive |
 | Sniff: EAPOL handshake `0x0020` | `isItEAPOL`/`saveHandshake` (`sniffer.cpp:221,300`) → LittleFS | Likely | Impl³ | Yes | — | No | Passive |
 | Sniff: full raw pcap `0x0021` | `sniffer_full_mode_available` = `sdDetected` (`sniffer.cpp:869`) | **No** (SD-gated) | Impl³ (gated) | Yes | — | **SD module** | Passive |
@@ -49,8 +49,10 @@ nothing in the board config rules it out.
    bridge core (Flipper client ↔ bridge, `tests/c/test_bridge.cpp`); until v0.2
    also on a Flipper through the app's loopback mock (since removed). The radio
    call itself is a stub until hardware.
-2. Bridge dispatches `CMD_REQ`→`BruceBackend::wifiScan`; the real Bruce call
-   lives in the Bruce glue (`esp32/src/modules/brucelink/`) and is unverified.
+2. A job (ADR 0006): the bridge accepts `JOB_START` and the StickS3 restarts;
+   the scan runs at boot with BLE off (`BruceLinkJobs.cpp`), the result is
+   fetched with `JOB_RESULT_REQ`. Host-tested end to end; not yet run on
+   hardware. (Before ADR 0006 an inline scan worked on hardware.)
 3. `bl_capture` session manager + mock backend fully simulated (lifecycle, gated
    raw mode, start/poll failure). The Bruce-side capture backend is a documented
    skeleton; Bruce needs a small headless `sniffer_start/stop/status` patch
