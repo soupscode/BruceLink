@@ -6,6 +6,8 @@ Python reference produces byte-identical results for the same inputs.
 """
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import unittest
@@ -64,6 +66,78 @@ class PcapTests(unittest.TestCase):
         self.assertEqual(bl.crc32(b"123456789"), 0xCBF43926)
 
 
+def compiler_command(cc_env, args, nt=(os.name == "nt")):
+    """The command that runs the C compiler on args, or None if there is none.
+
+    $CC if set (it may carry arguments, e.g. "ccache gcc", as in
+    tests/c/Makefile), else the first C compiler on PATH, run by the path
+    found (Windows has no `cc`; MinGW gcc and clang do).
+    """
+    cc_env = cc_env.strip()
+    if not cc_env:
+        found = next(filter(None, map(shutil.which, ("cc", "gcc", "clang"))), None)
+        return [found, *args] if found else None
+    whole = shutil.which(cc_env) or (cc_env if os.path.isfile(cc_env) else None)
+    if whole:
+        return [whole, *args]
+    if nt:
+        # Windows hands a program one command line, which the program splits
+        # itself. shlex.split(posix=False) would keep the quotes around a
+        # path with spaces and subprocess would then escape them, so $CC
+        # goes in as written and only our own arguments are quoted.
+        return f"{cc_env} {subprocess.list2cmdline(args)}"
+    return [*shlex.split(cc_env), *args]
+
+
+def windows_argv(command_line):
+    """Split a command line with Windows' own rules (CommandLineToArgvW)."""
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32")
+    kernel32 = ctypes.WinDLL("kernel32")
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    n = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(n))
+    if not argv:
+        raise ctypes.WinError()
+    try:
+        return [argv[i] for i in range(n.value)]
+    finally:
+        kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+
+
+class CompilerCommandTests(unittest.TestCase):
+    """How $CC becomes the command that builds the C vectors tool."""
+
+    ARGS = ["-std=c99", r"-IC:\src dir\core", "a.c", "-o", "out.exe"]
+
+    def test_posix_cc_with_arguments(self):
+        self.assertEqual(compiler_command("ccache gcc", self.ARGS, nt=False),
+                         ["ccache", "gcc", *self.ARGS])
+
+    def test_cc_is_one_existing_path_with_spaces(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cc = os.path.join(d, "my compilers", "cc")
+            os.makedirs(os.path.dirname(cc))
+            Path(cc).touch()
+            for nt in (False, True):
+                self.assertEqual(compiler_command(cc, self.ARGS, nt=nt), [cc, *self.ARGS])
+
+    @unittest.skipUnless(os.name == "nt", "checks the split with Windows' CommandLineToArgvW")
+    def test_windows_quoted_path_with_arguments(self):
+        # Regression (PR #9 review): shlex.split(posix=False) kept the quotes,
+        # so Windows could not find the compiler.
+        cc = r'"C:\Program Files\LLVM\bin\clang.exe" -m64'
+        cmd = compiler_command(cc, self.ARGS, nt=True)
+        line = cmd if isinstance(cmd, str) else subprocess.list2cmdline(cmd)
+        self.assertEqual(windows_argv(line),
+                         [r"C:\Program Files\LLVM\bin\clang.exe", "-m64", *self.ARGS])
+
+
 class InteropTests(unittest.TestCase):
     """Build the C vectors tool and verify Python matches it byte-for-byte."""
 
@@ -71,17 +145,21 @@ class InteropTests(unittest.TestCase):
     def setUpClass(cls):
         core = ROOT / "shared" / "brucelink_core" / "src"
         tool = ROOT / "tools" / "bl_vectors.c"
-        out = ROOT / "tests" / "_bl_vectors"
+        # Windows needs the .exe suffix to run it; elsewhere it is unsuffixed.
+        out = ROOT / "tests" / ("_bl_vectors.exe" if os.name == "nt" else "_bl_vectors")
         srcs = [str(tool)] + [str(p) for p in core.glob("*.c")]
-        cc = os.environ.get("CC", "cc")
         if os.environ.get("BL_SKIP_INTEROP") == "1":
             raise unittest.SkipTest("BL_SKIP_INTEROP=1")
+        cmd = compiler_command(
+            os.environ.get("CC", ""),
+            ["-std=c99", "-O1", "-Wall", "-Werror", f"-I{core}", *srcs, "-o", str(out)],
+        )
+        # No compiler is a failure, not a skip.
+        if cmd is None:
+            raise AssertionError("no C compiler for the C vectors tool: set CC or put cc/gcc/clang on PATH")
         # A tool that does not build is a failure, not a skip: a skipped
         # interop suite hides exactly the drift it exists to catch.
-        r = subprocess.run(
-            [cc, "-std=c99", "-O1", "-Wall", "-Werror", f"-I{core}", *srcs, "-o", str(out)],
-            capture_output=True, text=True,
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             raise AssertionError(f"cannot build the C vectors tool:\n{r.stderr}")
         cls.vectors = json.loads(subprocess.check_output([str(out)]))

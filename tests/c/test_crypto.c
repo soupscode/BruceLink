@@ -191,9 +191,27 @@ static void t_x25519_all_low_order_points(void) {
     }
 }
 
+/* RFC 5869 appendix A.3: zero-length salt and info. Covers the NULL-salt
+ * extract, the no-info expand path and the empty T(0) of the first block,
+ * which is the case the cppcheck fix in bl_hkdf_expand touches. */
+static void t_hkdf_empty_salt_info_rfc5869(void) {
+    uint8_t ikm[22], prk[32], okm[42], exp[42];
+    memset(ikm, 0x0b, sizeof(ikm));
+    bl_hkdf_extract(NULL, 0, ikm, sizeof(ikm), prk);
+    bl_hex2bin("19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04", exp, 32);
+    CHECK(memcmp(prk, exp, 32) == 0);
+    CHECK_EQ_INT(bl_hkdf_expand(prk, NULL, 0, okm, sizeof(okm)), BL_OK);
+    bl_hex2bin(
+        "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d"
+        "9d201395faa4b61a96c8",
+        exp, 42);
+    CHECK(memcmp(okm, exp, 42) == 0);
+}
+
 void run_crypto_tests(void) {
     RUN(t_hmac_long_key_rfc4231);
     RUN(t_hkdf_long_rfc5869);
+    RUN(t_hkdf_empty_salt_info_rfc5869);
     RUN(t_x25519_all_low_order_points);
     RUN(t_sha256_nist);
     RUN(t_sha256_streaming);
