@@ -549,9 +549,10 @@ link is unencrypted, so this demonstrates the link, not its security.
 ### 2026-11-23 — `b635b03` app-only image does not boot (owner's StickS3)
 
 The owner flashed `Bruce-1.17-BruceLink-b635b03-m5stack-sticks3-app-only.bin`
-(`firmware.bin`) and the StickS3 did not boot. Not yet known: the offset and
-tool used, the serial output, and whether the merged image of the same build
-boots.
+(`firmware.bin`) and the StickS3 did not boot. The merged image of the same
+build, flashed afterwards at `0x0`, **boots** (owner-reported), so the build is
+fine and the failure lies in how or onto what the app-only file was written.
+Not known: the offset and tool used, and what the StickS3 held before.
 
 Checked in the cloud: the delivered file is byte-identical to the app inside
 the merged image at `0x10000`; the bootloader and partition table (`factory`
