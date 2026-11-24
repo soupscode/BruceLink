@@ -6,6 +6,7 @@ Python reference produces byte-identical results for the same inputs.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -71,11 +72,17 @@ class InteropTests(unittest.TestCase):
     def setUpClass(cls):
         core = ROOT / "shared" / "brucelink_core" / "src"
         tool = ROOT / "tools" / "bl_vectors.c"
-        out = ROOT / "tests" / "_bl_vectors"
+        # Windows needs the .exe suffix to run it; elsewhere it is unsuffixed.
+        out = ROOT / "tests" / ("_bl_vectors.exe" if os.name == "nt" else "_bl_vectors")
         srcs = [str(tool)] + [str(p) for p in core.glob("*.c")]
-        cc = os.environ.get("CC", "cc")
         if os.environ.get("BL_SKIP_INTEROP") == "1":
             raise unittest.SkipTest("BL_SKIP_INTEROP=1")
+        # $CC if set, else the first C compiler on PATH (Windows has no `cc`;
+        # MinGW gcc and clang do). No compiler is a failure, not a skip.
+        cc = os.environ.get("CC") or next(
+            (c for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
+        if cc is None:
+            raise AssertionError("no C compiler for the C vectors tool: set CC or put cc/gcc/clang on PATH")
         # A tool that does not build is a failure, not a skip: a skipped
         # interop suite hides exactly the drift it exists to catch.
         r = subprocess.run(

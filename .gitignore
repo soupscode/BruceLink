@@ -13,6 +13,7 @@ tests/c/obj/
 tests/c/bl_tests
 tests/c/bl_bridge_tests
 tests/_bl_vectors
+tests/_bl_vectors.exe
 
 # hardware-in-the-loop logs + flash backups
 hil-logs/
