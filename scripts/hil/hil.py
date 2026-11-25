@@ -221,22 +221,30 @@ class FlipperCli:
 
 
 def fap_code_digest(blob):
-    """SHA-256 over a FAP's loadable content: every ELF section except
-    `.gnu_debuglink` (it names the build's debug file, so two builds of the
-    same source differ there and nowhere else)."""
+    """SHA-256 over what the loader uses from a FAP: the ELF header's type,
+    machine, version, entry and flags, and for every section except
+    `.gnu_debuglink` its name, its header (all but the file offset) and its
+    bytes. A SHT_NOBITS section such as `.bss` has no bytes, but its size is RAM
+    the loader allocates, so its header counts. `.gnu_debuglink` names the
+    build's debug file, so two builds of the same source differ there and
+    nowhere else; leaving out file offsets keeps a longer debug link, which
+    moves the sections after it, from counting as a change."""
     if blob[:4] != b"\x7fELF" or blob[4] != 1:
         raise ValueError("not an ELF32 file")
     shoff, = struct.unpack_from("<I", blob, 0x20)
     shentsize, shnum, shstrndx = struct.unpack_from("<HHH", blob, 0x2E)
     hdr = lambda i: struct.unpack_from("<IIIIIIIIII", blob, shoff + i * shentsize)
     str_off = hdr(shstrndx)[4]
-    h = hashlib.sha256()
+    h = hashlib.sha256(blob[16:28] + blob[36:40])  # e_type .. e_entry, e_flags
     for i in range(shnum):
-        name_i, sh_type, _, _, off, size = hdr(i)[:6]
+        name_i, sh_type, flags, addr, off, size, link, info, align, entsize = hdr(i)
         name = blob[str_off + name_i : blob.index(b"\0", str_off + name_i)].decode()
-        if sh_type == 8 or name == ".gnu_debuglink":  # SHT_NOBITS has no bytes
+        if name == ".gnu_debuglink":
             continue
-        h.update(name.encode() + b"\0" + blob[off : off + size])
+        h.update(name.encode() + b"\0" + struct.pack(
+            "<8I", sh_type, flags, addr, size, link, info, align, entsize))
+        if sh_type != 8:  # SHT_NOBITS: no bytes in the file
+            h.update(blob[off : off + size])
     return h.hexdigest()
 
 
@@ -546,7 +554,7 @@ def main(argv=None):
     s = sub.add_parser("check")
     s.add_argument("--flipper-port"); s.add_argument("--sticks3-port")
     s.add_argument("--fap-ref", help="reference .fap to compare the installed app against "
-                   "(code digest: every ELF section except .gnu_debuglink)")
+                   "(code digest: every ELF section's header and bytes except .gnu_debuglink)")
     s.add_argument("--log-seconds", type=float, default=0, help="also log the StickS3 (no reset) this long")
     s.add_argument("--sticks3-cli", action="store_true",
                    help="also ask Bruce's CLI for `info` and `free` (read-only, no reset)")

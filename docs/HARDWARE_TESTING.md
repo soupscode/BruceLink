@@ -60,8 +60,9 @@ python scripts/hil/hil.py check --fap-ref flipper/brucelink/dist/brucelink.fap -
 `check` is the repeatable regression check: both devices present, Flipper on
 the pinned Momentum / API / target, app installed and a `pairing.key` present
 (the StickS3 side of the pairing is not checked), the installed app the
-**same code** as a reference build (all ELF sections but `.gnu_debuglink`,
-which only names the build's debug file), Bruce's CLI answering, and with
+**same code** as a reference build (every ELF section's header and bytes,
+so `.bss` sizes count too, but not `.gnu_debuglink`, which only names the
+build's debug file), Bruce's CLI answering, and with
 `--log-seconds` no ESP32 boot banner in the log (a reset). It writes a JSON
 report to `hil-logs/` and exits 1 on any mismatch; an exception (a port that
 vanishes, a timeout) also exits non-zero, without a report.

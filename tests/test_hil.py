@@ -20,19 +20,21 @@ SHT_PROGBITS, SHT_STRTAB, SHT_NOBITS = 1, 3, 8
 
 
 def make_elf(sections):
-    """A minimal little-endian ELF32 holding (name, type, bytes) sections."""
+    """A minimal little-endian ELF32 holding (name, type, bytes[, flags, align])
+    sections. A SHT_NOBITS section takes its size from its (unwritten) bytes."""
     secs = list(sections) + [(".shstrtab", SHT_STRTAB, None)]
     strtab, name_offs = b"\0", []
-    for name, _, _ in secs:
+    for name, *_ in secs:
         name_offs.append(len(strtab))
         strtab += name.encode() + b"\0"
     body, headers = b"", [bytes(40)]  # section 0 is the null section
-    for (name, typ, data), name_off in zip(secs, name_offs):
+    for (name, typ, data, *meta), name_off in zip(secs, name_offs):
+        flags, align = (list(meta) + [0, 1][len(meta):])[:2]
         data = strtab if data is None else data
         off = 52 + len(body)
         if typ != SHT_NOBITS:
             body += data
-        headers.append(struct.pack("<10I", name_off, typ, 0, 0, off, len(data), 0, 0, 1, 0))
+        headers.append(struct.pack("<10I", name_off, typ, flags, 0, off, len(data), 0, 0, align, 0))
     shoff = 52 + len(body)
     ehdr = b"\x7fELF" + bytes([1, 1, 1]) + bytes(9) + struct.pack(
         "<HHIIIIIHHHHHH", 1, 40, 1, 0, 0, shoff, 0, 52, 0, 0, 40, len(headers), len(headers) - 1)
@@ -40,10 +42,13 @@ def make_elf(sections):
 
 
 class FapCodeDigestTests(unittest.TestCase):
-    def fap(self, text=b"\x01\x02code", debuglink=b"brucelink_d.elf\0\0\0\0\xaa\xbb\xcc\xdd"):
+    SHF_WRITE_ALLOC = 3
+
+    def fap(self, text=b"\x01\x02code", debuglink=b"brucelink_d.elf\0\0\0\0\xaa\xbb\xcc\xdd",
+            bss=64, bss_align=4):
         return make_elf([(".text", SHT_PROGBITS, text),
                          (".gnu_debuglink", SHT_PROGBITS, debuglink),
-                         (".bss", SHT_NOBITS, bytes(64))])
+                         (".bss", SHT_NOBITS, bytes(bss), self.SHF_WRITE_ALLOC, bss_align)])
 
     def test_debuglink_is_ignored(self):
         # Two builds of the same source differ only in .gnu_debuglink.
@@ -51,9 +56,25 @@ class FapCodeDigestTests(unittest.TestCase):
         self.assertNotEqual(a, b)
         self.assertEqual(hil.fap_code_digest(a), hil.fap_code_digest(b))
 
+    def test_longer_debuglink_moving_later_sections_is_ignored(self):
+        # A longer debug file name shifts the file offsets of the sections after it.
+        a = self.fap()
+        b = self.fap(debuglink=b"brucelink_debug_build.elf\0\0\0\x11\x22\x33\x44")
+        self.assertNotEqual(len(a), len(b))
+        self.assertEqual(hil.fap_code_digest(a), hil.fap_code_digest(b))
+
     def test_code_change_is_seen(self):
         self.assertNotEqual(hil.fap_code_digest(self.fap()),
                             hil.fap_code_digest(self.fap(text=b"\x01\x02codf")))
+
+    def test_bss_size_change_is_seen(self):
+        # .bss has no bytes in the file, but its size is RAM the loader allocates.
+        self.assertNotEqual(hil.fap_code_digest(self.fap(bss=64)),
+                            hil.fap_code_digest(self.fap(bss=65536)))
+
+    def test_section_alignment_change_is_seen(self):
+        self.assertNotEqual(hil.fap_code_digest(self.fap(bss_align=4)),
+                            hil.fap_code_digest(self.fap(bss_align=8)))
 
     def test_rejects_non_elf32(self):
         with self.assertRaises(ValueError):
