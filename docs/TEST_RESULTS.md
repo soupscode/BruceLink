@@ -773,6 +773,34 @@ Windows).
 | GitHub Actions run 45361740657 (`e4b0928`) | **all jobs green**; cppcheck passes and the Python/interop step runs for the first time on CI |
 | PR review follow-up: `$CC` as a quoted Windows path with an argument (`"C:\…\gcc.exe" -m64`) | failed before (`FileNotFoundError`: the quotes were kept and escaped); builds and passes after. New `CompilerCommandTests` (the Windows case splits with `CommandLineToArgvW`) fail against the old logic; 16 tests OK on Windows, 15 OK + 1 skipped (Windows-only) on Linux |
 
+### 2026-11-24 — HIL diagnostics tooling (local session, `tools/hil-diagnostics`, agent-read)
+
+`scripts/hil/hil.py` plus the Windows `.ps1` helpers. Every command used here
+only reads; `sticks3-backup` reboots the stick (download mode) and writes
+nothing. Devices: Flipper on Momentum `mntm-012` (API 87.1, COM12), StickS3
+ESP32-S3-PICO-1 rev v0.2 (COM13), both running the `448b798` builds.
+
+| Check | Result |
+|---|---|
+| `hil.py check --fap-ref <448b798 .fap> --sticks3-cli --log-seconds 5` (Windows 11, Python 3.11.9, pyserial 3.5) | **11/11 PASS**, again after the review fixes: both present; Flipper `mntm-012`, API 87.1, target 7; app installed, same code as the reference build (only `.gnu_debuglink` differs; the 60,132 B app read through the fixed `read_file`); `pairing.key` present; Bruce CLI answers; serial read with no boot banner (no reset) |
+| `hil.py flipper-backup` | app + `apps_data/brucelink/` files read, each MD5-matched against the Flipper |
+| `hil.py sticks3-backup` (esptool 5.6.0) | full 8 MB read; `verify-flash` digest matched; partition table and app descriptor parsed |
+| `hil.py sticks3-log` / `check --log-seconds 5` | Windows: port opened with DTR/RTS off: no reset (a reset prints the ESP32 boot banner; the 5 s capture read 0 lines). **Linux/macOS not run with the devices** |
+| `tests/test_hil.py` (no device, no pyserial) | 24 OK on Windows and Linux (WSL); also OK with pyserial blocked, as on CI. 27 OK after the Codex follow-up below |
+| Independent review (agent, no device access) | Two blockers fixed, each with a test that fails against the previous `hil.py` (`712b434`): (1) on Linux/macOS the kernel raises DTR+RTS at open and pyserial then lowers DTR first, so the old settings passed through DTR off + RTS on, the USB-Serial/JTAG reset state (modelled: `(1,1),(0,1),(0,0)`); now `(1,1),(1,0),(0,0)` there, Windows unchanged; (2) `read_file` dropped a partly read prompt and timed out for some file sizes (188–191 B with 256-byte reads). Also fixed: backups refused inside any git checkout; `check` fails on a boot banner; a path containing "mismatch" no longer fails `verify-flash`; docs no longer claim Linux/macOS or env-var port selection. Left as limitations: below |
+| Codex review on PR #10 | The FAP code digest skipped `SHT_NOBITS` sections, so a `.bss` size change (RAM the loader allocates) went unseen. It now hashes each section's header (all but the file offset) and the ELF header's type, machine, version, entry and flags. New tests: a `.bss` size change and an alignment change are seen (both fail against `c7a91ae`), and a longer `.gnu_debuglink` that moves later sections is still ignored. 27 OK on Windows and Linux; full suite OK (1 skipped). Real builds: today's 448b798 FAP has no NOBITS section, so the old digest wasn't wrong for it; the app backed up from the Flipper (03:07) and the 448b798 reference still give the same digest (MD5s differ, debug link only), and raising `.rodata`'s alignment in a copy changes it. The Flipper was not attached, so `check --fap-ref` was not rerun on the device |
+
+Limitations (from the review): `sticks3-backup` lets each esptool step reset
+the stick, so Bruce starts between the read and the verify and a flash write
+at boot would fail the verify; `flipper.paired` checks the Flipper's key file
+only; an exception exits without a JSON report; Flipper file names with
+spaces and subfolders are not backed up; no esptool timeout; esptool 4 is not
+supported (its subcommands are `read_flash`-style); `sticks3-log` echoes
+every line, including the `bruce.conf` dump at boot.
+
+The backups hold pairing keys and the serial logs can hold `bruce.conf`
+secrets: both stay on the owner's PC, outside the repository.
+
 ## Not yet tested (requires the local hardware session)
 
 Updated 2026-11-23 after the independent review. Already run on hardware: see

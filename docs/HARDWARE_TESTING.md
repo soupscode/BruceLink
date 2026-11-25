@@ -4,33 +4,92 @@ Procedures for the **local** Claude Code session with both devices on USB.
 Every procedure here is **unverified** until run; record results in
 `docs/TEST_RESULTS.md` and flip cells in `docs/CAPABILITY_MATRIX.md`.
 
-Scripts: `scripts/hil/` (bash + Python/pyserial + esptool). Logs go to
-`hil-logs/` (git-ignored). Set `STICKS3_PORT` / `FLIPPER_PORT` to override
-auto-detection.
+Scripts: `scripts/hil/`. `hil.py` (Python + pyserial; esptool 5 for the
+StickS3 backup) is the verified path **on Windows** (owner's PC, 2026-11-24).
+It is written for Linux and macOS too but has not run with the devices there,
+in particular its no-reset opening of the StickS3 port, whose line order
+differs on those systems. The `.sh` scripts are Linux-only (`udevadm`,
+`/dev/ttyACM*`) and unverified; the `.ps1` scripts are Windows-only read-only
+helpers. Logs go to `hil-logs/` (git-ignored). `hil.py` finds the devices by
+USB ID; pass `--port` to choose one (`check`: `--flipper-port` /
+`--sticks3-port`; it only checks devices it detects). The `.sh` scripts read
+`STICKS3_PORT` / `FLIPPER_PORT`. Its parsers (Flipper CLI replies, the app's
+code digest, the partition table, the app descriptor, `verify-flash` output,
+the boot banner, the read-only command allowlist), the backup-folder rule and
+the port's DTR/RTS order are host-tested by `tests/test_hil.py`, which needs
+no device and no pyserial.
 
 ## 0. Safety first
 
-- **Back up the StickS3 before any flash:** `scripts/hil/backup_sticks3.sh`
-  (full 8 MB + LittleFS-only). Flashing Bruce's merged image wipes NVS.
+- **Back up both devices before any flash.** Both commands only read, into a
+  `<dir>` that must be **outside any git checkout** (`hil.py` refuses one
+  inside: an ignored file there is one `git add -f` from a commit, and a
+  worktree's ignored files vanish with the worktree):
+  - `python scripts/hil/hil.py sticks3-backup <dir>`: the whole flash
+    (`esptool read-flash`), then `esptool verify-flash` of the file against
+    the chip, the partition table and the app's identity. The StickS3
+    **reboots** (each esptool step enters download mode and ends in a reset,
+    so Bruce starts between the read and the verify); nothing is written.
+  - `python scripts/hil/hil.py flipper-backup <dir>`: the BruceLink app and
+    the files directly in `apps_data/brucelink/` (not subfolders; a file name
+    with a space is not supported), each checked against the Flipper's own
+    MD5. (`qFlipper-cli backup <file>` saves the Flipper's internal memory;
+    never run `qFlipper-cli` with no arguments, which starts a firmware
+    update.)
+
+  Flashing Bruce's merged image wipes NVS, and with it the pairing. Backups
+  hold pairing keys (StickS3 NVS; the Flipper's enclave-encrypted key file):
+  never share them.
+- **Serial logs can hold secrets.** Bruce prints its whole `bruce.conf` to
+  serial at boot, which can include Wi-Fi and web UI credentials. Keep
+  `hil-logs/` local; quote only the lines you need.
 - Active-RF tests (deauth, beacon, probe) **only** on owned/explicitly
   authorized, isolated lab networks. Keep active ops disabled otherwise.
 
 ## 1. Detect hardware & versions
 
+None of these write to either device, and none resets it (verified on
+Windows; on Linux/macOS the StickS3 port opening is not yet verified):
 ```
-scripts/hil/detect_devices.sh        # finds Flipper (VID 0483) + StickS3 (VID 303a)
-scripts/hil/firmware_versions.sh     # esptool flash_id + Flipper `device_info`
+python scripts/hil/hil.py detect                # ports by VID/PID (Flipper 0483:5740, StickS3 303A:*)
+python scripts/hil/hil.py flipper-info          # firmware/API/target, BruceLink files + app MD5 (Flipper CLI)
+python scripts/hil/hil.py sticks3-cli info      # Bruce `info` / `free` / `uptime` (read-only, opened without a reset)
+python scripts/hil/hil.py sticks3-log --seconds 30   # serial log without resetting the stick
+python scripts/hil/hil.py check --fap-ref flipper/brucelink/dist/brucelink.fap --sticks3-cli --log-seconds 5
 ```
+`check` is the repeatable regression check: both devices present, Flipper on
+the pinned Momentum / API / target, app installed and a `pairing.key` present
+(the StickS3 side of the pairing is not checked), the installed app the
+**same code** as a reference build (every ELF section's header and bytes,
+so `.bss` sizes count too, but not `.gnu_debuglink`, which only names the
+build's debug file), Bruce's CLI answering, and with
+`--log-seconds` no ESP32 boot banner in the log (a reset). It writes a JSON
+report to `hil-logs/` and exits 1 on any mismatch; an exception (a port that
+vanishes, a timeout) also exits non-zero, without a report.
+
+Windows only, PnP/CLI read-only: `scripts/hil/detect_devices.ps1`,
+`scripts/hil/flipper_info.ps1`. Linux only (unverified): `detect_devices.sh`,
+`firmware_versions.sh` (`esptool flash_id` reboots the stick).
+
 Record: Momentum version string, Bruce commit, StickS3 board revision, ports.
 Confirm the Flipper is on `mntm-012` (API 87.1) or rebuild the FAP for its API.
+A locally built Bruce reports `Bruce vdev` / `Homebrew` over its CLI, so the
+StickS3's build is identified from a flash backup (`sticks3-backup` prints the
+partition table and app; compare the app region with a reference image).
 
 ## 2. Build everything (also runs in the cloud)
 
 ```
 scripts/hil/build_all.sh
 ```
-Locally, install the real Flipper toolchain (`ufbt update` with network access)
-instead of the xPack substitute; confirm the FAP still passes APPCHK.
+Locally, fetch the pinned Momentum SDK (a plain `ufbt update` fetches the
+official firmware's SDK instead), ideally in its own ufbt home:
+```
+UFBT_HOME=~/.ufbt-brucelink ufbt update --hw-target=f7   --url=https://github.com/Next-Flip/Momentum-Firmware/releases/download/mntm-012/flipper-z-f7-sdk-mntm-012.zip
+```
+Confirm the FAP still passes APPCHK. On Windows, run PlatformIO from
+PowerShell or cmd, not Git Bash: pioarduino's `idf_tools.py` refuses MSYS
+(`MSys/Mingw is not supported`) and the Xtensa compiler is then missing.
 
 ## 3. Flipper app on device
 
@@ -245,7 +304,13 @@ negotiated value), DMA starvation dropping Wi-Fi (`radioHasMemForBle`).
 
 ## Recovery
 
-`scripts/hil/restore_sticks3.sh <sticks3-full-*.bin>` restores the pre-test
-image (type `YES` to confirm). For the Flipper, reinstall firmware via qFlipper
+Restoring the StickS3 **writes its whole flash**, so it needs the owner's
+go-ahead:
+```
+python -m esptool --chip esp32s3 -p <port> write-flash 0x0 <backup>/sticks3-full.bin
+python -m esptool --chip esp32s3 -p <port> verify-flash 0x0 <backup>/sticks3-full.bin
+```
+(`scripts/hil/restore_sticks3.sh <sticks3-full-*.bin>` is the Linux wrapper;
+type `YES` to confirm.) For the Flipper, reinstall firmware via qFlipper
 if needed; the BruceLink app stores its BLE keys separately
 (`.brucelink.keys`), so the phone bond is unaffected.
